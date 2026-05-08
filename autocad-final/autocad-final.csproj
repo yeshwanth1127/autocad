@@ -1,0 +1,218 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{EA04F805-C87E-4C73-AFFF-9B94F1230C30}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <AppDesignerFolder>Properties</AppDesignerFolder>
+    <RootNamespace>autocad_final</RootNamespace>
+    <AssemblyName>autocad-final</AssemblyName>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <PlatformTarget>x64</PlatformTarget>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <PlatformTarget>x64</PlatformTarget>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="accoremgd">
+      <HintPath>..\..\..\..\..\..\Program Files\Autodesk\AutoCAD 2024\accoremgd.dll</HintPath>
+    </Reference>
+    <Reference Include="acdbmgd">
+      <HintPath>..\..\..\..\..\..\Program Files\Autodesk\AutoCAD 2024\acdbmgd.dll</HintPath>
+    </Reference>
+    <Reference Include="acmgd">
+      <HintPath>..\..\..\..\..\..\Program Files\Autodesk\AutoCAD 2024\acmgd.dll</HintPath>
+    </Reference>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Data" />
+    <Reference Include="Microsoft.CSharp" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Transactions" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="WindowsBase" />
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.Runtime.Serialization" />
+    <Reference Include="System.Xml" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Licensing\TrialExpiry.cs" />
+    <Compile Include="Licensing\TrialGuard.cs" />
+    <Compile Include="SprinklerPaletteExtensionApplication.cs" />
+    <Compile Include="Agent\IAgentObserver.cs" />
+    <Compile Include="Agent\AcadLockGuard.cs" />
+    <Compile Include="Agent\AgentUndoScope.cs" />
+    <Compile Include="Agent\AgentModels.cs" />
+    <Compile Include="Agent\ProjectMemory.cs" />
+    <Compile Include="Agent\AgentReadTools.cs" />
+    <Compile Include="Agent\AgentWriteTools.cs" />
+    <Compile Include="Agent\ContextBuilder.cs" />
+    <Compile Include="Agent\RuntimeSettings.cs" />
+    <Compile Include="Agent\OpenRouterClient.cs" />
+    <Compile Include="Agent\OpenRouterModels.cs" />
+    <Compile Include="Agent\JsonSupport.cs" />
+    <Compile Include="Agent\ToolDispatcher.cs" />
+    <Compile Include="Agent\AgentLog.cs" />
+    <Compile Include="Agent\DrawingScreenCapture.cs" />
+    <Compile Include="Agent\AgentLoop.cs" />
+    <Compile Include="Agent\ShaftHintStore.cs" />
+    <Compile Include="Agent\Planning\ZonePlan.cs" />
+    <Compile Include="Agent\Planning\ZonePlanValidator.cs" />
+    <Compile Include="Agent\Planning\ZoneStateMachine.cs" />
+    <Compile Include="Agent\Planning\PreviewEngine.cs" />
+    <Compile Include="Agent\Planning\ConfidenceGate.cs" />
+    <Compile Include="Agent\Planning\PlanningContext.cs" />
+    <Compile Include="Agent\Planning\PlanningToolInterceptor.cs" />
+    <Compile Include="Agent\Planning\PlanningLoop.cs" />
+    <Compile Include="Agent\Planning\Validators\ValidationIssue.cs" />
+    <Compile Include="Agent\Planning\Validators\RingGeometry.cs" />
+    <Compile Include="Agent\Planning\Validators\BoundaryContainmentValidator.cs" />
+    <Compile Include="Agent\Planning\Validators\WallDistanceValidator.cs" />
+    <Compile Include="Agent\Planning\Validators\CoverageGapValidator.cs" />
+    <Compile Include="Agent\Planning\Validators\ShaftIntersectValidator.cs" />
+    <Compile Include="Agent\Planning\Validators\ValidatorRunner.cs" />
+    <Compile Include="UI\ResponseFormatter.cs" />
+    <Compile Include="UI\PluginUiButtonSelection.cs" />
+    <Compile Include="UI\IconButton.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Include="UI\ChatStore.cs" />
+    <Compile Include="UI\ChatHistoryForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\SprinklerPaletteControl.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Include="UI\PaletteCommandErrorUi.cs" />
+    <Compile Include="UI\PlaceSprinklersPaletteAction.cs" />
+    <Compile Include="UI\FixZonesPaletteAction.cs" />
+    <Compile Include="UI\InitializeStandardsPaletteAction.cs" />
+    <Compile Include="UI\ZoneCreation1PaletteAction.cs" />
+    <Compile Include="UI\ZoneCreation2PaletteAction.cs" />
+    <Compile Include="UI\PluginMenu.cs" />
+    <Compile Include="Commands\DefineBuildingAreaCommand.cs" />
+    <Compile Include="Commands\PolygonAreaCommand.cs" />
+    <Compile Include="Commands\LoopAreaCommand.cs" />
+    <Compile Include="Commands\PointsAreaCommand.cs" />
+    <Compile Include="Commands\ZoneAreaCommand.cs" />
+    <Compile Include="Commands\FixZonesCommand.cs" />
+    <Compile Include="Commands\SprinklerFloorZoningCascade.cs" />
+    <Compile Include="Commands\RouteMainPipeCommand.cs" />
+    <Compile Include="Commands\ApplySprinklersCommand.cs" />
+    <Compile Include="CadContext.cs" />
+    <Compile Include="Commands\ZoneCreation1Command.cs" />
+    <Compile Include="Commands\ZoneCreation2Command.cs" />
+    <Compile Include="Commands\PlaceSprinklersCommand.cs" />
+    <Compile Include="Commands\CheckSprinklersAndFixCommand.cs" />
+    <Compile Include="Commands\FixOnSlantCommand.cs" />
+    <Compile Include="Commands\AttachBranchesCommand.cs" />
+    <Compile Include="Commands\DeleteAllOnLayerCommand.cs" />
+    <Compile Include="Commands\RebuildFromTrunkCommand.cs" />
+    <Compile Include="Commands\RedesignFromTrunkCommand.cs" />
+    <Compile Include="Commands\SprinklerZoneRedesignFromTrunk.cs" />
+    <Compile Include="Commands\SprinklerDesignCommand.cs" />
+    <Compile Include="Commands\InitializeStandardsCommand.cs" />
+    <Compile Include="Commands\SelectShaftPointCommand.cs" />
+    <Compile Include="Commands\ZoneTestCommand.cs" />
+    <Compile Include="Commands\FixZoneBoundaryCommand.cs" />
+    <Compile Include="AreaWorkflow\SelectPolygonBoundary.cs" />
+    <Compile Include="AreaWorkflow\SprinklerZoneAutomationCleanup.cs" />
+    <Compile Include="AreaWorkflow\SelectPolygonBoundaryOnSprinklerWorkLayer.cs" />
+    <Compile Include="AreaWorkflow\SelectBoundaryByPoints.cs" />
+    <Compile Include="AreaWorkflow\SprinklerLayers.cs" />
+    <Compile Include="AreaWorkflow\SprinklerHeadReader2d.cs" />
+    <Compile Include="AreaWorkflow\NfpaBranchPipeSizing.cs" />
+    <Compile Include="AreaWorkflow\SprinklerTrunkLocator.cs" />
+    <Compile Include="AreaWorkflow\PendentSprinklerBlockInsert.cs" />
+    <Compile Include="AreaWorkflow\ReducerBlockInsert.cs" />
+    <Compile Include="AreaWorkflow\PolylineNetArea.cs" />
+    <Compile Include="AreaWorkflow\ZoneGlobalBoundaryBuilder.cs" />
+    <Compile Include="AreaWorkflow\EditorWritePolygonNetArea.cs" />
+    <Compile Include="AreaWorkflow\PolygonMetrics.cs" />
+    <Compile Include="AreaWorkflow\FindRoomNameInsideBoundary.cs" />
+    <Compile Include="AreaWorkflow\FindShaftsInsideBoundary.cs" />
+    <Compile Include="AreaWorkflow\SprinklerShaftFootprintExclusion.cs" />
+    <Compile Include="AreaWorkflow\BranchPipeShaftDetour2d.cs" />
+    <Compile Include="AreaWorkflow\SprinklerRoomFootprintExclusion.cs" />
+    <Compile Include="AreaWorkflow\MainPipeDetector.cs" />
+    <Compile Include="AreaWorkflow\AngleTrunkRouting2d.cs" />
+    <Compile Include="Commands\AssignShaftToZoneCommand.cs" />
+    <Compile Include="Blocks\BlockLibrary.cs" />
+    <Compile Include="Blocks\SprinklerBlockService.cs" />
+    <Compile Include="Blocks\StandardBlockDefinitions.cs" />
+    <Compile Include="Blocks\WblockExportService.cs" />
+    <Compile Include="AreaWorkflow\CheckSprinklersAndFixWorkflow.cs" />
+    <Compile Include="AreaWorkflow\FixOnSlantWorkflow.cs" />
+    <Compile Include="AreaWorkflow\FloorBoundaryAutoDiscovery.cs" />
+    <Compile Include="AreaWorkflow\ShaftMidlineStripZonesInPolygon2d.cs" />
+    <Compile Include="AreaWorkflow\MainPipeRouting2d.cs" />
+    <Compile Include="AreaWorkflow\SkeletonRouting2d.cs" />
+    <Compile Include="AreaWorkflow\SprinklerGridPlacement2d.cs" />
+    <Compile Include="AreaWorkflow\ShaftVoronoiZonesOnFloorPolyline.cs" />
+    <Compile Include="AreaWorkflow\EqualAreaStripZonesFromRectangle.cs" />
+    <Compile Include="AreaWorkflow\EqualAreaAxisStripZonesInPolygon2d.cs" />
+    <Compile Include="AreaWorkflow\GridNearestShaftZoning2d.cs" />
+    <Compile Include="AreaWorkflow\EqualAreaRecursiveBisection2d.cs" />
+    <Compile Include="AreaWorkflow\LlmCutZoning2d.cs" />
+    <Compile Include="AreaWorkflow\PromptClosedLoopBoundarySelection.cs" />
+    <Compile Include="AreaWorkflow\PromptClosedZonePolylinesSelection.cs" />
+    <Compile Include="AreaWorkflow\CollectSegmentEndpointsFromSelection.cs" />
+    <Compile Include="AreaWorkflow\ClosedPolylineFromChainedSegments.cs" />
+    <Compile Include="ShaftWorkflow\SelectShaftPoint.cs" />
+    <Compile Include="ShaftWorkflow\EnsureShaftBlockDefinition.cs" />
+    <Compile Include="ShaftWorkflow\InsertShaftBlockReference.cs" />
+    <Compile Include="Geometry\OffsetService.cs" />
+    <Compile Include="Geometry\PointGenerator.cs" />
+    <Compile Include="Geometry\PolygonUtils.cs" />
+    <Compile Include="Geometry\OrthogonalVoronoiPostProcessor2d.cs" />
+    <Compile Include="Geometry\ConvexHull2d.cs" />
+    <Compile Include="Geometry\BoundaryEntityToClosedLwPolyline.cs" />
+    <Compile Include="Geometry\SprinklerXData.cs" />
+    <Compile Include="Geometry\ClosedPolylineFromPointsAndSegments.cs" />
+    <Compile Include="Geometry\PolygonClipToCloserSiteHalfPlane2d.cs" />
+    <Compile Include="Geometry\PolygonVerticalHalfPlaneClip2d.cs" />
+    <Compile Include="Geometry\PolygonHorizontalHalfPlaneClip2d.cs" />
+    <Compile Include="Geometry\RegionBooleanIntersection2d.cs" />
+    <Compile Include="Geometry\PolylineClosedBoundaryRingSampler2d.cs" />
+    <Compile Include="Geometry\DrawingUnitsHelper.cs" />
+    <Compile Include="Geometry\DrawingMutationHelper.cs" />
+    <Compile Include="Reporting\AreaTableService.cs" />
+    <Compile Include="Validation\BoundaryValidator.cs" />
+    <Compile Include="Workflows\Placement\BoundaryPlacementService.cs" />
+    <Compile Include="Workflows\Placement\BoundaryCoverageService.cs" />
+    <Compile Include="Workflows\Placement\GridPlacementService.cs" />
+    <Compile Include="Workflows\Placement\PlaceSprinklersWorkflow.cs" />
+    <Compile Include="Workflows\Placement\PointFilter.cs" />
+    <Compile Include="Workflows\Zoning\FixZonesWorkflow.cs" />
+    <Compile Include="Workflows\Zoning\ZoneCreation1VoronoiWorkflow.cs" />
+    <Compile Include="Workflows\Zoning\ZoneCreation2EqualAreaWorkflow.cs" />
+    <Compile Include="Workflows\Zoning\ManhattanFixedSeparatorFixWorkflow.cs" />
+    <Compile Include="Properties\AssemblyInfo.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="packages.config" />
+    <None Include="Properties.config">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

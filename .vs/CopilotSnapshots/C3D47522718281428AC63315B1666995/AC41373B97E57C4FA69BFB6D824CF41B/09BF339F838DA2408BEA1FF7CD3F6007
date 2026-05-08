@@ -1,0 +1,294 @@
+﻿using System.Collections.Generic;
+using System.Runtime.Serialization;
+
+namespace autocad_final.Agent
+{
+    [DataContract]
+    public sealed class DrawingSnapshot
+    {
+        [DataMember(Name = "drawing")]
+        public string DrawingName { get; set; }
+
+        [DataMember(Name = "zones")]
+        public List<ZoneSnapshot> Zones { get; set; }
+
+        [DataMember(Name = "shafts")]
+        public List<ShaftSnapshot> Shafts { get; set; }
+
+        [DataMember(Name = "nfpa")]
+        public NfpaSnapshot Nfpa { get; set; }
+
+        [DataMember(Name = "recent_decisions")]
+        public List<DecisionSnapshot> RecentDecisions { get; set; }
+
+        [DataMember(Name = "pending_issues")]
+        public List<string> PendingIssues { get; set; }
+    }
+
+    [DataContract]
+    public sealed class ZoneSnapshot
+    {
+        [DataMember(Name = "id")]
+        public string Id { get; set; }
+
+        [DataMember(Name = "boundary_handle")]
+        public string BoundaryHandle { get; set; }
+
+        [DataMember(Name = "layer")]
+        public string Layer { get; set; }
+
+        [DataMember(Name = "area_m2")]
+        public double? AreaM2 { get; set; }
+
+        [DataMember(Name = "area_du")]
+        public double AreaDrawingUnits { get; set; }
+
+        [DataMember(Name = "perimeter_du")]
+        public double PerimeterDrawingUnits { get; set; }
+
+        [DataMember(Name = "status")]
+        public string Status { get; set; }
+
+        [DataMember(Name = "head_count")]
+        public int HeadCount { get; set; }
+
+        [DataMember(Name = "expected_head_count")]
+        public int ExpectedHeadCount { get; set; }
+
+        [DataMember(Name = "coverage_gaps")]
+        public int CoverageGaps { get; set; }
+
+        [DataMember(Name = "nearest_shaft_id")]
+        public string NearestShaftId { get; set; }
+
+        [DataMember(Name = "has_manual_edits")]
+        public bool HasManualEdits { get; set; }
+
+        [DataMember(Name = "summary")]
+        public string Summary { get; set; }
+
+        [DataMember(Name = "vertex_count")]
+        public int VertexCount { get; set; }
+
+        [DataMember(Name = "centroid_x")]
+        public double CentroidX { get; set; }
+
+        [DataMember(Name = "centroid_y")]
+        public double CentroidY { get; set; }
+
+        [DataMember(Name = "main_pipe_count")]
+        public int MainPipeCount { get; set; }
+
+        [DataMember(Name = "branch_count")]
+        public int BranchCount { get; set; }
+
+        [DataMember(Name = "trunk_tagged_count")]
+        public int TrunkTaggedCount { get; set; }
+
+        [DataMember(Name = "total_pipe_entities")]
+        public int TotalPipeEntities { get; set; }
+
+        [DataMember(Name = "tags")]
+        public List<ZoneTagSnapshot> Tags { get; set; }
+    }
+
+    [DataContract]
+    public sealed class ZoneGeometrySnapshot
+    {
+        [DataMember(Name = "boundary_handle")]
+        public string BoundaryHandle { get; set; }
+
+        [DataMember(Name = "layer")]
+        public string Layer { get; set; }
+
+        [DataMember(Name = "area_du")]
+        public double AreaDrawingUnits { get; set; }
+
+        [DataMember(Name = "area_m2")]
+        public double? AreaM2 { get; set; }
+
+        [DataMember(Name = "perimeter_du")]
+        public double PerimeterDrawingUnits { get; set; }
+
+        [DataMember(Name = "vertex_count")]
+        public int VertexCount { get; set; }
+
+        [DataMember(Name = "centroid_x")]
+        public double CentroidX { get; set; }
+
+        [DataMember(Name = "centroid_y")]
+        public double CentroidY { get; set; }
+    }
+
+    [DataContract]
+    public sealed class CoverageSnapshot
+    {
+        [DataMember(Name = "boundary_handle")]
+        public string BoundaryHandle { get; set; }
+
+        [DataMember(Name = "coverage_ok")]
+        public bool CoverageOk { get; set; }
+
+        [DataMember(Name = "expected_count")]
+        public int ExpectedCount { get; set; }
+
+        [DataMember(Name = "actual_count")]
+        public int ActualCount { get; set; }
+
+        [DataMember(Name = "gap_count")]
+        public int GapCount { get; set; }
+
+        [DataMember(Name = "summary")]
+        public string Summary { get; set; }
+
+        [DataMember(Name = "tags")]
+        public List<ZoneTagSnapshot> Tags { get; set; }
+    }
+
+    [DataContract]
+    public sealed class ZoneTagSnapshot
+    {
+        [DataMember(Name = "entity_handle")]
+        public string EntityHandle { get; set; }
+
+        [DataMember(Name = "entity_type")]
+        public string EntityType { get; set; }
+
+        [DataMember(Name = "layer")]
+        public string Layer { get; set; }
+
+        [DataMember(Name = "role")]
+        public string Role { get; set; }
+    }
+
+    [DataContract]
+    public sealed class PipeSummarySnapshot
+    {
+        [DataMember(Name = "boundary_handle")]
+        public string BoundaryHandle { get; set; }
+
+        [DataMember(Name = "main_pipe_count")]
+        public int MainPipeCount { get; set; }
+
+        [DataMember(Name = "branch_count")]
+        public int BranchCount { get; set; }
+
+        [DataMember(Name = "trunk_tagged_count")]
+        public int TrunkTaggedCount { get; set; }
+
+        [DataMember(Name = "total_pipe_entities")]
+        public int TotalPipeEntities { get; set; }
+
+        [DataMember(Name = "zones")]
+        public List<ZoneSnapshot> Zones { get; set; }
+    }
+
+    [DataContract]
+    public sealed class ZoneTagListSnapshot
+    {
+        [DataMember(Name = "boundary_handle")]
+        public string BoundaryHandle { get; set; }
+
+        [DataMember(Name = "tags")]
+        public List<ZoneTagSnapshot> Tags { get; set; }
+    }
+
+    [DataContract]
+    public sealed class ErrorSnapshot
+    {
+        [DataMember(Name = "status")]
+        public string Status { get; set; }
+
+        [DataMember(Name = "message")]
+        public string Message { get; set; }
+    }
+
+    [DataContract]
+    public sealed class ShaftSnapshot
+    {
+        [DataMember(Name = "id")]
+        public string Id { get; set; }
+
+        [DataMember(Name = "x")]
+        public double X { get; set; }
+
+        [DataMember(Name = "y")]
+        public double Y { get; set; }
+
+        [DataMember(Name = "connected_zone_ids")]
+        public List<string> ConnectedZoneIds { get; set; }
+    }
+
+    [DataContract]
+    public sealed class NfpaSnapshot
+    {
+        [DataMember(Name = "hazard_class")]
+        public string HazardClass { get; set; }
+
+        [DataMember(Name = "max_coverage_m2")]
+        public double MaxCoverageM2 { get; set; }
+
+        [DataMember(Name = "default_spacing_m")]
+        public double DefaultSpacingM { get; set; }
+
+        [DataMember(Name = "max_spacing_m")]
+        public double MaxSpacingM { get; set; }
+
+        [DataMember(Name = "preferred_pipe_orientation")]
+        public string PreferredPipeOrientation { get; set; }
+    }
+
+    [DataContract]
+    public sealed class DecisionSnapshot
+    {
+        [DataMember(Name = "zone_id")]
+        public string ZoneId { get; set; }
+
+        [DataMember(Name = "action")]
+        public string Action { get; set; }
+
+        [DataMember(Name = "parameters")]
+        public string Parameters { get; set; }
+
+        [DataMember(Name = "outcome")]
+        public string Outcome { get; set; }
+
+        [DataMember(Name = "timestamp")]
+        public string Timestamp { get; set; }
+
+        [DataMember(Name = "engineer_note")]
+        public string EngineerNote { get; set; }
+    }
+
+    [DataContract]
+    public sealed class EngineerCorrection
+    {
+        [DataMember(Name = "zone_id")]
+        public string ZoneId { get; set; }
+
+        [DataMember(Name = "lesson")]
+        public string Lesson { get; set; }
+
+        [DataMember(Name = "timestamp")]
+        public string Timestamp { get; set; }
+
+        [DataMember(Name = "is_active")]
+        public bool IsActive { get; set; }
+    }
+
+    [DataContract]
+    public sealed class ZoneMemory
+    {
+        [DataMember(Name = "has_manual_edits")]
+        public bool HasManualEdits { get; set; }
+
+        [DataMember(Name = "is_locked")]
+        public bool IsLocked { get; set; }
+
+        [DataMember(Name = "last_manual_edit_date")]
+        public string LastManualEditDate { get; set; }
+
+        [DataMember(Name = "engineer_note")]
+        public string EngineerNote { get; set; }
+    }
+}

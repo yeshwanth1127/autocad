@@ -1,0 +1,250 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Windows;
+using System.Windows.Controls;
+using System.Linq;
+using System.Text.Json;
+using Newtonsoft.Json;
+
+namespace autocad_final
+{
+    public partial class PolygonInventoryWindow : Window
+    {
+        public PolygonInventoryWindow()
+        {
+            InitializeComponent();
+            btnDrawPolygon.Click += BtnDrawPolygon_Click;
+            btnScanPolygons.Click += BtnScanPolygons_Click;
+            btnShowInventory.Click += BtnShowInventory_Click;
+            btnWindowSelect.Click += BtnWindowSelect_Click;
+            btnExportGeoJson.Click += BtnExportGeoJson_Click;
+            btnSaveInventory.Click += BtnSaveInventory_Click;
+            btnLoadInventory.Click += BtnLoadInventory_Click;
+            inventoryGrid.PreviewTextInput += OnPreviewTextInputDecimal;
+            inventoryGrid.CellEditEnding += InventoryGrid_CellEditEnding;
+        }
+
+        // Save inventory to user-chosen file
+        private void BtnSaveInventory_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new Microsoft.Win32.SaveFileDialog();
+            dlg.Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*";
+            dlg.Title = "Save Polygon Inventory";
+            dlg.FileName = "PolygonInventory.json";
+            if (dlg.ShowDialog() == true)
+            {
+                try
+                {
+                    // Sync DataGrid edits to PolygonInventory before saving
+                    SyncInventoryFromGrid();
+                    var json = Newtonsoft.Json.JsonConvert.SerializeObject(Class1.PolygonInventory, Newtonsoft.Json.Formatting.Indented);
+                    System.IO.File.WriteAllText(dlg.FileName, json);
+                    MessageBox.Show($"Inventory saved to {dlg.FileName}", "Save Complete", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Failed to save inventory: {ex.Message}", "Save Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+        }
+
+        // Load inventory from user-chosen file
+        private void BtnLoadInventory_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new Microsoft.Win32.OpenFileDialog();
+            dlg.Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*";
+            dlg.Title = "Load Polygon Inventory";
+            if (dlg.ShowDialog() == true)
+            {
+                try
+                {
+                    var json = System.IO.File.ReadAllText(dlg.FileName);
+                    var loaded = Newtonsoft.Json.JsonConvert.DeserializeObject<List<Class1.PolygonInfo>>(json);
+                    if (loaded != null)
+                    {
+                        Class1.PolygonInventory.Clear();
+                        Class1.PolygonInventory.AddRange(loaded);
+                        PopulateInventoryGrid(Class1.PolygonInventory);
+                        MessageBox.Show($"Inventory loaded from {dlg.FileName}", "Load Complete", MessageBoxButton.OK, MessageBoxImage.Information);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Failed to load inventory: {ex.Message}", "Load Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+        }
+
+        // Save inventory automatically when height or any cell is edited
+        private void InventoryGrid_CellEditEnding(object sender, DataGridCellEditEndingEventArgs e)
+        {
+            SyncInventoryFromGrid();
+        }
+
+        // Sync DataGrid edits to PolygonInventory
+        private void SyncInventoryFromGrid()
+        {
+            var items = inventoryGrid.ItemsSource as List<InventoryRow>;
+            if (items != null)
+            {
+                foreach (var row in items)
+                {
+                    var poly = Class1.PolygonInventory.FirstOrDefault(p => Math.Abs(p.Area - row.Area) < 1e-6 && Math.Abs(p.Perimeter - row.Perimeter) < 1e-6);
+                    if (poly != null)
+                    {
+                        poly.Height = row.Height;
+                        poly.RoomType = row.RoomType;
+                        poly.Layer = row.Layer;
+                        poly.Color = row.Color;
+                    }
+                }
+            }
+        }
+
+        // Only allow decimal input for Height column
+        private void OnPreviewTextInputDecimal(object sender, System.Windows.Input.TextCompositionEventArgs e)
+        {
+            // Allow only digits and one decimal point
+            if (!char.IsDigit(e.Text, 0) && e.Text != ".")
+                e.Handled = true;
+            else
+            {
+                var tb = sender as TextBox;
+                if (tb != null && e.Text == "." && tb.Text.Contains("."))
+                    e.Handled = true;
+            }
+        }
+        private void BtnExportGeoJson_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new Microsoft.Win32.SaveFileDialog();
+            dlg.Filter = "GeoJSON files (*.geojson)|*.geojson|All files (*.*)|*.*";
+            dlg.Title = "Export Polygon Inventory as GeoJSON";
+            dlg.FileName = "PolygonInventory.geojson";
+            if (dlg.ShowDialog() == true)
+            {
+                ExportInventoryToGeoJson(dlg.FileName);
+            }
+        }
+
+        private void ExportInventoryToGeoJson(string filePath)
+        {
+            try
+            {
+                var features = new List<object>();
+                foreach (var poly in Class1.PolygonInventory)
+                {
+                    var coords = poly.Vertices.Select(v => new[] { v.X, v.Y }).ToArray();
+                    object geometry;
+                    if (poly.IsClosed)
+                    {
+                        geometry = new
+                        {
+                            type = "Polygon",
+                            coordinates = new[] { coords }
+                        };
+                    }
+                    else
+                    {
+                        geometry = new
+                        {
+                            type = "LineString",
+                            coordinates = coords
+                        };
+                    }
+                    var feature = new
+                    {
+                        type = "Feature",
+                        properties = new
+                        {
+                            RoomType = poly.RoomType,
+                            Layer = poly.Layer,
+                            Color = poly.Color,
+                            Area = poly.Area,
+                            Perimeter = poly.Perimeter,
+                            Height = poly.Height
+                        },
+                        geometry = geometry
+                    };
+                    features.Add(feature);
+                }
+                var geojson = new
+                {
+                    type = "FeatureCollection",
+                    features = features
+                };
+                var json = JsonConvert.SerializeObject(geojson, Formatting.Indented);
+                System.IO.File.WriteAllText(filePath, json);
+                MessageBox.Show($"Exported inventory to {filePath}", "Export Complete", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to export GeoJSON: {ex.Message}\n{ex.StackTrace}", "Export Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        public PolygonInventoryWindow(List<Class1.PolygonInfo> polygons)
+            : this()
+        {
+            PopulateInventoryGrid(polygons);
+        }
+
+        private void BtnWindowSelect_Click(object sender, RoutedEventArgs e)
+        {
+            Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.SendStringToExecute("WindowSelectPolygons ", true, false, false);
+        }
+
+        private void BtnDrawPolygon_Click(object sender, RoutedEventArgs e)
+        {
+            Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.SendStringToExecute("DrawPolygonInventory ", true, false, false);
+        }
+
+        private void BtnScanPolygons_Click(object sender, RoutedEventArgs e)
+        {
+            Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.SendStringToExecute("ScanExistingPolygons ", true, false, false);
+        }
+
+        private void BtnShowInventory_Click(object sender, RoutedEventArgs e)
+        {
+            PopulateInventoryGrid(Class1.PolygonInventory);
+        }
+
+        private void PopulateInventoryGrid(List<Class1.PolygonInfo> polygons)
+        {
+            if (polygons == null)
+            {
+                inventoryGrid.ItemsSource = null;
+                inventoryGrid.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            var items = new List<InventoryRow>();
+            int idx = 1;
+            foreach (var poly in polygons)
+            {
+                items.Add(new InventoryRow
+                {
+                    Index = idx++,
+                    RoomType = string.IsNullOrWhiteSpace(poly.RoomType) ? "Room" : poly.RoomType,
+                    Layer = poly.Layer,
+                    Color = poly.Color,
+                    Area = poly.Area,
+                    Perimeter = poly.Perimeter,
+                    Height = poly.Height
+                });
+            }
+            inventoryGrid.ItemsSource = items;
+            inventoryGrid.Visibility = Visibility.Visible;
+        }
+
+        public class InventoryRow
+        {
+            public int Index { get; set; }
+            public string RoomType { get; set; }
+            public string Layer { get; set; }
+            public string Color { get; set; }
+            public double Area { get; set; }
+            public double Perimeter { get; set; }
+            public double Height { get; set; }
+        }
+    }
+}

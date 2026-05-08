@@ -1,0 +1,305 @@
+﻿using System;
+using System.Windows;
+using autocad_final;
+using Autodesk.AutoCAD.Runtime;
+using Autodesk.AutoCAD.ApplicationServices;
+using Autodesk.AutoCAD.EditorInput;
+using Autodesk.AutoCAD.DatabaseServices;
+using Autodesk.AutoCAD.Geometry;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace autocad_final
+{
+    public class Class1 : IExtensionApplication
+            [CommandMethod("NETUNLOAD")]
+            public void NetUnload()
+            {
+                // Perform any cleanup if needed before unloading
+                // Optionally clear inventory or close windows
+                PolygonInventory.Clear();
+                // Unloading is handled by AutoCAD, this method is just a placeholder
+            }
+    {
+        // Data structure to store polygon info
+
+        public void Initialize()
+        {
+            // Show UI automatically when plugin is loaded
+            Window win = new PolygonInventoryWindow();
+            win.Show();
+        }
+
+        public void Terminate()
+        {
+            // Cleanup code if needed
+        }
+
+        [CommandMethod("WindowSelectPolygons")]
+        public void WindowSelectPolygons()
+        {
+            var ed = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.Editor;
+            var db = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.Database;
+            // Prompt for window selection
+            PromptPointResult ppr1 = ed.GetPoint("Select first corner of window: ");
+            if (ppr1.Status != PromptStatus.OK) return;
+            PromptCornerOptions pco = new PromptCornerOptions("Select opposite corner: ", ppr1.Value);
+            PromptPointResult ppr2 = ed.GetCorner(pco);
+            if (ppr2.Status != PromptStatus.OK) return;
+            Point3d pt1 = ppr1.Value;
+            Point3d pt2 = ppr2.Value;
+            // Validate points are not identical and are valid for window selection
+            if (pt1 == pt2)
+            {
+                ed.WriteMessage("\nInvalid window: points are identical. Please select two distinct corners.");
+                return;
+            }
+            double minDist = 1e-6; // adjust as needed
+            if (pt1.DistanceTo(pt2) < minDist)
+            {
+                ed.WriteMessage("\nInvalid window: points are too close. Please select a larger window.");
+                return;
+            }
+            // Always use min/max for each coordinate to ensure valid Extents3d
+            double minX = Math.Min(pt1.X, pt2.X);
+            double minY = Math.Min(pt1.Y, pt2.Y);
+            double minZ = Math.Min(pt1.Z, pt2.Z);
+            double maxX = Math.Max(pt1.X, pt2.X);
+            double maxY = Math.Max(pt1.Y, pt2.Y);
+            double maxZ = Math.Max(pt1.Z, pt2.Z);
+            Point3d minPt = new Point3d(minX, minY, minZ);
+            Point3d maxPt = new Point3d(maxX, maxY, maxZ);
+            Extents3d window = new Extents3d(minPt, maxPt);
+
+            // Centralized scan
+            var polygons = GetPolygonsFromModelSpace(db, window);
+            Window win = new PolygonInventoryWindow(polygons);
+            win.Title = "Inventory in Window";
+            win.Show();
+        }
+
+        private static bool IsPointInWindow(Extents3d window, Point3d pt)
+        {
+            double minX = Math.Min(window.MinPoint.X, window.MaxPoint.X);
+            double maxX = Math.Max(window.MinPoint.X, window.MaxPoint.X);
+            double minY = Math.Min(window.MinPoint.Y, window.MaxPoint.Y);
+            double maxY = Math.Max(window.MinPoint.Y, window.MaxPoint.Y);
+            return pt.X >= minX && pt.X <= maxX && pt.Y >= minY && pt.Y <= maxY;
+        }
+
+        private static List<Point2d> GetVertices(Polyline pl)
+        {
+            var verts = new List<Point2d>();
+            for (int i = 0; i < pl.NumberOfVertices; i++)
+                verts.Add(pl.GetPoint2dAt(i));
+            return verts;
+        }
+
+        [CommandMethod("ShowPolygonInventoryUI")]
+        public void ShowPolygonInventoryUI()
+        {
+            Window win = new PolygonInventoryWindow();
+            win.Show();
+        }
+
+        [CommandMethod("ScanExistingPolygons")]
+        public void ScanExistingPolygons()
+        {
+            Editor ed = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.Editor;
+            Database db = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.Database;
+            PolygonInventory.Clear();
+            var polygons = GetPolygonsFromModelSpace(db);
+            PolygonInventory.AddRange(polygons);
+            ed.WriteMessage($"Scanned and added {polygons.Count} existing polygons to inventory.\n");
+        }
+        // Centralized polygon scan logic
+        public static List<PolygonInfo> GetPolygonsFromModelSpace(Database db, Extents3d? window = null)
+        {
+            var polygons = new List<PolygonInfo>();
+            using (Transaction tr = db.TransactionManager.StartTransaction())
+            {
+                BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+
+                // Gather all text entities (DBText and MText)
+                var textEntities = new List<KeyValuePair<Point3d, string>>();
+                var usedTextIndices = new HashSet<int>();
+                foreach (ObjectId objId in btr)
+                {
+                    Entity ent = tr.GetObject(objId, OpenMode.ForRead) as Entity;
+                    if (ent is DBText dbText)
+                        textEntities.Add(new KeyValuePair<Point3d, string>(dbText.Position, dbText.TextString));
+                    else if (ent is MText mText)
+                        textEntities.Add(new KeyValuePair<Point3d, string>(mText.Location, mText.Contents));
+                }
+
+                foreach (ObjectId objId in btr)
+                {
+                    Entity ent = tr.GetObject(objId, OpenMode.ForRead) as Entity;
+                    if (ent is Polyline pl)
+                    {
+                        var vertices = new List<Point2d>();
+                        for (int i = 0; i < pl.NumberOfVertices; i++)
+                        {
+                            vertices.Add(pl.GetPoint2dAt(i));
+                        }
+                        bool isClosed = pl.Closed;
+
+                        // If window is specified, check all vertices inside
+                        if (window.HasValue)
+                        {
+                            bool allInside = true;
+                            foreach (var v in vertices)
+                            {
+                                if (!IsPointInWindow(window.Value, new Point3d(v.X, v.Y, 0)))
+                                {
+                                    allInside = false;
+                                    break;
+                                }
+                            }
+                            if (!allInside) continue;
+                        }
+
+                        // Find text inside this polygon (center or any corner of bounding box)
+                        string roomType = null;
+                        for (int tIdx = 0; tIdx < textEntities.Count; tIdx++)
+                        {
+                            if (usedTextIndices.Contains(tIdx)) continue;
+                            var kv = textEntities[tIdx];
+                            Point3d pos = kv.Key;
+                            string value = kv.Value;
+                            Point2d[] bbox = GetTextBoundingBox(pos);
+                            Point2d center = new Point2d(pos.X, pos.Y);
+                            if (IsPointInPolygon(vertices, center, isClosed))
+                            {
+                                roomType = value;
+                                usedTextIndices.Add(tIdx);
+                                break;
+                            }
+                            if (bbox != null)
+                            {
+                                foreach (var pt in bbox)
+                                {
+                                    if (IsPointInPolygon(vertices, pt, isClosed))
+                                    {
+                                        roomType = value;
+                                        usedTextIndices.Add(tIdx);
+                                        break;
+                                    }
+                                }
+                                if (roomType != null) break;
+                            }
+                        }
+
+                        // Calculate area and perimeter
+                        double area = 0;
+                        double perimeter = 0;
+                        if (vertices.Count > 2)
+                        {
+                            for (int i = 0; i < vertices.Count; i++)
+                            {
+                                var p1 = vertices[i];
+                                var p2 = vertices[(i + 1) % vertices.Count];
+                                area += (p1.X * p2.Y - p2.X * p1.Y);
+                                perimeter += Math.Sqrt(Math.Pow(p2.X - p1.X, 2) + Math.Pow(p2.Y - p1.Y, 2));
+                                if (!isClosed && i == vertices.Count - 2)
+                                    break;
+                            }
+                            area = Math.Abs(area) / 2.0;
+                        }
+
+                        polygons.Add(new PolygonInfo
+                        {
+                            Vertices = vertices,
+                            IsClosed = isClosed,
+                            Layer = pl.Layer,
+                            Color = pl.Color.ToString(),
+                            RoomType = roomType,
+                            Area = area,
+                            Perimeter = perimeter
+                        });
+                    }
+                }
+                tr.Commit();
+            }
+            return polygons;
+        }
+
+        // Helper: Get bounding box corners for text (approximate)
+        private static Point2d[] GetTextBoundingBox(Point3d pos)
+        {
+            // This is a simple approximation: a small box around the position
+            // For more accuracy, you could use actual extents if available
+            double size = 2.0; // You may want to adjust this size
+            return new Point2d[] {
+                new Point2d(pos.X - size, pos.Y - size),
+                new Point2d(pos.X + size, pos.Y - size),
+                new Point2d(pos.X + size, pos.Y + size),
+                new Point2d(pos.X - size, pos.Y + size)
+            };
+        }
+
+        // Helper: Point-in-polygon test (ray casting)
+        private static bool IsPointInPolygon(List<Point2d> poly, Point2d pt, bool closed)
+        {
+            int n = poly.Count;
+            if (n < 3) return false;
+            bool inside = false;
+            for (int i = 0, j = n - 1; i < n; j = i++)
+            {
+                if (!closed && i == n - 1) break;
+                if (((poly[i].Y > pt.Y) != (poly[j].Y > pt.Y)) &&
+                    (pt.X < (poly[j].X - poly[i].X) * (pt.Y - poly[i].Y) / (poly[j].Y - poly[i].Y + 1e-10) + poly[i].X))
+                    inside = !inside;
+            }
+            return inside;
+        }
+
+        [CommandMethod("DrawPolygonInventory")]
+        public void DrawPolygonInventory()
+        {
+            Editor ed = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.Editor;
+            List<Point2d> vertices = new List<Point2d>();
+            bool isClosed = false;
+            PromptPointOptions ppo = new PromptPointOptions("Select first point: ");
+            PromptPointResult ppr = ed.GetPoint(ppo);
+            if (ppr.Status != PromptStatus.OK) return;
+            vertices.Add(new Point2d(ppr.Value.X, ppr.Value.Y));
+
+            while (true)
+            {
+                ppo.Message = "Select next point or type 'C' to close: ";
+                ppo.Keywords.Clear();
+                ppo.Keywords.Add("Close");
+                ppo.AppendKeywordsToMessage = true;
+                ppr = ed.GetPoint(ppo);
+                if (ppr.Status == PromptStatus.Keyword && ppr.StringResult == "Close")
+                {
+                    isClosed = true;
+                    break;
+                }
+                else if (ppr.Status == PromptStatus.OK)
+                {
+                    vertices.Add(new Point2d(ppr.Value.X, ppr.Value.Y));
+                }
+                else
+                {
+                    break;
+                }
+            }
+
+            // Store polygon info
+            PolygonInventory.Add(new PolygonInfo
+            {
+                Vertices = vertices,
+                IsClosed = isClosed,
+                Layer = "Default",
+                Color = "Default"
+            });
+
+            ed.WriteMessage($"Polygon drawn. Closed: {isClosed}\n");
+        }
+    }
+}

@@ -1,0 +1,120 @@
+﻿using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Runtime.Serialization;
+using System.Web.Script.Serialization;
+using Autodesk.AutoCAD.ApplicationServices;
+
+namespace autocad_final.Agent
+{
+    [DataContract]
+    public sealed class ProjectMemory
+    {
+        private static readonly JavaScriptSerializer Serializer = new JavaScriptSerializer();
+
+        [DataMember(Name = "drawing_name")]
+        public string DrawingName { get; set; }
+
+        [DataMember(Name = "hazard_class")]
+        public string HazardClass { get; set; } = "Light";
+
+        [DataMember(Name = "max_coverage_m2")]
+        public double MaxCoveragePerHeadM2 { get; set; } = 20.9;
+
+        [DataMember(Name = "default_spacing_m")]
+        public double DefaultSpacingM { get; set; } = 3.0;
+
+        [DataMember(Name = "max_spacing_m")]
+        public double MaxSpacingM { get; set; } = 4.6;
+
+        [DataMember(Name = "preferred_pipe_orientation")]
+        public string PreferredPipeOrientation { get; set; } = "auto";
+
+        [DataMember(Name = "last_opened")]
+        public string LastOpened { get; set; }
+
+        [DataMember(Name = "decisions")]
+        public List<DecisionSnapshot> Decisions { get; set; } = new List<DecisionSnapshot>();
+
+        [DataMember(Name = "corrections")]
+        public List<EngineerCorrection> Corrections { get; set; } = new List<EngineerCorrection>();
+
+        [DataMember(Name = "zones")]
+        public Dictionary<string, ZoneMemory> Zones { get; set; } = new Dictionary<string, ZoneMemory>(StringComparer.OrdinalIgnoreCase);
+
+        public static ProjectMemory LoadFor(Document doc)
+        {
+            var memory = new ProjectMemory
+            {
+                DrawingName = doc?.Name,
+                LastOpened = DateTime.UtcNow.ToString("o")
+            };
+
+            if (doc == null)
+                return memory;
+
+            var path = GetPath(doc);
+            if (!File.Exists(path))
+                return memory;
+
+            var json = File.ReadAllText(path);
+            var loaded = Serializer.Deserialize<ProjectMemory>(json);
+            if (loaded == null)
+                return memory;
+
+            loaded.LastOpened = DateTime.UtcNow.ToString("o");
+            if (loaded.Decisions == null) loaded.Decisions = new List<DecisionSnapshot>();
+            if (loaded.Corrections == null) loaded.Corrections = new List<EngineerCorrection>();
+            if (loaded.Zones == null) loaded.Zones = new Dictionary<string, ZoneMemory>(StringComparer.OrdinalIgnoreCase);
+            return loaded;
+        }
+
+        public void Save(Document doc)
+        {
+            if (doc == null)
+                return;
+
+            var path = GetPath(doc);
+            var directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(directory))
+                Directory.CreateDirectory(directory);
+
+            var json = Serializer.Serialize(this);
+            File.WriteAllText(path, json);
+        }
+
+        public void RecordDecision(DecisionSnapshot decision)
+        {
+            if (decision == null)
+                return;
+            Decisions.Add(decision);
+        }
+
+        public void RecordCorrection(EngineerCorrection correction)
+        {
+            if (correction == null)
+                return;
+            Corrections.Add(correction);
+        }
+
+        public ZoneMemory GetOrCreateZone(string zoneId)
+        {
+            if (string.IsNullOrEmpty(zoneId))
+                zoneId = string.Empty;
+
+            if (!Zones.TryGetValue(zoneId, out var zoneMemory) || zoneMemory == null)
+            {
+                zoneMemory = new ZoneMemory();
+                Zones[zoneId] = zoneMemory;
+            }
+
+            return zoneMemory;
+        }
+
+        private static string GetPath(Document doc)
+        {
+            var name = doc?.Name ?? "drawing";
+            return Path.ChangeExtension(name, ".sprk-memory.json");
+        }
+    }
+}

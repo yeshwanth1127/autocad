@@ -1,0 +1,330 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using Autodesk.AutoCAD.ApplicationServices;
+using Autodesk.AutoCAD.Colors;
+using Autodesk.AutoCAD.DatabaseServices;
+using Autodesk.AutoCAD.EditorInput;
+using Autodesk.AutoCAD.Geometry;
+using autocad_final.Geometry;
+using PolylineEntity = Autodesk.AutoCAD.DatabaseServices.Polyline;
+
+namespace autocad_final.AreaWorkflow
+{
+    /// <summary>
+    /// Shared helpers for sprinkler zoning: <see cref="DedupeShaftSites"/> runs before any engine, and
+    /// <see cref="AppendZoneOutlinePolylines"/> writes green dashed zone outlines from rings produced by
+    /// <see cref="GridNearestShaftZoning2d"/> or <see cref="EqualAreaAxisStripZonesInPolygon2d"/>. The type name is historical (no Voronoi math here).
+    /// </summary>
+    public static class ShaftVoronoiZonesOnFloorPolyline
+    {
+        /// <summary>
+        /// Collapses shaft insertion points that coincide within tolerance (duplicate inserts).
+        /// </summary>
+        public static List<Point2d> DedupeShaftSites(IList<Point3d> shafts, double tolerance)
+        {
+            var sites = new List<Point2d>();
+            foreach (var p in shafts)
+            {
+                var q = new Point2d(p.X, p.Y);
+                bool dup = false;
+                foreach (var e in sites)
+                {
+                    if (e.GetDistanceTo(q) <= tolerance)
+                    {
+                        dup = true;
+                        break;
+                    }
+                }
+                if (!dup)
+                    sites.Add(q);
+            }
+            return sites;
+        }
+
+        /// <summary>
+        /// Appends closed dashed polylines for each zone ring to model space, plus MText labels (Zone 1 …) on <see cref="SprinklerLayers.ZoneLabelLayer"/>.
+        /// By default outlines go on <see cref="SprinklerLayers.ZoneLayer"/>; set <paramref name="zoneOutlinesOnFloorBoundaryLayer"/> so outlines use <see cref="SprinklerLayers.WorkLayer"/> (floor boundary).
+        /// </summary>
+        /// <param name="boundary">Floor boundary used for elevation/plane and visible line width.</param>
+        /// <param name="zoneTable">Names and areas (one per ring); if null, names default to Zone 1…N and areas are computed from rings.</param>
+        /// <param name="zoneOutlinesOnFloorBoundaryLayer">When true, zone polylines are placed on the floor boundary work layer (ByLayer color).</param>
+        /// <param name="createdZonePolylineHandles">When non-null, each new zone outline polyline handle (hex) is appended in zone order.</param>
+        /// <param name="useMcdZoneBoundaryLayer">When true, zone outline polylines use <see cref="SprinklerLayers.McdZoneBoundaryLayer"/> (create if missing).</param>
+        public static void AppendZoneOutlinePolylines(
+            Document doc,
+            List<List<Point2d>> zoneRings,
+            Polyline boundary,
+            IList<ZoneTableEntry> zoneTable = null,
+            bool zoneOutlinesOnFloorBoundaryLayer = false,
+            List<string> createdZonePolylineHandles = null,
+            bool useMcdZoneBoundaryLayer = false)
+        {
+            if (zoneRings == null || zoneRings.Count == 0)
+                return;
+
+            var db = doc.Database;
+            var ed = doc.Editor;
+
+            using (doc.LockDocument())
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                ObjectId layerId = zoneOutlinesOnFloorBoundaryLayer
+                    ? SprinklerLayers.EnsureWorkLayer(tr, db)
+                    : SprinklerLayers.EnsureZoneLayer(tr, db);
+                ObjectId labelLayerId = SprinklerLayers.EnsureZoneLabelLayer(tr, db);
+                ObjectId ltId = SprinklerLayers.EnsureLinetypePresent(tr, db, "DASHED", ed);
+                if (ltId.IsNull)
+                    ltId = SprinklerLayers.EnsureLinetypePresent(tr, db, "HIDDEN", ed);
+                if (ltId.IsNull)
+                    ltId = SprinklerLayers.EnsureLinetypePresent(tr, db, "ACAD_ISO02W100", ed);
+                if (ltId.IsNull)
+                    ltId = SprinklerLayers.EnsureLinetypePresent(tr, db, "Continuous", ed);
+
+                double width = SprinklerLayers.ZoneOutlinePolylineWidth(db);
+                double textHeight = 2.5;
+                if (boundary != null)
+                {
+                    try
+                    {
+                        var ext = boundary.GeometricExtents;
+                        width = SprinklerLayers.ZoneOutlinePolylineWidth(db, ext);
+                        textHeight = SprinklerLayers.ZoneLabelTextHeight(db, ext);
+                    }
+                    catch
+                    {
+                        /* ignore */
+                    }
+                }
+
+                var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+
+                for (int zi = 0; zi < zoneRings.Count; zi++)
+                {
+                    var ring = zoneRings[zi];
+                    if (ring == null || ring.Count < 3)
+                        continue;
+
+                    var pl = new PolylineEntity();
+                    pl.SetDatabaseDefaults(db);
+                    pl.LayerId = layerId;
+                    pl.Color = zoneOutlinesOnFloorBoundaryLayer || useMcdZoneBoundaryLayer
+                        ? Color.FromColorIndex(ColorMethod.ByLayer, 256)
+                        : Color.FromColorIndex(ColorMethod.ByAci, SprinklerLayers.ZoneLayerAciGreen);
+                    pl.ConstantWidth = width;
+                    if (!ltId.IsNull)
+                        pl.LinetypeId = ltId;
+
+                    if (boundary != null)
+                    {
+                        pl.Elevation = boundary.Elevation;
+                        pl.Normal = boundary.Normal;
+                    }
+
+                    for (int k = 0; k < ring.Count; k++)
+                        pl.AddVertexAt(k, ring[k], 0, 0, 0);
+                    pl.Closed = true;
+
+                    ms.AppendEntity(pl);
+                    tr.AddNewlyCreatedDBObject(pl, true);
+                    try
+                    {
+                        SprinklerXData.EnsureRegApp(tr, db);
+                        SprinklerXData.ApplyZoneBoundaryTag(pl, pl.Handle.ToString());
+                    }
+                    catch
+                    {
+                        /* ignore */
+                    }
+
+                    createdZonePolylineHandles?.Add(pl.Handle.ToString());
+
+                    string name = zoneTable != null && zi < zoneTable.Count && !string.IsNullOrWhiteSpace(zoneTable[zi].Name)
+                        ? zoneTable[zi].Name
+                        : "Zone " + (zi + 1).ToString(CultureInfo.InvariantCulture);
+                    double aDu = zoneTable != null && zi < zoneTable.Count
+                        ? zoneTable[zi].AreaDrawingUnits
+                        : PolygonVerticalHalfPlaneClip2d.AbsArea(ring);
+                    double? aM2 = zoneTable != null && zi < zoneTable.Count
+                        ? zoneTable[zi].AreaM2
+                        : null;
+
+                    string line2 = aM2.HasValue
+                        ? aM2.Value.ToString("F2", CultureInfo.InvariantCulture) + " m²"
+                        : aDu.ToString("F2", CultureInfo.InvariantCulture) + " sq. units";
+
+                    Point2d c = PickInteriorLabelPoint(ring);
+                    var ins = new Point3d(c.X, c.Y, boundary != null ? boundary.Elevation : 0);
+                    var mt = new MText();
+                    mt.SetDatabaseDefaults(db);
+                    mt.LayerId = labelLayerId;
+                    mt.Color = Color.FromColorIndex(ColorMethod.ByAci, SprinklerLayers.ZoneLabelAciWhite);
+                    mt.TextHeight = textHeight;
+                    mt.Contents = name + "\\P" + line2;
+                    mt.Attachment = AttachmentPoint.MiddleCenter;
+                    mt.Location = ins;
+                    if (boundary != null)
+                        mt.Normal = boundary.Normal;
+                    mt.Width = 0;
+
+                    ms.AppendEntity(mt);
+                    tr.AddNewlyCreatedDBObject(mt, true);
+                }
+
+                tr.Commit();
+            }
+
+            try
+            {
+                ed.Regen();
+            }
+            catch
+            {
+                /* ignore */
+            }
+        }
+
+        private static Point2d PickInteriorLabelPoint(List<Point2d> ring)
+        {
+            if (ring == null || ring.Count < 3)
+                return new Point2d(0, 0);
+
+            GetExtents(ring, out double minX, out double minY, out double maxX, out double maxY);
+            double dx = maxX - minX, dy = maxY - minY;
+            double extent = Math.Max(Math.Abs(dx), Math.Abs(dy));
+            double eps = 1e-9 * Math.Max(extent, 1.0);
+
+            // 1) True polygon centroid (area-weighted). Can still fall outside for concave rings.
+            if (TryPolygonAreaCentroid(ring, eps, out var areaCentroid) && PointInPolygon(ring, areaCentroid))
+                return areaCentroid;
+
+            // 2) BBox center.
+            var bboxCenter = new Point2d(0.5 * (minX + maxX), 0.5 * (minY + maxY));
+            if (PointInPolygon(ring, bboxCenter))
+                return bboxCenter;
+
+            // 3) Polylabel-lite search: maximize distance to edges among interior grid samples.
+            // Coarse-to-fine refinement around best point.
+            Point2d best = ring[0];
+            double bestScore = -1;
+
+            double step = Math.Max(extent / 10.0, 1.0);
+            int refinements = 3;
+            for (int pass = 0; pass < refinements; pass++)
+            {
+                double startX = pass == 0 ? minX : Math.Max(minX, best.X - 2.0 * step);
+                double endX   = pass == 0 ? maxX : Math.Min(maxX, best.X + 2.0 * step);
+                double startY = pass == 0 ? minY : Math.Max(minY, best.Y - 2.0 * step);
+                double endY   = pass == 0 ? maxY : Math.Min(maxY, best.Y + 2.0 * step);
+
+                for (double x = startX; x <= endX; x += step)
+                {
+                    for (double y = startY; y <= endY; y += step)
+                    {
+                        var p = new Point2d(x, y);
+                        if (!PointInPolygon(ring, p)) continue;
+
+                        double d = MinDistanceToEdges(ring, p);
+                        if (d > bestScore)
+                        {
+                            bestScore = d;
+                            best = p;
+                        }
+                    }
+                }
+
+                step = Math.Max(step * 0.5, 0.25);
+            }
+
+            // If we found any interior sample, use it; otherwise fall back to first vertex.
+            return bestScore > 0 ? best : ring[0];
+        }
+
+        private static void GetExtents(List<Point2d> ring, out double minX, out double minY, out double maxX, out double maxY)
+        {
+            minX = double.MaxValue; minY = double.MaxValue;
+            maxX = double.MinValue; maxY = double.MinValue;
+            for (int i = 0; i < ring.Count; i++)
+            {
+                var p = ring[i];
+                if (p.X < minX) minX = p.X;
+                if (p.Y < minY) minY = p.Y;
+                if (p.X > maxX) maxX = p.X;
+                if (p.Y > maxY) maxY = p.Y;
+            }
+            if (minX == double.MaxValue) { minX = minY = maxX = maxY = 0; }
+        }
+
+        // Ray casting point-in-polygon (non-self-intersecting ring).
+        private static bool PointInPolygon(List<Point2d> poly, Point2d p)
+        {
+            bool c = false;
+            int n = poly.Count;
+            for (int i = 0, j = n - 1; i < n; j = i++)
+            {
+                var a = poly[i];
+                var b = poly[j];
+                bool cond = ((a.Y > p.Y) != (b.Y > p.Y));
+                if (!cond) continue;
+                double xInt = (b.X - a.X) * (p.Y - a.Y) / ((b.Y - a.Y) == 0 ? 1e-12 : (b.Y - a.Y)) + a.X;
+                if (p.X < xInt)
+                    c = !c;
+            }
+            return c;
+        }
+
+        private static bool TryPolygonAreaCentroid(List<Point2d> ring, double eps, out Point2d centroid)
+        {
+            centroid = new Point2d(0, 0);
+            double a = 0;
+            double cx = 0, cy = 0;
+            int n = ring.Count;
+            for (int i = 0, j = n - 1; i < n; j = i++)
+            {
+                double x0 = ring[j].X, y0 = ring[j].Y;
+                double x1 = ring[i].X, y1 = ring[i].Y;
+                double cross = x0 * y1 - x1 * y0;
+                a += cross;
+                cx += (x0 + x1) * cross;
+                cy += (y0 + y1) * cross;
+            }
+            if (Math.Abs(a) <= eps) return false;
+            double inv = 1.0 / (3.0 * a);
+            centroid = new Point2d(cx * inv, cy * inv);
+            return true;
+        }
+
+        private static double MinDistanceToEdges(List<Point2d> ring, Point2d p)
+        {
+            double best = double.MaxValue;
+            int n = ring.Count;
+            for (int i = 0, j = n - 1; i < n; j = i++)
+            {
+                double d = DistancePointToSegment(p, ring[j], ring[i]);
+                if (d < best) best = d;
+            }
+            return best == double.MaxValue ? 0 : best;
+        }
+
+        private static double DistancePointToSegment(Point2d p, Point2d a, Point2d b)
+        {
+            double vx = b.X - a.X, vy = b.Y - a.Y;
+            double wx = p.X - a.X, wy = p.Y - a.Y;
+            double c1 = vx * wx + vy * wy;
+            if (c1 <= 0) return Math.Sqrt(wx * wx + wy * wy);
+            double c2 = vx * vx + vy * vy;
+            if (c2 <= 0) return Math.Sqrt(wx * wx + wy * wy);
+            double t = c1 / c2;
+            if (t >= 1)
+            {
+                double dx = p.X - b.X, dy = p.Y - b.Y;
+                return Math.Sqrt(dx * dx + dy * dy);
+            }
+            double projX = a.X + t * vx;
+            double projY = a.Y + t * vy;
+            double px = p.X - projX, py = p.Y - projY;
+            return Math.Sqrt(px * px + py * py);
+        }
+    }
+}

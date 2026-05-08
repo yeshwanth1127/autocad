@@ -1,0 +1,398 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Windows;
+using System.Windows.Controls;
+using System.Linq;
+using System.Text.Json;
+using Newtonsoft.Json;
+using Autodesk.AutoCAD.Geometry;
+
+namespace autocad_final
+{
+    public partial class PolygonInventoryWindow : Window
+    {
+
+        public PolygonInventoryWindow()
+        {
+            InitializeComponent();
+            btnDrawPolygon.Click += BtnDrawPolygon_Click;
+            btnScanPolygons.Click += BtnScanPolygons_Click;
+            btnShowInventory.Click += BtnShowInventory_Click;
+            btnWindowSelect.Click += BtnWindowSelect_Click;
+            btnExportGeoJson.Click += BtnExportGeoJson_Click;
+            btnSaveInventory.Click += BtnSaveInventory_Click;
+            btnLoadInventory.Click += BtnLoadInventory_Click;
+            btnClearInventory.Click += BtnClearInventory_Click;
+            btnClearHatch.Click += BtnClearHatch_Click;
+                    // Remove all Hatch entities from ModelSpace
+                    private void BtnClearHatch_Click(object sender, RoutedEventArgs e)
+                    {
+                        try
+                        {
+                            var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+                            var db = doc.Database;
+                            using (var tr = db.TransactionManager.StartTransaction())
+                            {
+                                BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, Autodesk.AutoCAD.DatabaseServices.OpenMode.ForRead);
+                                BlockTableRecord btr = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], Autodesk.AutoCAD.DatabaseServices.OpenMode.ForWrite);
+                                var toRemove = new List<Autodesk.AutoCAD.DatabaseServices.ObjectId>();
+                                foreach (Autodesk.AutoCAD.DatabaseServices.ObjectId objId in btr)
+                                {
+                                    var ent = tr.GetObject(objId, Autodesk.AutoCAD.DatabaseServices.OpenMode.ForRead) as Autodesk.AutoCAD.DatabaseServices.Entity;
+                                    if (ent is Autodesk.AutoCAD.DatabaseServices.Hatch)
+                                    {
+                                        toRemove.Add(objId);
+                                    }
+                                }
+                                foreach (var id in toRemove)
+                                {
+                                    var ent = tr.GetObject(id, Autodesk.AutoCAD.DatabaseServices.OpenMode.ForWrite);
+                                    ent.Erase();
+                                }
+                                tr.Commit();
+                            }
+                            System.Windows.MessageBox.Show("All hatches have been removed.", "Hatch Cleared", MessageBoxButton.OK, MessageBoxImage.Information);
+                        }
+                        catch (Exception ex)
+                        {
+                            System.Windows.MessageBox.Show($"Failed to clear hatches: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                        }
+                    }
+            inventoryGrid.PreviewTextInput += OnPreviewTextInputDecimal;
+            inventoryGrid.CellEditEnding += InventoryGrid_CellEditEnding;
+            LoadInventoryFromPersistentFile();
+        }
+
+        private void BtnClearInventory_Click(object sender, RoutedEventArgs e)
+        {
+            Class1.PolygonInventory.Clear();
+            inventoryGrid.ItemsSource = null;
+            inventoryGrid.Visibility = Visibility.Collapsed;
+        }
+
+        // Move GetDecimalPlaces inside the class
+        private static int GetDecimalPlaces()
+        {
+            string configPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Properties.config");
+            if (System.IO.File.Exists(configPath))
+            {
+                var lines = System.IO.File.ReadAllLines(configPath);
+                foreach (var line in lines)
+                {
+                    if (line.StartsWith("DecimalPlaces="))
+                    {
+                        var val = line.Substring("DecimalPlaces=".Length);
+                        if (int.TryParse(val, out int places))
+                            return places;
+                    }
+                }
+            }
+            return 2; // Default
+        }
+
+        // Save inventory to user-chosen file
+        private void BtnSaveInventory_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new Microsoft.Win32.SaveFileDialog();
+            dlg.Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*";
+            dlg.Title = "Save Polygon Inventory";
+            dlg.FileName = "PolygonInventory.json";
+            if (dlg.ShowDialog() == true)
+            {
+                try
+                {
+                    // Sync DataGrid edits to PolygonInventory before saving
+                    SyncInventoryFromGrid();
+                    var json = Newtonsoft.Json.JsonConvert.SerializeObject(Class1.PolygonInventory, Newtonsoft.Json.Formatting.Indented);
+                    System.IO.File.WriteAllText(dlg.FileName, json);
+                    MessageBox.Show($"Inventory saved to {dlg.FileName}", "Save Complete", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Failed to save inventory: {ex.Message}", "Save Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+        }
+
+        // Load inventory from user-chosen file
+        private void BtnLoadInventory_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new Microsoft.Win32.OpenFileDialog();
+            dlg.Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*";
+            dlg.Title = "Load Polygon Inventory";
+            if (dlg.ShowDialog() == true)
+            {
+                try
+                {
+                    var json = System.IO.File.ReadAllText(dlg.FileName);
+                    var loaded = Newtonsoft.Json.JsonConvert.DeserializeObject<List<PolygonInfo>>(json);
+                    if (loaded != null)
+                    {
+                        Class1.PolygonInventory.Clear();
+                        Class1.PolygonInventory.AddRange(loaded);
+                        PopulateInventoryGrid(Class1.PolygonInventory);
+                        MessageBox.Show($"Inventory loaded from {dlg.FileName}", "Load Complete", MessageBoxButton.OK, MessageBoxImage.Information);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Failed to load inventory: {ex.Message}", "Load Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+        }
+
+        // Save inventory automatically when height or any cell is edited
+        private void InventoryGrid_CellEditEnding(object sender, DataGridCellEditEndingEventArgs e)
+        {
+            // Validate Height column for decimal input (must have fractional part)
+            if (e.Column.Header.ToString() == "Height")
+            {
+                var textBox = e.EditingElement as TextBox;
+                if (textBox != null)
+                {
+                    // Enforce 6,2 format: up to 6 digits, 2 after decimal
+                    string input = textBox.Text.Trim();
+                    if (!System.Text.RegularExpressions.Regex.IsMatch(input, @"^\d{1,4}(\.\d{1,2})?$|^\d{5,6}$"))
+                    {
+                        MessageBox.Show("Height must be a number with up to 6 digits, including up to 2 decimal places (e.g., 123456, 1234.56).", "Input Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                        e.Cancel = true;
+                        return;
+                    }
+                    double val;
+                    if (!double.TryParse(input, out val))
+                    {
+                        MessageBox.Show("Only decimal numbers are allowed in the Height column.", "Input Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                        e.Cancel = true;
+                        return;
+                    }
+                    // Prevent negative or zero heights
+                    if (val <= 0)
+                    {
+                        MessageBox.Show("Height must be greater than zero.", "Input Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                        e.Cancel = true;
+                        return;
+                    }
+                }
+            }
+            SyncInventoryFromGrid();
+            SaveInventoryToPersistentFile();
+        }
+
+        // Save inventory to a persistent file (no dialog)
+        private void SaveInventoryToPersistentFile()
+        {
+            try
+            {
+                var json = Newtonsoft.Json.JsonConvert.SerializeObject(Class1.PolygonInventory, Newtonsoft.Json.Formatting.Indented);
+                var path = GetPersistentInventoryPath();
+                System.IO.File.WriteAllText(path, json);
+            }
+            catch { /* ignore errors for silent save */ }
+        }
+
+        // Get persistent inventory file path
+        private string GetPersistentInventoryPath()
+        {
+            var folder = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            var appFolder = System.IO.Path.Combine(folder, "AutoCADPolygonInventory");
+            if (!System.IO.Directory.Exists(appFolder))
+                System.IO.Directory.CreateDirectory(appFolder);
+            return System.IO.Path.Combine(appFolder, "PolygonInventory.json");
+        }
+
+        // Load inventory from persistent file (no dialog)
+        private void LoadInventoryFromPersistentFile()
+        {
+            var path = GetPersistentInventoryPath();
+            if (System.IO.File.Exists(path))
+            {
+                try
+                {
+                    var json = System.IO.File.ReadAllText(path);
+                    var loaded = Newtonsoft.Json.JsonConvert.DeserializeObject<List<PolygonInfo>>(json);
+                    if (loaded != null)
+                    {
+                        Class1.PolygonInventory.Clear();
+                        Class1.PolygonInventory.AddRange(loaded);
+                        PopulateInventoryGrid(Class1.PolygonInventory);
+                    }
+                }
+                catch { /* ignore errors for silent load */ }
+            }
+        }
+
+        // Sync DataGrid edits to PolygonInventory
+        private void SyncInventoryFromGrid()
+        {
+            var items = inventoryGrid.ItemsSource as List<InventoryRow>;
+            if (items != null)
+            {
+                foreach (var row in items)
+                {
+                    // Find polygon by index (since index is unique per session)
+                    var poly = Class1.PolygonInventory.ElementAtOrDefault(row.Index - 1);
+                    if (poly != null)
+                    {
+                        poly.Height = row.Height;
+                        poly.RoomType = row.RoomType;
+                        poly.Layer = row.Layer;
+                        poly.Color = row.Color;
+                    }
+                }
+            }
+        }
+
+        // Only allow decimal input for Height column
+        private void OnPreviewTextInputDecimal(object sender, System.Windows.Input.TextCompositionEventArgs e)
+        {
+            // Allow only digits and one decimal point
+            if (!char.IsDigit(e.Text, 0) && e.Text != ".")
+                e.Handled = true;
+            else
+            {
+                var tb = sender as TextBox;
+                if (tb != null && e.Text == "." && tb.Text.Contains("."))
+                    e.Handled = true;
+            }
+        }
+
+        private void BtnExportGeoJson_Click(object sender, RoutedEventArgs e)
+        {
+            SyncInventoryFromGrid();
+            SaveInventoryToPersistentFile();
+            var dlg = new Microsoft.Win32.SaveFileDialog();
+            dlg.Filter = "GeoJSON files (*.geojson)|*.geojson|All files (*.*)|*.*";
+            dlg.Title = "Export Polygon Inventory as GeoJSON";
+            dlg.FileName = "PolygonInventory.geojson";
+            if (dlg.ShowDialog() == true)
+            {
+                ExportInventoryToGeoJson(dlg.FileName);
+            }
+        }
+
+        private void ExportInventoryToGeoJson(string filePath)
+        {
+            try
+            {
+                var features = new List<object>();
+                foreach (var poly in Class1.PolygonInventory)
+                {
+                    var coords = poly.Vertices.Select(v => new[] { v.X, v.Y }).ToArray();
+                    object geometry;
+                    if (poly.IsClosed)
+                    {
+                        geometry = new
+                        {
+                            type = "Polygon",
+                            coordinates = new[] { coords }
+                        };
+                    }
+                    else
+                    {
+                        geometry = new
+                        {
+                            type = "LineString",
+                            coordinates = coords
+                        };
+                    }
+                    var feature = new
+                    {
+                        type = "Feature",
+                        properties = new
+                        {
+                            RoomType = poly.RoomType,
+                            Layer = poly.Layer,
+                            Color = poly.Color,
+                            Area = poly.Area,
+                            Perimeter = poly.Perimeter,
+                            Height = poly.Height
+                        },
+                        geometry = geometry
+                    };
+                    features.Add(feature);
+                }
+                var geojson = new
+                {
+                    type = "FeatureCollection",
+                    features = features
+                };
+                var json = JsonConvert.SerializeObject(geojson, Formatting.Indented);
+                System.IO.File.WriteAllText(filePath, json);
+                MessageBox.Show($"Exported inventory to {filePath}", "Export Complete", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to export GeoJSON: {ex.Message}\n{ex.StackTrace}", "Export Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        public PolygonInventoryWindow(List<PolygonInfo> polygons)
+            : this()
+        {
+            PopulateInventoryGrid(polygons);
+        }
+
+        private void BtnWindowSelect_Click(object sender, RoutedEventArgs e)
+        {
+            Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.SendStringToExecute("WindowSelectPolygons ", true, false, false);
+        }
+
+        private void BtnDrawPolygon_Click(object sender, RoutedEventArgs e)
+        {
+            Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.SendStringToExecute("DrawPolygonInventory ", true, false, false);
+        }
+
+        private void BtnScanPolygons_Click(object sender, RoutedEventArgs e)
+        {
+            Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.SendStringToExecute("ScanExistingPolygons ", true, false, false);
+        }
+
+        private void BtnShowInventory_Click(object sender, RoutedEventArgs e)
+        {
+            PopulateInventoryGrid(Class1.PolygonInventory);
+        }
+
+        private void PopulateInventoryGrid(List<PolygonInfo> polygons)
+        {
+            if (polygons == null)
+            {
+                inventoryGrid.ItemsSource = null;
+                inventoryGrid.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            var items = new List<InventoryRow>();
+            int idx = 1;
+            int decimalPlaces = GetDecimalPlaces();
+            string format = "F" + decimalPlaces;
+            foreach (var poly in polygons)
+            {
+                if (!poly.IsClosed)
+                    continue; // Exclude open polygons
+                items.Add(new InventoryRow
+                {
+                    Index = idx++,
+                    RoomType = string.IsNullOrWhiteSpace(poly.RoomType) ? string.Empty : poly.RoomType,
+                    Layer = poly.Layer,
+                    Color = poly.Color,
+                    Area = double.Parse(poly.Area.ToString(format)),
+                    Perimeter = double.Parse(poly.Perimeter.ToString(format)),
+                    Height = poly.Height
+                });
+            }
+            inventoryGrid.ItemsSource = items;
+            inventoryGrid.Visibility = Visibility.Visible;
+        }
+
+        public class InventoryRow
+        {
+            public int Index { get; set; }
+            public string RoomType { get; set; }
+            public string Layer { get; set; }
+            public string Color { get; set; }
+            public double Area { get; set; }
+            public double Perimeter { get; set; }
+            public double Height { get; set; }
+        }
+    }
+}

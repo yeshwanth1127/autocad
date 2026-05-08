@@ -1,0 +1,610 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Runtime.Serialization.Json;
+using System.Text;
+using Autodesk.AutoCAD.ApplicationServices;
+using Autodesk.AutoCAD.DatabaseServices;
+using Autodesk.AutoCAD.Geometry;
+using autocad_final.AreaWorkflow;
+using autocad_final.Geometry;
+
+namespace autocad_final.Agent
+{
+    public static class AgentReadTools
+    {
+        public static string ListZones(Document doc, ProjectMemory memory)
+        {
+            var snapshot = BuildSnapshot(doc, memory);
+            return ToJson(new DrawingSnapshot
+            {
+                DrawingName = snapshot.DrawingName,
+                Zones = snapshot.Zones
+            });
+        }
+
+        public static string GetZoneGeometry(Document doc, string boundaryHandleHex)
+        {
+            var zone = FindZone(BuildSnapshot(doc, ProjectMemory.LoadFor(doc)), boundaryHandleHex);
+            if (zone == null)
+                return ToJson(new ErrorSnapshot { Status = "error", Message = "Zone boundary not found." });
+
+            return ToJson(new ZoneGeometrySnapshot
+            {
+                BoundaryHandle = zone.BoundaryHandle,
+                Layer = zone.Layer,
+                AreaDrawingUnits = zone.AreaDrawingUnits,
+                AreaM2 = zone.AreaM2,
+                PerimeterDrawingUnits = zone.PerimeterDrawingUnits,
+                VertexCount = zone.VertexCount,
+                CentroidX = zone.CentroidX,
+                CentroidY = zone.CentroidY
+            });
+        }
+
+        public static string GetShaftLocation(Document doc)
+        {
+            var snapshot = BuildSnapshot(doc, ProjectMemory.LoadFor(doc));
+            return ToJson(new DrawingSnapshot
+            {
+                DrawingName = snapshot.DrawingName,
+                Shafts = snapshot.Shafts
+            });
+        }
+
+        public static string ValidateCoverage(Document doc, string boundaryHandleHex)
+        {
+            var zone = FindZone(BuildSnapshot(doc, ProjectMemory.LoadFor(doc)), boundaryHandleHex);
+            if (zone == null)
+                return ToJson(new ErrorSnapshot { Status = "error", Message = "Zone boundary not found." });
+
+            return ToJson(new CoverageSnapshot
+            {
+                BoundaryHandle = zone.BoundaryHandle,
+                CoverageOk = zone.CoverageGaps <= 0,
+                ExpectedCount = zone.ExpectedHeadCount,
+                ActualCount = zone.HeadCount,
+                GapCount = zone.CoverageGaps,
+                Summary = zone.Summary
+            });
+        }
+
+        public static string GetXDataTags(Document doc, string boundaryHandleHex)
+        {
+            if (string.IsNullOrEmpty(boundaryHandleHex))
+                return ToJson(new ErrorSnapshot { Status = "error", Message = "Zone boundary not found." });
+
+            var tags = CollectZoneTags(doc, boundaryHandleHex);
+            return ToJson(new ZoneTagListSnapshot
+            {
+                BoundaryHandle = boundaryHandleHex,
+                Tags = tags
+            });
+        }
+
+        public static string GetPipeSummary(Document doc, string boundaryHandleHex)
+        {
+            var snapshot = BuildSnapshot(doc, ProjectMemory.LoadFor(doc));
+            if (!string.IsNullOrEmpty(boundaryHandleHex))
+            {
+                var zone = snapshot.Zones.FirstOrDefault(z => string.Equals(z.BoundaryHandle, boundaryHandleHex, StringComparison.OrdinalIgnoreCase));
+                if (zone != null)
+                {
+                    return ToJson(new PipeSummarySnapshot
+                    {
+                        BoundaryHandle = boundaryHandleHex,
+                        MainPipeCount = zone.MainPipeCount,
+                        BranchCount = zone.BranchCount,
+                        TrunkTaggedCount = zone.TrunkTaggedCount,
+                        TotalPipeEntities = zone.TotalPipeEntities,
+                        Zones = new List<ZoneSnapshot> { zone }
+                    });
+                }
+            }
+
+            return ToJson(new PipeSummarySnapshot
+            {
+                BoundaryHandle = boundaryHandleHex,
+                MainPipeCount = snapshot.Zones.Sum(z => z.MainPipeCount),
+                BranchCount = snapshot.Zones.Sum(z => z.BranchCount),
+                TrunkTaggedCount = snapshot.Zones.Sum(z => z.TrunkTaggedCount),
+                TotalPipeEntities = snapshot.Zones.Sum(z => z.TotalPipeEntities),
+                Zones = snapshot.Zones
+            });
+        }
+
+        public static DrawingSnapshot BuildSnapshot(Document doc, ProjectMemory memory)
+        {
+            var snapshot = ScanDrawing(doc, memory);
+            return snapshot;
+        }
+
+        internal static DrawingSnapshot ScanDrawing(Document doc, ProjectMemory memory)
+        {
+            var snapshot = new DrawingSnapshot
+            {
+                DrawingName = doc?.Name,
+                Zones = new List<ZoneSnapshot>(),
+                Shafts = new List<ShaftSnapshot>(),
+                Nfpa = new NfpaSnapshot
+                {
+                    HazardClass = memory != null ? memory.HazardClass : "Light",
+                    MaxCoverageM2 = memory != null ? memory.MaxCoveragePerHeadM2 : 20.9,
+                    DefaultSpacingM = memory != null ? memory.DefaultSpacingM : 3.0,
+                    MaxSpacingM = memory != null ? memory.MaxSpacingM : 4.6,
+                    PreferredPipeOrientation = memory != null ? memory.PreferredPipeOrientation : "auto"
+                },
+                RecentDecisions = BuildRecentDecisions(memory),
+                PendingIssues = new List<string>()
+            };
+
+            if (doc == null)
+            {
+                snapshot.PendingIssues.Add("No active drawing.");
+                return snapshot;
+            }
+
+            var db = doc.Database;
+            var zonesByBoundary = new Dictionary<string, ZoneWorkingSet>(StringComparer.OrdinalIgnoreCase);
+            var shaftPoints = new List<Point3d>();
+
+            using (var tr = db.TransactionManager.StartOpenCloseTransaction())
+            {
+                var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+
+                foreach (ObjectId id in ms)
+                {
+                    if (!(tr.GetObject(id, OpenMode.ForRead, false) is Entity ent))
+                        continue;
+
+                    if (string.Equals(ent.Layer, "shaft", StringComparison.OrdinalIgnoreCase) && ent is BlockReference shaftBr)
+                        shaftPoints.Add(shaftBr.Position);
+
+                    if (!SprinklerXData.TryGetZoneBoundaryHandle(ent, out var boundaryHandleHex) || string.IsNullOrEmpty(boundaryHandleHex))
+                        continue;
+
+                    if (!zonesByBoundary.TryGetValue(boundaryHandleHex, out var zone))
+                    {
+                        zone = new ZoneWorkingSet(boundaryHandleHex);
+                        zonesByBoundary[boundaryHandleHex] = zone;
+                    }
+
+                    zone.TaggedEntities.Add(id);
+                    zone.TaggedEntityTypes.Add(ent.GetType().Name);
+                    zone.TaggedLayers.Add(ent.Layer ?? string.Empty);
+                    zone.CountIfSprinklerOrPipe(ent);
+                }
+
+                tr.Commit();
+            }
+
+            foreach (var zone in zonesByBoundary.Values)
+            {
+                var zoneSnapshot = BuildZoneSnapshot(doc, memory, zone, shaftPoints, snapshot.PendingIssues);
+                if (zoneSnapshot != null)
+                    snapshot.Zones.Add(zoneSnapshot);
+            }
+
+            snapshot.Shafts = BuildShaftSnapshots(snapshot.Zones, shaftPoints);
+            if (snapshot.Zones.Count == 0)
+                snapshot.PendingIssues.Add("No zone-tagged entities were found.");
+
+            return snapshot;
+        }
+
+        private static ZoneSnapshot BuildZoneSnapshot(
+            Document doc,
+            ProjectMemory memory,
+            ZoneWorkingSet zone,
+            List<Point3d> shaftPoints,
+            List<string> pendingIssues)
+        {
+            var db = doc.Database;
+            var boundaryObjectId = ResolveObjectIdFromHandle(db, zone.BoundaryHandle);
+            if (boundaryObjectId.IsNull)
+            {
+                pendingIssues.Add("Could not resolve boundary handle " + zone.BoundaryHandle + ".");
+                return new ZoneSnapshot
+                {
+                    Id = zone.BoundaryHandle,
+                    BoundaryHandle = zone.BoundaryHandle,
+                    Status = "unknown",
+                    HeadCount = zone.HeadCount,
+                    CoverageGaps = 0,
+                    VertexCount = 0,
+                    CentroidX = 0,
+                    CentroidY = 0,
+                    HasManualEdits = IsManualEdit(memory, zone.BoundaryHandle),
+                    Summary = "Boundary entity could not be resolved."
+                };
+            }
+
+            using (var tr = db.TransactionManager.StartOpenCloseTransaction())
+            {
+                var boundaryEntity = tr.GetObject(boundaryObjectId, OpenMode.ForRead, false) as Entity;
+                var boundaryPolyline = boundaryEntity as Polyline;
+                if (boundaryPolyline == null)
+                {
+                    pendingIssues.Add("Boundary " + zone.BoundaryHandle + " is not a polyline.");
+                    return null;
+                }
+
+                var ring = PolylineClosedBoundaryRingSampler2d.GetRingForPlanarClipping(boundaryPolyline);
+                double areaDu = 0;
+                double perimeterDu = 0;
+                try { areaDu = boundaryPolyline.Area; } catch { areaDu = 0; }
+                try { perimeterDu = boundaryPolyline.Length; } catch { perimeterDu = 0; }
+
+                double? areaM2 = DrawingUnitsHelper.TryGetAreaSquareMeters(db, areaDu, out _);
+                var headPoints = CollectHeadPoints(doc, zone.BoundaryHandle, tr);
+                var coverage = ComputeCoverage(db, ring, headPoints);
+                string nearestShaftId = FindNearestShaftId(ring, shaftPoints);
+                string status = DetermineStatus(zone);
+                var centroid = ComputeCentroid(ring);
+
+                return new ZoneSnapshot
+                {
+                    Id = zone.BoundaryHandle,
+                    BoundaryHandle = zone.BoundaryHandle,
+                    Layer = boundaryPolyline.Layer,
+                    AreaDrawingUnits = areaDu,
+                    AreaM2 = areaM2,
+                    PerimeterDrawingUnits = perimeterDu,
+                    VertexCount = ring.Count,
+                    CentroidX = centroid.X,
+                    CentroidY = centroid.Y,
+                    Status = status,
+                    HeadCount = zone.HeadCount,
+                    ExpectedHeadCount = coverage.ExpectedCount,
+                    CoverageGaps = coverage.GapCount,
+                    NearestShaftId = nearestShaftId,
+                    HasManualEdits = IsManualEdit(memory, zone.BoundaryHandle),
+                    MainPipeCount = zone.MainPipeCount,
+                    BranchCount = zone.BranchCount,
+                    TrunkTaggedCount = zone.TrunkTaggedCount,
+                    TotalPipeEntities = zone.TotalPipeEntities,
+                    Summary = coverage.Summary,
+                    Tags = CollectZoneTags(doc, zone.BoundaryHandle)
+                };
+            }
+        }
+
+        private static List<ShaftSnapshot> BuildShaftSnapshots(List<ZoneSnapshot> zones, List<Point3d> shaftPoints)
+        {
+            var result = new List<ShaftSnapshot>();
+            for (int i = 0; i < shaftPoints.Count; i++)
+            {
+                var p = shaftPoints[i];
+                var connected = new List<string>();
+                for (int z = 0; z < zones.Count; z++)
+                {
+                    if (string.Equals(zones[z].NearestShaftId, "shaft_" + (i + 1).ToString(CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase))
+                        connected.Add(zones[z].BoundaryHandle);
+                }
+
+                result.Add(new ShaftSnapshot
+                {
+                    Id = "shaft_" + (i + 1).ToString(CultureInfo.InvariantCulture),
+                    X = p.X,
+                    Y = p.Y,
+                    ConnectedZoneIds = connected
+                });
+            }
+
+            return result;
+        }
+
+        private static List<DecisionSnapshot> BuildRecentDecisions(ProjectMemory memory)
+        {
+            var list = new List<DecisionSnapshot>();
+            if (memory == null || memory.Decisions == null || memory.Decisions.Count == 0)
+                return list;
+
+            int start = Math.Max(0, memory.Decisions.Count - 8);
+            for (int i = start; i < memory.Decisions.Count; i++)
+            {
+                var d = memory.Decisions[i];
+                list.Add(new DecisionSnapshot
+                {
+                    ZoneId = d.ZoneId,
+                    Action = d.Action,
+                    Parameters = d.Parameters,
+                    Outcome = d.Outcome,
+                    Timestamp = d.Timestamp,
+                    EngineerNote = d.EngineerNote
+                });
+            }
+
+            return list;
+        }
+
+        private static bool IsManualEdit(ProjectMemory memory, string zoneId)
+        {
+            if (memory == null || string.IsNullOrEmpty(zoneId) || memory.Zones == null)
+                return false;
+
+            return memory.Zones.TryGetValue(zoneId, out var zoneMemory) && zoneMemory != null && zoneMemory.HasManualEdits;
+        }
+
+        private static List<ZoneTagSnapshot> CollectZoneTags(Document doc, string boundaryHandleHex)
+        {
+            var tags = new List<ZoneTagSnapshot>();
+            if (doc == null || string.IsNullOrEmpty(boundaryHandleHex))
+                return tags;
+
+            var db = doc.Database;
+            using (var tr = db.TransactionManager.StartOpenCloseTransaction())
+            {
+                var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+                foreach (ObjectId id in ms)
+                {
+                    if (!(tr.GetObject(id, OpenMode.ForRead, false) is Entity ent))
+                        continue;
+                    if (!SprinklerXData.TryGetZoneBoundaryHandle(ent, out var handle) || !string.Equals(handle, boundaryHandleHex, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    tags.Add(new ZoneTagSnapshot
+                    {
+                        EntityHandle = ent.Handle.ToString(),
+                        EntityType = ent.GetType().Name,
+                        Layer = ent.Layer,
+                        Role = DescribeRole(ent)
+                    });
+                }
+
+                tr.Commit();
+            }
+
+            return tags;
+        }
+
+        private static CoverageSnapshot ComputeCoverage(Database db, List<Point2d> ring, List<Point3d> headPoints)
+        {
+            var result = new CoverageSnapshot
+            {
+                CoverageOk = false,
+                ExpectedCount = 0,
+                ActualCount = headPoints == null ? 0 : headPoints.Count,
+                GapCount = 0,
+                Summary = string.Empty
+            };
+
+            if (ring == null || ring.Count < 3)
+            {
+                result.Summary = "Invalid zone boundary.";
+                return result;
+            }
+
+            if (!SprinklerGridPlacement2d.TryPlaceForZoneRing(
+                    ring,
+                    db,
+                    spacingMeters: 3.0,
+                    coverageRadiusMeters: 1.5,
+                    maxBoundarySprinklerGapMeters: 1.5,
+                    out var placement,
+                    out var placementErr))
+            {
+                result.Summary = placementErr ?? "Could not validate coverage.";
+                return result;
+            }
+
+            result.ExpectedCount = placement.Sprinklers.Count;
+
+            double matchTol = 0.25;
+            if (DrawingUnitsHelper.TryMetersToDrawingLength(db.Insunits, 0.25, out double matchTolDu) && matchTolDu > 0)
+                matchTol = matchTolDu;
+
+            int matched = 0;
+            var remainingHeads = new List<Point3d>(headPoints ?? new List<Point3d>());
+            foreach (var expected in placement.Sprinklers)
+            {
+                int foundIndex = -1;
+                for (int i = 0; i < remainingHeads.Count; i++)
+                {
+                    var head = remainingHeads[i];
+                    double dx = head.X - expected.X;
+                    double dy = head.Y - expected.Y;
+                    if (Math.Sqrt(dx * dx + dy * dy) <= matchTol)
+                    {
+                        foundIndex = i;
+                        break;
+                    }
+                }
+
+                if (foundIndex >= 0)
+                {
+                    matched++;
+                    remainingHeads.RemoveAt(foundIndex);
+                }
+            }
+
+            result.GapCount = Math.Max(0, placement.Sprinklers.Count - matched);
+            result.CoverageOk = result.GapCount <= 0;
+            result.Summary = "Expected heads: " + placement.Sprinklers.Count.ToString(CultureInfo.InvariantCulture) +
+                             ", found: " + (headPoints == null ? 0 : headPoints.Count).ToString(CultureInfo.InvariantCulture) +
+                             ", gaps: " + result.GapCount.ToString(CultureInfo.InvariantCulture) +
+                             ". " + (placement.Summary ?? string.Empty);
+            return result;
+        }
+
+        private static List<Point3d> CollectHeadPoints(Document doc, string boundaryHandleHex, Transaction tr)
+        {
+            var points = new List<Point3d>();
+            if (doc == null || string.IsNullOrEmpty(boundaryHandleHex))
+                return points;
+
+            var db = doc.Database;
+            var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+            var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+            foreach (ObjectId id in ms)
+            {
+                if (!(tr.GetObject(id, OpenMode.ForRead, false) is Entity ent))
+                    continue;
+                if (!SprinklerXData.TryGetZoneBoundaryHandle(ent, out var handle) || !string.Equals(handle, boundaryHandleHex, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (ent is BlockReference br &&
+                    (string.Equals(br.Layer, SprinklerLayers.SprinklerMarkerAboveLayer, StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(br.Layer, SprinklerLayers.SprinklerMarkerBelowLayer, StringComparison.OrdinalIgnoreCase)))
+                {
+                    points.Add(br.Position);
+                }
+            }
+
+            return points;
+        }
+
+        private static string FindNearestShaftId(List<Point2d> ring, List<Point3d> shaftPoints)
+        {
+            if (ring == null || ring.Count == 0 || shaftPoints == null || shaftPoints.Count == 0)
+                return null;
+
+            Point2d centroid = ComputeCentroid(ring);
+            double bestDist = double.MaxValue;
+            int bestIndex = -1;
+            for (int i = 0; i < shaftPoints.Count; i++)
+            {
+                double dx = shaftPoints[i].X - centroid.X;
+                double dy = shaftPoints[i].Y - centroid.Y;
+                double dist = dx * dx + dy * dy;
+                if (dist < bestDist)
+                {
+                    bestDist = dist;
+                    bestIndex = i;
+                }
+            }
+
+            return bestIndex >= 0 ? "shaft_" + (bestIndex + 1).ToString(CultureInfo.InvariantCulture) : null;
+        }
+
+        private static Point2d ComputeCentroid(List<Point2d> ring)
+        {
+            double sumX = 0;
+            double sumY = 0;
+            for (int i = 0; i < ring.Count; i++)
+            {
+                sumX += ring[i].X;
+                sumY += ring[i].Y;
+            }
+
+            return new Point2d(sumX / ring.Count, sumY / ring.Count);
+        }
+
+        private static string DetermineStatus(ZoneWorkingSet zone)
+        {
+            if (zone.HeadCount <= 0)
+                return "empty";
+            if (zone.TrunkCount > 0 && zone.BranchCount > 0)
+                return "complete";
+            if (zone.TrunkCount > 0)
+                return "piped";
+            return "heads_placed";
+        }
+
+        private static string DescribeRole(Entity ent)
+        {
+            if (SprinklerXData.IsTaggedTrunk(ent)) return "trunk";
+            if (SprinklerXData.IsTaggedTrunkCap(ent)) return "trunk_cap";
+            if (SprinklerXData.IsTaggedConnector(ent)) return "connector";
+            if (string.Equals(ent.Layer, SprinklerLayers.SprinklerMarkerAboveLayer, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(ent.Layer, SprinklerLayers.SprinklerMarkerBelowLayer, StringComparison.OrdinalIgnoreCase))
+                return "sprinkler";
+            if (string.Equals(ent.Layer, SprinklerLayers.BranchPipeLayer, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(ent.Layer, SprinklerLayers.BranchMarkerLayer, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(ent.Layer, SprinklerLayers.BranchReducerLayer, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(ent.Layer, SprinklerLayers.BranchLabelLayer, StringComparison.OrdinalIgnoreCase))
+                return "branch";
+            return "zone-tagged";
+        }
+
+        private static ObjectId ResolveObjectIdFromHandle(Database db, string handleHex)
+        {
+            if (db == null || string.IsNullOrEmpty(handleHex))
+                return ObjectId.Null;
+
+            try
+            {
+                long value;
+                if (!long.TryParse(handleHex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out value))
+                    return ObjectId.Null;
+                return db.GetObjectId(false, new Handle(value), 0);
+            }
+            catch
+            {
+                return ObjectId.Null;
+            }
+        }
+
+        private static ZoneSnapshot FindZone(DrawingSnapshot snapshot, string boundaryHandleHex)
+        {
+            if (snapshot == null || snapshot.Zones == null || string.IsNullOrEmpty(boundaryHandleHex))
+                return null;
+
+            return snapshot.Zones.FirstOrDefault(z => string.Equals(z.BoundaryHandle, boundaryHandleHex, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static string ToJson<T>(T value)
+        {
+            var serializer = new DataContractJsonSerializer(typeof(T));
+            using (var stream = new MemoryStream())
+            {
+                serializer.WriteObject(stream, value);
+                return Encoding.UTF8.GetString(stream.ToArray());
+            }
+        }
+
+        private sealed class ZoneWorkingSet
+        {
+            public ZoneWorkingSet(string boundaryHandle)
+            {
+                BoundaryHandle = boundaryHandle;
+            }
+
+            public string BoundaryHandle { get; }
+            public List<ObjectId> TaggedEntities { get; } = new List<ObjectId>();
+            public List<string> TaggedEntityTypes { get; } = new List<string>();
+            public List<string> TaggedLayers { get; } = new List<string>();
+            public int HeadCount { get; private set; }
+            public int TrunkCount { get; private set; }
+            public int TrunkTaggedCount { get { return TrunkCount; } }
+            public int BranchCount { get; private set; }
+            public int MainPipeCount { get; private set; }
+            public int TotalPipeEntities { get; private set; }
+
+            public void CountIfSprinklerOrPipe(Entity ent)
+            {
+                if (ent == null)
+                    return;
+
+                if (ent is BlockReference &&
+                    (string.Equals(ent.Layer, SprinklerLayers.SprinklerMarkerAboveLayer, StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(ent.Layer, SprinklerLayers.SprinklerMarkerBelowLayer, StringComparison.OrdinalIgnoreCase)))
+                {
+                    HeadCount++;
+                }
+
+                bool trunk = SprinklerXData.IsTaggedTrunk(ent) || string.Equals(ent.Layer, SprinklerLayers.MainPipeLayer, StringComparison.OrdinalIgnoreCase);
+                bool branch = string.Equals(ent.Layer, SprinklerLayers.BranchPipeLayer, StringComparison.OrdinalIgnoreCase) ||
+                              string.Equals(ent.Layer, SprinklerLayers.BranchMarkerLayer, StringComparison.OrdinalIgnoreCase) ||
+                              string.Equals(ent.Layer, SprinklerLayers.BranchReducerLayer, StringComparison.OrdinalIgnoreCase) ||
+                              string.Equals(ent.Layer, SprinklerLayers.BranchLabelLayer, StringComparison.OrdinalIgnoreCase);
+
+                if (trunk)
+                {
+                    TrunkCount++;
+                    MainPipeCount++;
+                    TotalPipeEntities++;
+                }
+
+                if (branch)
+                {
+                    BranchCount++;
+                    TotalPipeEntities++;
+                }
+            }
+        }
+    }
+}

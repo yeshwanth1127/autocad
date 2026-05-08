@@ -1,0 +1,37 @@
+﻿using System.Collections.Generic;
+using System.IO;
+using System.Runtime.Serialization.Json;
+using System.Text;
+using Autodesk.AutoCAD.ApplicationServices;
+
+namespace autocad_final.Agent
+{
+    public sealed class ContextBuilder
+    {
+        public string Build(Document doc, ProjectMemory memory)
+        {
+            var snapshot = AgentReadTools.BuildSnapshot(doc, memory);
+            return ToJson(snapshot);
+        }
+
+        public DrawingSnapshot BuildSnapshot(Document doc, ProjectMemory memory)
+        {
+            return AgentReadTools.BuildSnapshot(doc, memory);
+        }
+
+        public string BuildCompactSummary(Document doc, ProjectMemory memory)
+        {
+            return Build(doc, memory);
+        }
+
+        private static string ToJson(object value)
+        {
+            var serializer = new DataContractJsonSerializer(value.GetType());
+            using (var stream = new MemoryStream())
+            {
+                serializer.WriteObject(stream, value);
+                return Encoding.UTF8.GetString(stream.ToArray());
+            }
+        }
+    }
+}

@@ -1,0 +1,117 @@
+{
+  "Version": 1,
+  "WorkspaceRootPath": "C:\\Users\\admin\\source\\repos\\autocad-final\\",
+  "Documents": [
+    {
+      "AbsoluteMoniker": "D:0:0:{EA04F805-C87E-4C73-AFFF-9B94F1230C30}|autocad-final\\autocad-final.csproj|c:\\users\\admin\\source\\repos\\autocad-final\\autocad-final\\agent\\agentmodels.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EA04F805-C87E-4C73-AFFF-9B94F1230C30}|autocad-final\\autocad-final.csproj|solutionrelative:autocad-final\\agent\\agentmodels.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EA04F805-C87E-4C73-AFFF-9B94F1230C30}|autocad-final\\autocad-final.csproj|C:\\Users\\admin\\source\\repos\\autocad-final\\autocad-final\\agent\\agentreadtools.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EA04F805-C87E-4C73-AFFF-9B94F1230C30}|autocad-final\\autocad-final.csproj|solutionrelative:autocad-final\\agent\\agentreadtools.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EA04F805-C87E-4C73-AFFF-9B94F1230C30}|autocad-final\\autocad-final.csproj|C:\\Users\\admin\\source\\repos\\autocad-final\\autocad-final\\agent\\agentundoscope.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EA04F805-C87E-4C73-AFFF-9B94F1230C30}|autocad-final\\autocad-final.csproj|solutionrelative:autocad-final\\agent\\agentundoscope.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EA04F805-C87E-4C73-AFFF-9B94F1230C30}|autocad-final\\autocad-final.csproj|C:\\Users\\admin\\source\\repos\\autocad-final\\autocad-final\\agent\\openrouterclient.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EA04F805-C87E-4C73-AFFF-9B94F1230C30}|autocad-final\\autocad-final.csproj|solutionrelative:autocad-final\\agent\\openrouterclient.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EA04F805-C87E-4C73-AFFF-9B94F1230C30}|autocad-final\\autocad-final.csproj|C:\\Users\\admin\\source\\repos\\autocad-final\\autocad-final\\agent\\contextbuilder.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EA04F805-C87E-4C73-AFFF-9B94F1230C30}|autocad-final\\autocad-final.csproj|solutionrelative:autocad-final\\agent\\contextbuilder.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{EA04F805-C87E-4C73-AFFF-9B94F1230C30}|autocad-final\\autocad-final.csproj|C:\\Users\\admin\\source\\repos\\autocad-final\\autocad-final\\agent\\projectmemory.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{EA04F805-C87E-4C73-AFFF-9B94F1230C30}|autocad-final\\autocad-final.csproj|solutionrelative:autocad-final\\agent\\projectmemory.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    }
+  ],
+  "DocumentGroupContainers": [
+    {
+      "Orientation": 0,
+      "VerticalTabListWidth": 256,
+      "DocumentGroups": [
+        {
+          "DockedWidth": 200,
+          "SelectedChildIndex": 0,
+          "Children": [
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "AgentModels.cs",
+              "DocumentMoniker": "C:\\Users\\admin\\source\\repos\\autocad-final\\autocad-final\\Agent\\AgentModels.cs",
+              "RelativeDocumentMoniker": "autocad-final\\Agent\\AgentModels.cs",
+              "ToolTip": "C:\\Users\\admin\\source\\repos\\autocad-final\\autocad-final\\Agent\\AgentModels.cs",
+              "RelativeToolTip": "autocad-final\\Agent\\AgentModels.cs",
+              "ViewState": "AgIAAC8BAAAAAAAAAAAUwBwBAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-04-13T10:35:31.441Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 5,
+              "Title": "ProjectMemory.cs",
+              "DocumentMoniker": "C:\\Users\\admin\\source\\repos\\autocad-final\\autocad-final\\Agent\\ProjectMemory.cs",
+              "RelativeDocumentMoniker": "autocad-final\\Agent\\ProjectMemory.cs",
+              "ToolTip": "C:\\Users\\admin\\source\\repos\\autocad-final\\autocad-final\\Agent\\ProjectMemory.cs",
+              "RelativeToolTip": "autocad-final\\Agent\\ProjectMemory.cs",
+              "ViewState": "AgIAAHMAAAAAAAAAAIBZwAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-04-13T10:39:29.525Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 4,
+              "Title": "ContextBuilder.cs",
+              "DocumentMoniker": "C:\\Users\\admin\\source\\repos\\autocad-final\\autocad-final\\Agent\\ContextBuilder.cs",
+              "RelativeDocumentMoniker": "autocad-final\\Agent\\ContextBuilder.cs",
+              "ToolTip": "C:\\Users\\admin\\source\\repos\\autocad-final\\autocad-final\\Agent\\ContextBuilder.cs",
+              "RelativeToolTip": "autocad-final\\Agent\\ContextBuilder.cs",
+              "ViewState": "AgIAABsAAAAAAAAAAEBVwB8AAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-04-13T10:38:43.258Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 3,
+              "Title": "OpenRouterClient.cs",
+              "DocumentMoniker": "C:\\Users\\admin\\source\\repos\\autocad-final\\autocad-final\\Agent\\OpenRouterClient.cs",
+              "RelativeDocumentMoniker": "autocad-final\\Agent\\OpenRouterClient.cs",
+              "ToolTip": "C:\\Users\\admin\\source\\repos\\autocad-final\\autocad-final\\Agent\\OpenRouterClient.cs",
+              "RelativeToolTip": "autocad-final\\Agent\\OpenRouterClient.cs",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-04-13T10:36:21.763Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 2,
+              "Title": "AgentUndoScope.cs",
+              "DocumentMoniker": "C:\\Users\\admin\\source\\repos\\autocad-final\\autocad-final\\Agent\\AgentUndoScope.cs",
+              "RelativeDocumentMoniker": "autocad-final\\Agent\\AgentUndoScope.cs",
+              "ToolTip": "C:\\Users\\admin\\source\\repos\\autocad-final\\autocad-final\\Agent\\AgentUndoScope.cs",
+              "RelativeToolTip": "autocad-final\\Agent\\AgentUndoScope.cs",
+              "ViewState": "AgIAABsAAAAAAAAAAIBZwAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-04-13T10:36:08.152Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 1,
+              "Title": "AgentReadTools.cs",
+              "DocumentMoniker": "C:\\Users\\admin\\source\\repos\\autocad-final\\autocad-final\\Agent\\AgentReadTools.cs",
+              "RelativeDocumentMoniker": "autocad-final\\Agent\\AgentReadTools.cs",
+              "ToolTip": "C:\\Users\\admin\\source\\repos\\autocad-final\\autocad-final\\Agent\\AgentReadTools.cs",
+              "RelativeToolTip": "autocad-final\\Agent\\AgentReadTools.cs",
+              "ViewState": "AgIAAFoCAAAAAAAAAEBVwAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-04-13T10:35:46.5Z"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

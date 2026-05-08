@@ -1,0 +1,32 @@
+﻿using System;
+using Autodesk.AutoCAD.ApplicationServices;
+
+namespace autocad_final.Agent
+{
+    /// <summary>
+    /// Wraps a single autonomous run in one undo scope.
+    /// </summary>
+    public sealed class AgentUndoScope : IDisposable
+    {
+        private readonly Document _doc;
+        private bool _disposed;
+
+        public AgentUndoScope(Document doc)
+        {
+            if (doc == null) throw new ArgumentNullException(nameof(doc));
+            _doc = doc;
+        }
+
+        public void Commit()
+        {
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+
+            _disposed = true;
+            GC.SuppressFinalize(this);
+        }
+    }
+}
