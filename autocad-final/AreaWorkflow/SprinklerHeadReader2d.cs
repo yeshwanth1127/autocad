@@ -35,8 +35,10 @@ namespace autocad_final.AreaWorkflow
 
                 foreach (ObjectId id in ms)
                 {
-                    if (!(tr.GetObject(id, OpenMode.ForRead, false) is Entity ent))
-                        continue;
+                    Entity ent = null;
+                    try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
+                    catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                    if (ent == null) continue;
 
                     if (!SprinklerLayers.IsSprinklerHeadEntity(tr, ent))
                         continue;
@@ -97,8 +99,10 @@ namespace autocad_final.AreaWorkflow
 
                 foreach (ObjectId id in ms)
                 {
-                    if (!(tr.GetObject(id, OpenMode.ForRead, false) is Entity ent))
-                        continue;
+                    Entity ent = null;
+                    try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
+                    catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                    if (ent == null) continue;
 
                     if (!SprinklerLayers.IsSprinklerHeadEntity(tr, ent))
                         continue;

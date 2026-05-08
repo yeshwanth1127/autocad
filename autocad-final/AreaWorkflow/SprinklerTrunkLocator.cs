@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
+using Autodesk.AutoCAD.Runtime;
 using autocad_final.Geometry;
 
 namespace autocad_final.AreaWorkflow
@@ -24,8 +25,10 @@ namespace autocad_final.AreaWorkflow
                 var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
                 foreach (ObjectId id in ms)
                 {
-                    if (!(tr.GetObject(id, OpenMode.ForRead, false) is Entity ent))
-                        continue;
+                    Entity ent = null;
+                    try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
+                    catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == ErrorStatus.WasErased) { continue; }
+                    if (ent == null) continue;
                     if (!SprinklerLayers.IsMainPipeLayerName(ent.Layer))
                         continue;
                     if (!(ent is Polyline pl))
@@ -51,7 +54,9 @@ namespace autocad_final.AreaWorkflow
 
                     foreach (var id in candidates)
                     {
-                        var pl = tr.GetObject(id, OpenMode.ForRead, false) as Polyline;
+                        Polyline pl = null;
+                        try { pl = tr.GetObject(id, OpenMode.ForRead, false) as Polyline; }
+                        catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == ErrorStatus.WasErased) { continue; }
                         if (pl == null) continue;
 
                         double len = 0;
@@ -65,7 +70,9 @@ namespace autocad_final.AreaWorkflow
 
                     if (!bestAutoId.IsNull)
                     {
-                        var trunkPl = tr.GetObject(bestAutoId, OpenMode.ForWrite, false) as Polyline;
+                        Polyline trunkPl = null;
+                        try { trunkPl = tr.GetObject(bestAutoId, OpenMode.ForWrite, false) as Polyline; }
+                        catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == ErrorStatus.WasErased) { trunkPl = null; }
                         if (trunkPl != null)
                         {
                             SprinklerXData.EnsureRegApp(tr, db);
@@ -92,7 +99,9 @@ namespace autocad_final.AreaWorkflow
             {
                 foreach (var id in trunks)
                 {
-                    var pl = tr.GetObject(id, OpenMode.ForRead, false) as Polyline;
+                    Polyline pl = null;
+                    try { pl = tr.GetObject(id, OpenMode.ForRead, false) as Polyline; }
+                    catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == ErrorStatus.WasErased) { continue; }
                     if (pl == null) continue;
                     double len = 0;
                     try { len = pl.Length; } catch { len = 0; }
@@ -114,16 +123,20 @@ namespace autocad_final.AreaWorkflow
             trunkHorizontal = true;
             trunkAxis = 0;
             errorMessage = null;
+            if (trunkId.IsNull || trunkId.IsErased || !trunkId.IsValid)
+            {
+                errorMessage = "Main trunk reference is no longer valid. Re-select the trunk and retry.";
+                return false;
+            }
 
             double tol = BoundaryEntityToClosedLwPolyline.CoincidentTolerance(db);
             if (tol <= 0) tol = 1e-6;
 
             using (var tr = db.TransactionManager.StartTransaction())
             {
-                var pl = tr.GetObject(trunkId, OpenMode.ForRead, false) as Polyline;
-                if (pl == null)
+                if (!DbObjectSafeAccess.TryGetObject(tr, trunkId, OpenMode.ForRead, out Polyline pl))
                 {
-                    errorMessage = "Could not read trunk polyline.";
+                    errorMessage = "Main trunk was erased by Undo. Re-select the trunk and retry.";
                     return false;
                 }
 

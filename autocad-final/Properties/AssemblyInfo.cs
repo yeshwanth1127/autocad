@@ -16,6 +16,7 @@ using autocad_final;
 [assembly: CommandClass(typeof(CheckSprinklersAndFixCommand))]
 [assembly: CommandClass(typeof(FixOnSlantCommand))]
 [assembly: CommandClass(typeof(AttachBranchesCommand))]
+[assembly: CommandClass(typeof(ConnectBranchesManuallyCommand))]
 [assembly: CommandClass(typeof(DeleteAllOnLayerCommand))]
 [assembly: CommandClass(typeof(RebuildFromTrunkCommand))]
 [assembly: CommandClass(typeof(RedesignFromTrunkCommand))]

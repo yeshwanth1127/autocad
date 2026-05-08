@@ -29,7 +29,12 @@ namespace autocad_final.Commands
             using (var tr0 = db.TransactionManager.StartTransaction())
             {
                 SprinklerXData.EnsureRegApp(tr0, db);
-                boundaryHandleHex = tr0.GetObject(boundaryEntityId, OpenMode.ForRead).Handle.ToString();
+                if (!DbObjectSafeAccess.TryGetObject(tr0, boundaryEntityId, OpenMode.ForRead, out Entity boundaryEnt))
+                {
+                    PaletteCommandErrorUi.ShowDialogThenCommandLine(ed, "Could not read selected zone boundary. Select it again and retry.", MessageBoxIcon.Warning);
+                    return;
+                }
+                boundaryHandleHex = boundaryEnt.Handle.ToString();
                 tr0.Commit();
             }
 

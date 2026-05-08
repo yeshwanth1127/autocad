@@ -125,6 +125,7 @@
     <Compile Include="Commands\CheckSprinklersAndFixCommand.cs" />
     <Compile Include="Commands\FixOnSlantCommand.cs" />
     <Compile Include="Commands\AttachBranchesCommand.cs" />
+    <Compile Include="Commands\ConnectBranchesManuallyCommand.cs" />
     <Compile Include="Commands\DeleteAllOnLayerCommand.cs" />
     <Compile Include="Commands\RebuildFromTrunkCommand.cs" />
     <Compile Include="Commands\RedesignFromTrunkCommand.cs" />
@@ -195,6 +196,7 @@
     <Compile Include="Geometry\PolylineClosedBoundaryRingSampler2d.cs" />
     <Compile Include="Geometry\DrawingUnitsHelper.cs" />
     <Compile Include="Geometry\DrawingMutationHelper.cs" />
+    <Compile Include="Geometry\DbObjectSafeAccess.cs" />
     <Compile Include="Reporting\AreaTableService.cs" />
     <Compile Include="Validation\BoundaryValidator.cs" />
     <Compile Include="Workflows\Placement\BoundaryPlacementService.cs" />

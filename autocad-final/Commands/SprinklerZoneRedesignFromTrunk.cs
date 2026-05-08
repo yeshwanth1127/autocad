@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Windows.Forms;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.Colors;
 using Autodesk.AutoCAD.DatabaseServices;
@@ -42,6 +43,24 @@ namespace autocad_final.Commands
 
             var srCfg = RuntimeSettings.Load();
 
+            // Before mutating the zone on redesign/rebuild, verify the current moved trunk can still be
+            // served by the assigned shaft. If no valid in-zone shaft->trunk connector path exists,
+            // stop early and surface a user-facing error.
+            if (!ValidateShaftCanServeTrunk(
+                    db,
+                    ed,
+                    zone,
+                    zoneRing,
+                    boundaryHandleHex,
+                    trunkId,
+                    selectedShaftPoint,
+                    srCfg.SprinklerSpacingM,
+                    out string shaftServeErr))
+            {
+                errorMessage = shaftServeErr ?? "Shaft cannot serve the moved main pipe.";
+                return false;
+            }
+
             bool trunkHorizontal = true;
             double trunkAxis = 0;
             if (regenerateSprinklerGrid)
@@ -71,6 +90,11 @@ namespace autocad_final.Commands
             }
 
             bool preserveSprinklerHeads = !regenerateSprinklerGrid;
+            // In real-world drawings the "connector" is not a separate system from the main; it is
+            // effectively part of the main pipe that users may manually move. During redesign (when
+            // we preserve head positions) we must not erase/rebuild connector geometry, otherwise
+            // manual main-pipe adjustments get partially overwritten.
+            bool preserveConnector = !regenerateSprinklerGrid;
 
             using (doc.LockDocument())
             using (var tr = db.TransactionManager.StartTransaction())
@@ -78,7 +102,7 @@ namespace autocad_final.Commands
                 var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
                 var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
 
-                int zoneTaggedErased = EraseEntitiesWithZoneBoundaryTag(tr, ms, boundaryHandleHex, preserveSprinklerHeads, trunkId);
+                int zoneTaggedErased = EraseEntitiesWithZoneBoundaryTag(tr, ms, boundaryHandleHex, preserveSprinklerHeads, preserveConnector, trunkId);
                 int capsErased = EraseTrunkCapsInZone(tr, ms, zoneRing);
                 int erased = EraseEntitiesInZone(tr, ms, zoneRing, preserveSprinklerHeads, trunkId);
                 int outsideSprinklersErased = EraseSprinklerMarkersOutsideZone(tr, ms, zoneRing, boundaryHandleHex);
@@ -86,31 +110,37 @@ namespace autocad_final.Commands
 
                 TryTrimTrunkIfTouchingBoundary(tr, db, trunkId, zoneRing);
 
-                EraseConnectorInZone(tr, ms, trunkId, zoneRing);
-                Point3d shaft3;
-                bool hasShaft = selectedShaftPoint.HasValue;
-                if (hasShaft)
-                    shaft3 = selectedShaftPoint.Value;
-                else
-                    hasShaft = TryFindShaftForZone(db, zone, boundaryHandleHex, out shaft3, out _);
-                if (hasShaft)
+                // Connector handling:
+                // - Rebuild-from-trunk: erase + rebuild connector so it tracks the shaft.
+                // - Redesign (preserve heads): keep connector as-is so manual main pipe moves aren't overwritten.
+                if (!preserveConnector)
                 {
-                    var trunkPl = tr.GetObject(trunkId, OpenMode.ForRead, false) as Polyline;
-                    if (trunkPl != null)
+                    EraseConnectorInZone(tr, ms, trunkId, zoneRing);
+                    Point3d shaft3;
+                    bool hasShaft = selectedShaftPoint.HasValue;
+                    if (hasShaft)
+                        shaft3 = selectedShaftPoint.Value;
+                    else
+                        hasShaft = TryFindShaftForZone(db, zone, boundaryHandleHex, out shaft3, out _);
+                    if (hasShaft)
                     {
-                        var trunkStart = trunkPl.StartPoint;
-                        var trunkEnd = trunkPl.EndPoint;
-                        if (MainPipeRouting2d.TryBuildConnectorInsideZone(
-                                zoneRing,
-                                db,
-                                new Point2d(shaft3.X, shaft3.Y),
-                                new Point2d(trunkStart.X, trunkStart.Y),
-                                new Point2d(trunkEnd.X, trunkEnd.Y),
-                                sprinklerSpacingMeters: srCfg.SprinklerSpacingM,
-                                out var connectorPath,
-                                out _))
+                        DbObjectSafeAccess.TryGetObject(tr, trunkId, OpenMode.ForRead, out Polyline trunkPl);
+                        if (trunkPl != null)
                         {
-                            DrawConnector(tr, db, ms, connectorPath, zone.Elevation, zone.Normal, trunkPl, boundaryHandleHex);
+                            var trunkStart = trunkPl.StartPoint;
+                            var trunkEnd = trunkPl.EndPoint;
+                            if (MainPipeRouting2d.TryBuildConnectorInsideZone(
+                                    zoneRing,
+                                    db,
+                                    new Point2d(shaft3.X, shaft3.Y),
+                                    new Point2d(trunkStart.X, trunkStart.Y),
+                                    new Point2d(trunkEnd.X, trunkEnd.Y),
+                                    sprinklerSpacingMeters: srCfg.SprinklerSpacingM,
+                                    out var connectorPath,
+                                    out _))
+                            {
+                                DrawConnector(tr, db, ms, connectorPath, zone.Elevation, zone.Normal, trunkPl, boundaryHandleHex);
+                            }
                         }
                     }
                 }
@@ -155,8 +185,10 @@ namespace autocad_final.Commands
                     SprinklerXData.EnsureRegApp(tr, db);
                     foreach (ObjectId id in ms)
                     {
-                        if (!(tr.GetObject(id, OpenMode.ForRead, false) is Entity ent))
-                            continue;
+                        Entity ent = null;
+                        try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
+                        catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                        if (ent == null) continue;
                         if (!SprinklerLayers.IsSprinklerHeadEntity(tr, ent))
                             continue;
                         if (SprinklerXData.TryGetZoneBoundaryHandle(ent, out var h) &&
@@ -219,7 +251,229 @@ namespace autocad_final.Commands
             return true;
         }
 
-        private static int EraseEntitiesWithZoneBoundaryTag(Transaction tr, BlockTableRecord ms, string boundaryHandleHex, bool preserveSprinklerMarkers, ObjectId preserveTrunkId)
+        /// <summary>
+        /// Shows a Yes/No dialog when a connectivity problem is detected, letting the user
+        /// choose to proceed anyway (returns true) or cancel (returns false + errorMessage).
+        /// </summary>
+        private static bool AskUserProceedDespiteDisconnection(Editor ed, string reason)
+        {
+            string msg =
+                reason + "\n\n" +
+                "The shaft may not be able to supply water to the moved main pipe.\n\n" +
+                "Do you want to proceed with routing branch pipes anyway?";
+
+            var result = MessageBox.Show(
+                msg,
+                "Shaft Connectivity Warning",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2);   // default = No (safer)
+
+            if (result == DialogResult.Yes)
+            {
+                ed?.WriteMessage("\n[Warning] Proceeding despite shaft disconnection as requested.\n");
+                return true;
+            }
+            return false;
+        }
+
+        private static bool ValidateShaftCanServeTrunk(
+            Database db,
+            Editor ed,
+            Polyline zone,
+            List<Point2d> zoneRing,
+            string boundaryHandleHex,
+            ObjectId trunkId,
+            Point3d? selectedShaftPoint,
+            double sprinklerSpacingMeters,
+            out string errorMessage)
+        {
+            errorMessage = null;
+            if (db == null || zone == null || zoneRing == null || zoneRing.Count < 3 || trunkId.IsNull)
+            {
+                errorMessage = "Invalid inputs for shaft/main connectivity validation.";
+                return false;
+            }
+
+            string shaftErr = null;
+            Point3d shaft3;
+            bool hasShaft = selectedShaftPoint.HasValue;
+            if (hasShaft)
+                shaft3 = selectedShaftPoint.Value;
+            else
+                hasShaft = TryFindShaftForZone(db, zone, boundaryHandleHex, out shaft3, out shaftErr);
+
+            if (!hasShaft)
+            {
+                // No shaft at all — hard stop (can't route without knowing shaft location).
+                errorMessage = shaftErr ?? "No shaft is assigned to this zone.";
+                return false;
+            }
+
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                double tol = BoundaryEntityToClosedLwPolyline.CoincidentTolerance(db);
+                if (!(tol > 0)) tol = 1e-6;
+
+                double shaftTol = tol * 60.0;
+                try
+                {
+                    if (DrawingUnitsHelper.TryMetersToDrawingLength(db.Insunits, Math.Max(0.12, sprinklerSpacingMeters * 0.20), out double du) && du > shaftTol)
+                        shaftTol = du;
+                }
+                catch { /* ignore */ }
+
+                // Gather the existing "main network" in-zone: trunk + connector + any other non-cap
+                // main polylines on the main layer.
+                var mains = new List<(ObjectId id, List<Point2d> pts)>();
+                var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+                foreach (ObjectId id in ms)
+                {
+                    Entity ent = null;
+                    try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
+                    catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                    if (ent == null) continue;
+                    if (!SprinklerLayers.IsMainPipeLayerName(ent.Layer))
+                        continue;
+                    if (!(ent is Polyline pl))
+                        continue;
+                    if (SprinklerXData.IsTaggedTrunkCap(pl))
+                        continue;
+                    if (!PolylineHasSampleInsideZone(pl, zoneRing))
+                        continue;
+
+                    var pts = PolylineToPoint2dList(pl);
+                    if (pts.Count >= 2)
+                        mains.Add((id, pts));
+                }
+
+                if (mains.Count == 0)
+                {
+                    errorMessage = "No in-zone main pipe geometry found for shaft connectivity check.";
+                    return false;
+                }
+
+                int trunkIdx = -1;
+                for (int i = 0; i < mains.Count; i++)
+                {
+                    if (mains[i].id == trunkId)
+                    {
+                        trunkIdx = i;
+                        break;
+                    }
+                }
+                if (trunkIdx < 0)
+                {
+                    errorMessage = "Moved main trunk could not be found in the in-zone main network.";
+                    return false;
+                }
+
+                var shaft2 = new Point2d(shaft3.X, shaft3.Y);
+                var visited = new bool[mains.Count];
+                var queue = new Queue<int>();
+
+                for (int i = 0; i < mains.Count; i++)
+                {
+                    if (DistancePointToPolyline(shaft2, mains[i].pts) <= shaftTol)
+                    {
+                        visited[i] = true;
+                        queue.Enqueue(i);
+                    }
+                }
+
+                if (queue.Count == 0)
+                {
+                    string reason =
+                        "Shaft cannot serve the moved main pipe.\n" +
+                        "No main pipe segment is within connection range of the shaft location.";
+                    tr.Commit();
+                    if (AskUserProceedDespiteDisconnection(ed, reason))
+                        return true;
+                    errorMessage = reason;
+                    return false;
+                }
+
+                while (queue.Count > 0)
+                {
+                    int cur = queue.Dequeue();
+                    if (cur == trunkIdx)
+                    {
+                        tr.Commit();
+                        return true;
+                    }
+
+                    for (int j = 0; j < mains.Count; j++)
+                    {
+                        if (visited[j] || j == cur) continue;
+                        if (!PolylinesTouchOrIntersect(mains[cur].pts, mains[j].pts, 1e-9))
+                            continue;
+                        visited[j] = true;
+                        queue.Enqueue(j);
+                    }
+                }
+                tr.Commit();
+            }
+
+            string disconnectReason =
+                "Shaft cannot serve the moved main pipe.\n" +
+                "There is a gap or disconnection between the shaft and the moved main pipe network.";
+            if (AskUserProceedDespiteDisconnection(ed, disconnectReason))
+                return true;
+            errorMessage = disconnectReason;
+            return false;
+        }
+
+        private static List<Point2d> PolylineToPoint2dList(Polyline pl)
+        {
+            var pts = new List<Point2d>();
+            if (pl == null) return pts;
+            int n = 0;
+            try { n = pl.NumberOfVertices; } catch { return pts; }
+            for (int i = 0; i < n; i++)
+            {
+                var p = pl.GetPoint3dAt(i);
+                pts.Add(new Point2d(p.X, p.Y));
+            }
+            return pts;
+        }
+
+        private static bool PolylinesTouchOrIntersect(List<Point2d> a, List<Point2d> b, double tol)
+        {
+            if (a == null || b == null || a.Count < 2 || b.Count < 2)
+                return false;
+
+            // If any endpoint of one polyline is sufficiently close to the other polyline, treat as connected.
+            if (DistancePointToPolyline(a[0], b) <= tol) return true;
+            if (DistancePointToPolyline(a[a.Count - 1], b) <= tol) return true;
+            if (DistancePointToPolyline(b[0], a) <= tol) return true;
+            if (DistancePointToPolyline(b[b.Count - 1], a) <= tol) return true;
+
+            return false;
+        }
+
+        private static double DistancePointToPolyline(Point2d p, List<Point2d> poly)
+        {
+            if (poly == null || poly.Count < 2)
+                return double.MaxValue;
+
+            double best2 = double.MaxValue;
+            for (int i = 0; i + 1 < poly.Count; i++)
+            {
+                double d2 = DistSquaredPointToSegment(p, poly[i], poly[i + 1]);
+                if (d2 < best2) best2 = d2;
+            }
+
+            return Math.Sqrt(best2);
+        }
+
+        private static int EraseEntitiesWithZoneBoundaryTag(
+            Transaction tr,
+            BlockTableRecord ms,
+            string boundaryHandleHex,
+            bool preserveSprinklerMarkers,
+            bool preserveConnector,
+            ObjectId preserveTrunkId)
         {
             int erased = 0;
             if (tr == null || ms == null || string.IsNullOrEmpty(boundaryHandleHex))
@@ -229,12 +483,16 @@ namespace autocad_final.Commands
             {
                 if (!preserveTrunkId.IsNull && id == preserveTrunkId)
                     continue;
-                if (!(tr.GetObject(id, OpenMode.ForRead, false) is Entity ent))
-                    continue;
+                Entity ent = null;
+                try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
+                catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                if (ent == null) continue;
                 if (!SprinklerXData.TryGetZoneBoundaryHandle(ent, out var h) ||
                     !string.Equals(h, boundaryHandleHex, StringComparison.OrdinalIgnoreCase))
                     continue;
                 if (SprinklerXData.IsTaggedTrunk(ent))
+                    continue;
+                if (preserveConnector && SprinklerXData.IsTaggedConnector(ent))
                     continue;
                 if (preserveSprinklerMarkers && SprinklerLayers.IsSprinklerHeadEntity(tr, ent))
                     continue;
@@ -262,8 +520,10 @@ namespace autocad_final.Commands
 
             foreach (ObjectId id in ms)
             {
-                if (!(tr.GetObject(id, OpenMode.ForRead, false) is Entity ent))
-                    continue;
+                Entity ent = null;
+                try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
+                catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                if (ent == null) continue;
                 if (!SprinklerLayers.IsSprinklerHeadEntity(tr, ent))
                     continue;
 
@@ -346,8 +606,10 @@ namespace autocad_final.Commands
             {
                 if (!preserveTrunkId.IsNull && id == preserveTrunkId)
                     continue;
-                if (!(tr.GetObject(id, OpenMode.ForRead, false) is Entity ent))
-                    continue;
+                Entity ent = null;
+                try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
+                catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                if (ent == null) continue;
 
                 string layer = ent.Layer ?? string.Empty;
                 bool isSprinkler = SprinklerLayers.IsSprinklerHeadEntity(tr, ent);
@@ -404,8 +666,10 @@ namespace autocad_final.Commands
 
             foreach (ObjectId id in ms)
             {
-                if (!(tr.GetObject(id, OpenMode.ForRead, false) is Entity ent))
-                    continue;
+                Entity ent = null;
+                try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
+                catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                if (ent == null) continue;
 
                 if (!SprinklerXData.TryGetZoneBoundaryHandle(ent, out string h) ||
                     !string.Equals(h, boundaryHandleHex, StringComparison.OrdinalIgnoreCase))
@@ -460,8 +724,10 @@ namespace autocad_final.Commands
 
             foreach (ObjectId id in ms)
             {
-                if (!(tr.GetObject(id, OpenMode.ForRead, false) is Entity ent))
-                    continue;
+                Entity ent = null;
+                try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
+                catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                if (ent == null) continue;
 
                 if (!SprinklerXData.TryGetZoneBoundaryHandle(ent, out string h) ||
                     !string.Equals(h, boundaryHandleHex, StringComparison.OrdinalIgnoreCase))
@@ -564,8 +830,10 @@ namespace autocad_final.Commands
 
             foreach (ObjectId id in ms)
             {
-                if (!(tr.GetObject(id, OpenMode.ForRead, false) is Entity ent))
-                    continue;
+                Entity ent = null;
+                try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
+                catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                if (ent == null) continue;
                 if (!SprinklerLayers.IsMainPipeLayerName(ent.Layer))
                     continue;
                 if (!(ent is Polyline pl))
@@ -591,8 +859,10 @@ namespace autocad_final.Commands
             foreach (ObjectId id in ms)
             {
                 if (id == trunkId) continue;
-                if (!(tr.GetObject(id, OpenMode.ForRead, false) is Entity ent))
-                    continue;
+                Entity ent = null;
+                try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
+                catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                if (ent == null) continue;
                 if (!SprinklerLayers.IsMainPipeLayerName(ent.Layer))
                     continue;
                 if (!(ent is Polyline pl))
@@ -673,12 +943,18 @@ namespace autocad_final.Commands
                             ObjectId zid = ObjectId.Null;
                             try { zid = db.GetObjectId(false, zh, 0); } catch { zid = ObjectId.Null; }
                             if (!zid.IsNull)
-                                zoneEnt = tr.GetObject(zid, OpenMode.ForRead, false) as Entity;
+                            {
+                                try { zoneEnt = tr.GetObject(zid, OpenMode.ForRead, false) as Entity; }
+                                catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { zoneEnt = null; }
+                            }
                         }
                         catch { /* ignore */ }
                     }
                     if (zoneEnt == null && !zone.ObjectId.IsNull)
-                        zoneEnt = tr.GetObject(zone.ObjectId, OpenMode.ForRead, false) as Entity;
+                    {
+                        try { zoneEnt = tr.GetObject(zone.ObjectId, OpenMode.ForRead, false) as Entity; }
+                        catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { zoneEnt = null; }
+                    }
 
                     if (zoneEnt != null &&
                         SprinklerXData.TryGetShaftAssignmentHandle(zoneEnt, out string shaftHandleHex) &&
@@ -694,7 +970,9 @@ namespace autocad_final.Commands
                             try { shaftId = db.GetObjectId(false, sh, 0); } catch { shaftId = ObjectId.Null; }
                             if (!shaftId.IsNull)
                             {
-                                var shaftBr = tr.GetObject(shaftId, OpenMode.ForRead, false) as BlockReference;
+                                BlockReference shaftBr = null;
+                                try { shaftBr = tr.GetObject(shaftId, OpenMode.ForRead, false) as BlockReference; }
+                                catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { shaftBr = null; }
                                 if (shaftBr != null && !shaftBr.IsErased)
                                 {
                                     shaft = shaftBr.Position;
@@ -743,7 +1021,9 @@ namespace autocad_final.Commands
                 var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
                 foreach (ObjectId id in ms)
                 {
-                    var ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
+                    Entity ent = null;
+                    try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
+                    catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
                     if (!(ent is BlockReference br)) continue;
                     string blockName = GetBlockName(br, tr);
                     if (!string.Equals(blockName, "shaft", StringComparison.OrdinalIgnoreCase))
@@ -792,7 +1072,8 @@ namespace autocad_final.Commands
             if (tr == null || db == null || ms == null || trunkId.IsNull)
                 return;
 
-            var trunk = tr.GetObject(trunkId, OpenMode.ForRead, false) as Polyline;
+            if (!DbObjectSafeAccess.TryGetObject(tr, trunkId, OpenMode.ForRead, out Polyline trunk))
+                return;
             if (trunk == null)
                 return;
 
@@ -868,7 +1149,8 @@ namespace autocad_final.Commands
             if (tr == null || db == null || trunkId.IsNull || zoneRing == null || zoneRing.Count < 3)
                 return;
 
-            var trunk = tr.GetObject(trunkId, OpenMode.ForWrite, false) as Polyline;
+            if (!DbObjectSafeAccess.TryGetObject(tr, trunkId, OpenMode.ForWrite, out Polyline trunk))
+                return;
             if (trunk == null || trunk.NumberOfVertices < 2)
                 return;
 

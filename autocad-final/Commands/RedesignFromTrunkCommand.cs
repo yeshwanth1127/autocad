@@ -44,7 +44,12 @@ namespace autocad_final.Commands
             using (var tr0 = db.TransactionManager.StartTransaction())
             {
                 SprinklerXData.EnsureRegApp(tr0, db);
-                boundaryHandleHex = tr0.GetObject(boundaryEntityId, OpenMode.ForRead).Handle.ToString();
+                if (!DbObjectSafeAccess.TryGetObject(tr0, boundaryEntityId, OpenMode.ForRead, out Entity boundaryEnt))
+                {
+                    PaletteCommandErrorUi.ShowDialogThenCommandLine(ed, "Could not read assigned zone boundary. Reassign shaft to zone and retry.", MessageBoxIcon.Warning);
+                    return;
+                }
+                boundaryHandleHex = boundaryEnt.Handle.ToString();
                 tr0.Commit();
             }
 
@@ -65,21 +70,37 @@ namespace autocad_final.Commands
                     return;
                 }
 
-                if (!SprinklerZoneRedesignFromTrunk.TryRun(
-                        doc,
-                        db,
-                        ed,
-                        zone,
-                        zoneRing,
-                        boundaryHandleHex,
-                        trunkId,
-                        regenerateSprinklerGrid: false,
-                        selectedShaftPoint: shaftPoint,
-                        out string err))
+                for (int attempt = 0; attempt < 2; attempt++)
                 {
-                    if (!string.IsNullOrEmpty(err))
-                        PaletteCommandErrorUi.ShowDialogThenCommandLine(ed, err, MessageBoxIcon.Warning);
-                    return;
+                    try
+                    {
+                        if (!SprinklerZoneRedesignFromTrunk.TryRun(
+                                doc,
+                                db,
+                                ed,
+                                zone,
+                                zoneRing,
+                                boundaryHandleHex,
+                                trunkId,
+                                regenerateSprinklerGrid: false,
+                                selectedShaftPoint: shaftPoint,
+                                out string err))
+                        {
+                            if (!string.IsNullOrEmpty(err))
+                                PaletteCommandErrorUi.ShowDialogThenCommandLine(ed, err, MessageBoxIcon.Warning);
+                            return;
+                        }
+
+                        return;
+                    }
+                    catch (Autodesk.AutoCAD.Runtime.Exception ex) when (
+                        ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased && attempt == 0)
+                    {
+                        // Redesign touches many entities; after manual edits some stale IDs can appear transiently.
+                        // Retry once against the refreshed database state.
+                        try { ed.Regen(); } catch { /* ignore */ }
+                        continue;
+                    }
                 }
             }
             finally
@@ -108,7 +129,11 @@ namespace autocad_final.Commands
 
             using (var tr = db.TransactionManager.StartTransaction())
             {
-                var ent = tr.GetObject(per.ObjectId, OpenMode.ForRead, false) as Entity;
+                if (!DbObjectSafeAccess.TryGetObject(tr, per.ObjectId, OpenMode.ForRead, out Entity ent))
+                {
+                    errorMessage = "Selected shaft was erased by Undo. Select it again and retry.";
+                    return false;
+                }
                 if (!(ent is BlockReference br))
                 {
                     errorMessage = "Selected entity is not a block reference.";

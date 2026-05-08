@@ -1,3 +1,0 @@
-admin
-DESKTOP-5S9BSNA 
-07 May 2026  21:52:54

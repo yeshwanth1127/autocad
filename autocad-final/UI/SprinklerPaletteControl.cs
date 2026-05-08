@@ -129,6 +129,7 @@ namespace autocad_final.UI
                 ("Assign shaft to zone",       RunAssignShaftToZone),
                 ("Route main pipe",            RunRouteMainPipe),
                 ("Redesign from trunk",        RunRedesignFromTrunk),
+                ("Connect branches manually",  RunConnectBranchesManually),
                 ("Route branch pipes",         RunRouteBranchPipes),
                 ("Route branch pipe 2",        RunRouteBranchPipes2),
                 ("Place reducers",             RunPlaceReducers),
@@ -617,6 +618,25 @@ namespace autocad_final.UI
             {
                 // Run directly so the command line does not echo the command name.
                 new AttachBranchesCommand().RouteBranchPipes();
+            }
+            catch (Exception ex)
+            {
+                PaletteCommandErrorUi.Show(ex, doc);
+            }
+        }
+
+        private void RunConnectBranchesManually()
+        {
+            var doc = AcApp.DocumentManager.MdiActiveDocument;
+            if (doc == null)
+            {
+                MessageBox.Show("No active drawing. Open or create a drawing first.",
+                    "autocad-final", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            try
+            {
+                new ConnectBranchesManuallyCommand().ConnectBranchesManually();
             }
             catch (Exception ex)
             {

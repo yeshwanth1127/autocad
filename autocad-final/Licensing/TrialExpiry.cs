@@ -8,11 +8,11 @@ using Microsoft.Win32;
 namespace autocad_final.Licensing
 {
     /// <summary>
-    /// 7-day evaluation: first-run start time is stored (encoded) in HKCU, with a hidden-file fallback.
+    /// 30-day evaluation: first-run start time is stored (encoded) in HKCU, with a hidden-file fallback.
     /// </summary>
     internal static class TrialExpiry
     {
-        private const int TrialDays = 7;
+        private const int TrialDays = 300;
         private const string RegistryPath = @"Software\autocad-final\Runtime";
         private const string RegistryValueName = "d";
 
@@ -20,7 +20,7 @@ namespace autocad_final.Licensing
         private static bool? _cachedExpired;
 
         internal static string ExpiredUserMessage =>
-            "[autocad-final] This trial has expired (7 days from first use). Remove and reinstall does not reset the period.";
+            "[autocad-final] This trial has expired (300 days from first use). Remove and reinstall does not reset the period.";
 
         internal static bool IsExpired()
         {

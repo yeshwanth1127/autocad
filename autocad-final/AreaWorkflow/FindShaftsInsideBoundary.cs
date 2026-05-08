@@ -51,8 +51,6 @@ namespace autocad_final.AreaWorkflow
                         continue;
 
                     var p2 = new Point2d(br.Position.X, br.Position.Y);
-                    if (!IsPointInPolygonRing(polygon, p2))
-                        continue;
 
                     bool hasExt = false;
                     Extents2d e2 = default;
@@ -66,6 +64,23 @@ namespace autocad_final.AreaWorkflow
                     {
                         hasExt = false;
                     }
+
+                    // Include shaft if insertion point is inside zone, OR if its bounding box
+                    // overlaps the zone (handles shafts straddling the zone boundary).
+                    bool inZone = IsPointInPolygonRing(polygon, p2);
+                    if (!inZone && hasExt)
+                    {
+                        var mn = e2.MinPoint;
+                        var mx = e2.MaxPoint;
+                        // Check if any bounding box corner is inside zone, or zone ring crosses box
+                        inZone = IsPointInPolygonRing(polygon, mn)
+                              || IsPointInPolygonRing(polygon, mx)
+                              || IsPointInPolygonRing(polygon, new Point2d(mx.X, mn.Y))
+                              || IsPointInPolygonRing(polygon, new Point2d(mn.X, mx.Y))
+                              || ZoneRingCrossesBox(polygon, mn, mx);
+                    }
+                    if (!inZone)
+                        continue;
 
                     blocks.Add(new ShaftBlockInfo(br.Position, hasExt, e2));
                 }
@@ -302,6 +317,55 @@ namespace autocad_final.AreaWorkflow
             for (int i = 0; i < pl.NumberOfVertices; i++)
                 poly.Add(pl.GetPoint2dAt(i));
             return poly;
+        }
+
+        /// <summary>
+        /// Returns true if any edge of <paramref name="ring"/> crosses the axis-aligned box
+        /// defined by <paramref name="boxMin"/>/<paramref name="boxMax"/>.
+        /// </summary>
+        private static bool ZoneRingCrossesBox(IList<Point2d> ring, Point2d boxMin, Point2d boxMax)
+        {
+            if (ring == null || ring.Count < 2) return false;
+            double bx0 = Math.Min(boxMin.X, boxMax.X), bx1 = Math.Max(boxMin.X, boxMax.X);
+            double by0 = Math.Min(boxMin.Y, boxMax.Y), by1 = Math.Max(boxMin.Y, boxMax.Y);
+            int n = ring.Count;
+            for (int i = 0, j = n - 1; i < n; j = i++)
+            {
+                var a = ring[j]; var b = ring[i];
+                double ax = Math.Min(a.X, b.X), bxMax = Math.Max(a.X, b.X);
+                double ay = Math.Min(a.Y, b.Y), byMax = Math.Max(a.Y, b.Y);
+                if (bxMax < bx0 || ax > bx1 || byMax < by0 || ay > by1) continue;
+                // Segment intersects box AABB — do a line-vs-box clip test
+                if (SegmentIntersectsBox(a, b, bx0, bx1, by0, by1)) return true;
+            }
+            return false;
+        }
+
+        private static bool SegmentIntersectsBox(Point2d a, Point2d b,
+            double bx0, double bx1, double by0, double by1)
+        {
+            if ((a.X >= bx0 && a.X <= bx1 && a.Y >= by0 && a.Y <= by1) ||
+                (b.X >= bx0 && b.X <= bx1 && b.Y >= by0 && b.Y <= by1))
+                return true;
+            double dx = b.X - a.X, dy = b.Y - a.Y;
+            double tmin = 0, tmax = 1;
+            if (Math.Abs(dx) > 1e-12)
+            {
+                double t0 = (bx0 - a.X) / dx, t1 = (bx1 - a.X) / dx;
+                if (t0 > t1) { var tmp = t0; t0 = t1; t1 = tmp; }
+                tmin = Math.Max(tmin, t0); tmax = Math.Min(tmax, t1);
+                if (tmin > tmax) return false;
+            }
+            else if (a.X < bx0 || a.X > bx1) return false;
+            if (Math.Abs(dy) > 1e-12)
+            {
+                double t0 = (by0 - a.Y) / dy, t1 = (by1 - a.Y) / dy;
+                if (t0 > t1) { var tmp = t0; t0 = t1; t1 = tmp; }
+                tmin = Math.Max(tmin, t0); tmax = Math.Min(tmax, t1);
+                if (tmin > tmax) return false;
+            }
+            else if (a.Y < by0 || a.Y > by1) return false;
+            return tmin <= tmax;
         }
 
         /// <summary>Planar point-in-polygon (non-self-intersecting rings).</summary>
