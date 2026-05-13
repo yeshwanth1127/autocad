@@ -13,6 +13,8 @@ using autocad_final;
 [assembly: CommandClass(typeof(RouteMainPipeCommand))]
 [assembly: CommandClass(typeof(ApplySprinklersCommand))]
 [assembly: CommandClass(typeof(PlaceSprinklersCommand))]
+[assembly: CommandClass(typeof(PlaceRoomSprinklersCommand))]
+[assembly: CommandClass(typeof(RouteRoomSubMainCommand))]
 [assembly: CommandClass(typeof(CheckSprinklersAndFixCommand))]
 [assembly: CommandClass(typeof(FixOnSlantCommand))]
 [assembly: CommandClass(typeof(AttachBranchesCommand))]

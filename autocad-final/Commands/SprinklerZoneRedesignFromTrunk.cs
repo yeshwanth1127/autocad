@@ -57,7 +57,7 @@ namespace autocad_final.Commands
                     srCfg.SprinklerSpacingM,
                     out string shaftServeErr))
             {
-                errorMessage = shaftServeErr ?? "Shaft cannot serve the moved main pipe.";
+                errorMessage = shaftServeErr;
                 return false;
             }
 
@@ -102,7 +102,14 @@ namespace autocad_final.Commands
                 var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
                 var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
 
-                int zoneTaggedErased = EraseEntitiesWithZoneBoundaryTag(tr, ms, boundaryHandleHex, preserveSprinklerHeads, preserveConnector, trunkId);
+                int zoneTaggedErased = EraseEntitiesWithZoneBoundaryTag(
+                    tr,
+                    ms,
+                    boundaryHandleHex,
+                    preserveSprinklerHeads,
+                    preserveConnector,
+                    trunkId,
+                    zone != null ? zone.ObjectId : ObjectId.Null);
                 int capsErased = EraseTrunkCapsInZone(tr, ms, zoneRing);
                 int erased = EraseEntitiesInZone(tr, ms, zoneRing, preserveSprinklerHeads, trunkId);
                 int outsideSprinklersErased = EraseSprinklerMarkersOutsideZone(tr, ms, zoneRing, boundaryHandleHex);
@@ -253,25 +260,20 @@ namespace autocad_final.Commands
 
         /// <summary>
         /// Shows a Yes/No dialog when a connectivity problem is detected, letting the user
-        /// choose to proceed anyway (returns true) or cancel (returns false + errorMessage).
+        /// choose to proceed anyway (returns true) or cancel (returns false; caller should leave out error text so no second alert).
         /// </summary>
-        private static bool AskUserProceedDespiteDisconnection(Editor ed, string reason)
+        private static bool AskUserProceedDespiteDisconnection(Editor ed, string message, string caption = "Main pipe network")
         {
-            string msg =
-                reason + "\n\n" +
-                "The shaft may not be able to supply water to the moved main pipe.\n\n" +
-                "Do you want to proceed with routing branch pipes anyway?";
-
             var result = MessageBox.Show(
-                msg,
-                "Shaft Connectivity Warning",
+                message,
+                caption,
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Warning,
                 MessageBoxDefaultButton.Button2);   // default = No (safer)
 
             if (result == DialogResult.Yes)
             {
-                ed?.WriteMessage("\n[Warning] Proceeding despite shaft disconnection as requested.\n");
+                ed?.WriteMessage("\n[Warning] Proceeding despite main pipe connectivity warning as requested.\n");
                 return true;
             }
             return false;
@@ -384,13 +386,14 @@ namespace autocad_final.Commands
 
                 if (queue.Count == 0)
                 {
-                    string reason =
+                    string msg =
                         "Shaft cannot serve the moved main pipe.\n" +
-                        "No main pipe segment is within connection range of the shaft location.";
+                        "No main pipe segment is within connection range of the shaft location.\n\n" +
+                        "Do you want to proceed placing branch pipes?";
                     tr.Commit();
-                    if (AskUserProceedDespiteDisconnection(ed, reason))
+                    if (AskUserProceedDespiteDisconnection(ed, msg, "Shaft connectivity"))
                         return true;
-                    errorMessage = reason;
+                    errorMessage = null;
                     return false;
                 }
 
@@ -415,12 +418,11 @@ namespace autocad_final.Commands
                 tr.Commit();
             }
 
-            string disconnectReason =
-                "Shaft cannot serve the moved main pipe.\n" +
-                "There is a gap or disconnection between the shaft and the moved main pipe network.";
-            if (AskUserProceedDespiteDisconnection(ed, disconnectReason))
+            string gapMsg =
+                "There is a gap or disconnect found in the main pipe network. Do you want to proceed placing branch pipes?";
+            if (AskUserProceedDespiteDisconnection(ed, gapMsg))
                 return true;
-            errorMessage = disconnectReason;
+            errorMessage = null;
             return false;
         }
 
@@ -473,7 +475,8 @@ namespace autocad_final.Commands
             string boundaryHandleHex,
             bool preserveSprinklerMarkers,
             bool preserveConnector,
-            ObjectId preserveTrunkId)
+            ObjectId preserveTrunkId,
+            ObjectId preserveZoneBoundaryId)
         {
             int erased = 0;
             if (tr == null || ms == null || string.IsNullOrEmpty(boundaryHandleHex))
@@ -483,10 +486,14 @@ namespace autocad_final.Commands
             {
                 if (!preserveTrunkId.IsNull && id == preserveTrunkId)
                     continue;
+                if (!preserveZoneBoundaryId.IsNull && id == preserveZoneBoundaryId)
+                    continue;
                 Entity ent = null;
                 try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
                 catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
                 if (ent == null) continue;
+                if (IsZoneBoundaryEntity(ent))
+                    continue;
                 if (!SprinklerXData.TryGetZoneBoundaryHandle(ent, out var h) ||
                     !string.Equals(h, boundaryHandleHex, StringComparison.OrdinalIgnoreCase))
                     continue;
@@ -502,6 +509,21 @@ namespace autocad_final.Commands
             }
 
             return erased;
+        }
+
+        private static bool IsZoneBoundaryEntity(Entity ent)
+        {
+            var pl = ent as Polyline;
+            if (pl == null || !pl.Closed)
+                return false;
+
+            string layer = ent.Layer ?? string.Empty;
+            return
+                string.Equals(layer, SprinklerLayers.McdZoneBoundaryLayer, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(layer, SprinklerLayers.ZoneLayer, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(layer, SprinklerLayers.ZoneLayerAlternateName, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(layer, SprinklerLayers.ZoneGlobalBoundaryLayer, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(layer, SprinklerLayers.BoundaryLayer, StringComparison.OrdinalIgnoreCase);
         }
 
         private static int SnapExistingSprinklerHeadsInsideZone(

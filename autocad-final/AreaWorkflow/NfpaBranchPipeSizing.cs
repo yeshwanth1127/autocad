@@ -7,13 +7,14 @@ namespace autocad_final.AreaWorkflow
     /// <summary>
     /// Branch pipe schedule: minimum nominal diameter (mm) for a given number of sprinklers on the branch,
     /// matching the project pipe schedule (max sprinklers per Ø): 25→2, 32→3, 40→5, 50→10, 65→20, 80→40, 100→100, 150→275.
+    /// Counts beyond 275 still map to 150 mm nominal for plan labels and widths (manual heads may exceed the table).
     /// </summary>
     public static class NfpaBranchPipeSizing
     {
         /// <summary>
         /// Returns the smallest nominal pipe (mm) whose schedule row covers <paramref name="sprinklerCount"/> plan sprinklers
         /// (symbols on the branch — same counts as the PIPE SCHEDULE table).
-        /// Fails when <paramref name="sprinklerCount"/> exceeds 275 (150Ø row maximum).
+        /// Counts above the 150Ø row (275) still resolve to 150 mm so labels and routing can proceed when heads are added manually.
         /// </summary>
         public static bool TryGetMinNominalMmForSprinklerCount(int sprinklerCount, out int nominalMm)
         {
@@ -23,9 +24,6 @@ namespace autocad_final.AreaWorkflow
                 nominalMm = 25;
                 return true;
             }
-
-            if (sprinklerCount > 275)
-                return false;
 
             if (sprinklerCount <= 2) nominalMm = 25;
             else if (sprinklerCount <= 3) nominalMm = 32;

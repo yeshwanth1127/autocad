@@ -125,11 +125,12 @@ namespace autocad_final.UI
                 ("Initialize layers & blocks", InitializeStandardsPaletteAction.Run),
                 ("Define floor area — points", RunPointsArea),
                 ("Place sprinklers", PlaceSprinklersPaletteAction.Run),
+                ("Place sprinklers for rooms", RunPlaceRoomSprinklers),
                 ("Create zones",                   ZoneCreation2PaletteAction.Run),
                 ("Assign shaft to zone",       RunAssignShaftToZone),
                 ("Route main pipe",            RunRouteMainPipe),
                 ("Redesign from trunk",        RunRedesignFromTrunk),
-                ("Connect branches manually",  RunConnectBranchesManually),
+                ("Connect branches manually (optional main or branch pick)",  RunConnectBranchesManually),
                 ("Route branch pipes",         RunRouteBranchPipes),
                 ("Route branch pipe 2",        RunRouteBranchPipes2),
                 ("Place reducers",             RunPlaceReducers),
@@ -232,9 +233,10 @@ namespace autocad_final.UI
 
             var pnlGrid = new Panel
             {
-                Dock      = DockStyle.Fill,
-                BackColor = C_Bg,
-                Padding   = new Padding(8, 0, 8, 8)
+                Dock        = DockStyle.Fill,
+                BackColor   = C_Bg,
+                Padding     = new Padding(8, 0, 8, 8),
+                MinimumSize = new Size(100, 160)
             };
             pnlGrid.Controls.Add(_resultsGrid);
 
@@ -605,6 +607,25 @@ namespace autocad_final.UI
             }
         }
 
+        private void RunPlaceRoomSprinklers()
+        {
+            var doc = AcApp.DocumentManager.MdiActiveDocument;
+            if (doc == null)
+            {
+                MessageBox.Show("No active drawing. Open or create a drawing first.",
+                    "autocad-final", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            try
+            {
+                new PlaceRoomSprinklersCommand().PlaceRoomSprinklers();
+            }
+            catch (Exception ex)
+            {
+                PaletteCommandErrorUi.Show(ex, doc);
+            }
+        }
+
         private void RunRouteBranchPipes()
         {
             var doc = AcApp.DocumentManager.MdiActiveDocument;
@@ -636,7 +657,19 @@ namespace autocad_final.UI
             }
             try
             {
-                new ConnectBranchesManuallyCommand().ConnectBranchesManually();
+                // WinForms synchronous invoke leaves focus on the palette and breaks drawing-window entity pick /
+                // snap until the DWG view regains focus. Defer and queue the command (same idea as ZoneAreaCommand).
+                BeginInvoke(new Action(() =>
+                {
+                    try
+                    {
+                        doc.SendStringToExecute("._SPRINKLERCONNECTBRANCHESMANUALLY ", true, false, false);
+                    }
+                    catch (Exception ex)
+                    {
+                        PaletteCommandErrorUi.Show(ex, doc);
+                    }
+                }));
             }
             catch (Exception ex)
             {
@@ -885,7 +918,7 @@ namespace autocad_final.UI
                 sb.Append(" → ");
 
                 if (!string.IsNullOrEmpty(z.AssignedShaftName))
-                    sb.Append(z.AssignedShaftName).Append(" (manual)");
+                    sb.Append(z.AssignedShaftName);
                 else if (!z.ZoneOwnerIndex.HasValue)
                     sb.Append("—");
                 else if (z.ZoneOwnerIndex.Value < 0)

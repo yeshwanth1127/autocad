@@ -27,6 +27,11 @@ namespace autocad_final.UI
             {
                 PaletteCommandErrorUi.Show(ex, doc);
             }
+            finally
+            {
+                // Direct calls do not raise Document.CommandEnded — refresh results grid explicitly.
+                SprinklerPaletteZoneResults.PublishAssignmentsTable(doc.Database);
+            }
         }
     }
 }

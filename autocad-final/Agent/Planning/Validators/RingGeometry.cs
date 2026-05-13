@@ -122,6 +122,63 @@ namespace autocad_final.Agent.Planning.Validators
             return result;
         }
 
+        /// <summary>True if <paramref name="p"/> lies inside any non-degenerate ring in <paramref name="rings"/>.</summary>
+        internal static bool PointInAnyOfRings(IList<IList<Point2d>> rings, Point2d p)
+        {
+            if (rings == null) return false;
+            for (int i = 0; i < rings.Count; i++)
+            {
+                var r = rings[i];
+                if (r != null && r.Count >= 3 && PointInPolygon(r, p))
+                    return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Union of segment∩ring over all rings, expressed as merged (t0,t1) intervals along a→b.
+        /// </summary>
+        internal static List<(double t0, double t1)> ClipSegmentToRingsUnion(Point2d a, Point2d b, IList<IList<Point2d>> rings, double eps = 1e-7)
+        {
+            var raw = new List<(double t0, double t1)>();
+            if (rings == null || rings.Count == 0)
+                return raw;
+            for (int i = 0; i < rings.Count; i++)
+            {
+                var r = rings[i];
+                if (r == null || r.Count < 3) continue;
+                raw.AddRange(ClipSegmentToRing(a, b, r, eps));
+            }
+
+            return MergeParamIntervals01(raw, eps);
+        }
+
+        private static List<(double t0, double t1)> MergeParamIntervals01(List<(double t0, double t1)> intervals, double eps)
+        {
+            var result = new List<(double t0, double t1)>();
+            if (intervals == null || intervals.Count == 0)
+                return result;
+            intervals.Sort((x, y) => x.t0.CompareTo(y.t0));
+            double cur0 = intervals[0].t0;
+            double cur1 = intervals[0].t1;
+            for (int i = 1; i < intervals.Count; i++)
+            {
+                var (t0, t1) = intervals[i];
+                if (t0 <= cur1 + eps)
+                    cur1 = Math.Max(cur1, t1);
+                else
+                {
+                    result.Add((cur0, cur1));
+                    cur0 = t0;
+                    cur1 = t1;
+                }
+            }
+
+            result.Add((cur0, cur1));
+            return result;
+        }
+
         public static bool TrySegmentSegmentIntersect(Point2d a, Point2d b, Point2d c, Point2d d, out double tAB, double eps = 1e-9)
         {
             tAB = 0;

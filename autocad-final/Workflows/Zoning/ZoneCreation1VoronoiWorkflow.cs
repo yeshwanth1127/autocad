@@ -26,8 +26,11 @@ namespace autocad_final.Workflows.Zoning
             double tol = BoundaryEntityToClosedLwPolyline.CoincidentTolerance(db);
             if (tol <= 0) tol = 1e-6;
 
-            var shaftPts = FindShaftsInsideBoundary.GetShaftPositionsInsideBoundary(db, boundary);
-            var shaftSites = ShaftVoronoiZonesOnFloorPolyline.DedupeShaftSites(shaftPts, tol);
+            FindShaftsInsideBoundary.GetShaftHandlesAndPositionsInsideBoundary(db, boundary, out var shaftPts, out var shaftHandlesRaw);
+            ShaftVoronoiZonesOnFloorPolyline.DedupeShaftSitesWithHandles(
+                shaftPts, shaftHandlesRaw, tol,
+                out var shaftSites,
+                out var shaftHandlesDeduped);
             if (shaftSites.Count < 2)
             {
                 message = "Need at least two shaft sites inside the boundary (found " +
@@ -186,6 +189,11 @@ namespace autocad_final.Workflows.Zoning
                 zoneTable,
                 zoneOutlinesOnFloorBoundaryLayer: false,
                 createdZonePolylineHandles: createdZoneHandles);
+
+            AssignShaftToZoneCommand.ApplyDefaultShaftAssignmentsForCreatedZones(
+                db, createdZoneHandles, ownerIndexForRing, shaftHandlesDeduped, boundary);
+
+            // Palette refreshes zone→shaft table via CommandEnded + Idle (see SprinklerPaletteExtensionApplication).
 
             // If a previous run left global-boundary separator lines, clear them so the
             // output is the closed zone polylines (what the user expects to see/select).

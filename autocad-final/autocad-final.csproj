@@ -108,6 +108,7 @@
     <Compile Include="UI\InitializeStandardsPaletteAction.cs" />
     <Compile Include="UI\ZoneCreation1PaletteAction.cs" />
     <Compile Include="UI\ZoneCreation2PaletteAction.cs" />
+    <Compile Include="UI\SprinklerPaletteZoneResults.cs" />
     <Compile Include="UI\PluginMenu.cs" />
     <Compile Include="Commands\DefineBuildingAreaCommand.cs" />
     <Compile Include="Commands\PolygonAreaCommand.cs" />
@@ -122,6 +123,8 @@
     <Compile Include="Commands\ZoneCreation1Command.cs" />
     <Compile Include="Commands\ZoneCreation2Command.cs" />
     <Compile Include="Commands\PlaceSprinklersCommand.cs" />
+    <Compile Include="Commands\PlaceRoomSprinklersCommand.cs" />
+    <Compile Include="Commands\RouteRoomSubMainCommand.cs" />
     <Compile Include="Commands\CheckSprinklersAndFixCommand.cs" />
     <Compile Include="Commands\FixOnSlantCommand.cs" />
     <Compile Include="Commands\AttachBranchesCommand.cs" />
@@ -154,6 +157,8 @@
     <Compile Include="AreaWorkflow\SprinklerShaftFootprintExclusion.cs" />
     <Compile Include="AreaWorkflow\BranchPipeShaftDetour2d.cs" />
     <Compile Include="AreaWorkflow\SprinklerRoomFootprintExclusion.cs" />
+    <Compile Include="AreaWorkflow\RoomParentZoneResolver.cs" />
+    <Compile Include="AreaWorkflow\RoomSubMainBranchRouting.cs" />
     <Compile Include="AreaWorkflow\MainPipeDetector.cs" />
     <Compile Include="AreaWorkflow\AngleTrunkRouting2d.cs" />
     <Compile Include="Commands\AssignShaftToZoneCommand.cs" />
@@ -203,6 +208,8 @@
     <Compile Include="Workflows\Placement\BoundaryCoverageService.cs" />
     <Compile Include="Workflows\Placement\GridPlacementService.cs" />
     <Compile Include="Workflows\Placement\PlaceSprinklersWorkflow.cs" />
+    <Compile Include="Workflows\Placement\SprinklerGridInPolygonWorkflow.cs" />
+    <Compile Include="Workflows\Placement\PlaceRoomSprinklersWorkflow.cs" />
     <Compile Include="Workflows\Placement\PointFilter.cs" />
     <Compile Include="Workflows\Zoning\FixZonesWorkflow.cs" />
     <Compile Include="Workflows\Zoning\ZoneCreation1VoronoiWorkflow.cs" />

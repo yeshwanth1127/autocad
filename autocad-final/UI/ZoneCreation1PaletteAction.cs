@@ -27,6 +27,10 @@ namespace autocad_final.UI
             {
                 PaletteCommandErrorUi.Show(ex, doc);
             }
+            finally
+            {
+                SprinklerPaletteZoneResults.PublishAssignmentsTable(doc.Database);
+            }
         }
     }
 }

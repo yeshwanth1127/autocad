@@ -43,6 +43,46 @@ namespace autocad_final.AreaWorkflow
         }
 
         /// <summary>
+        /// Same deduplication as <see cref="DedupeShaftSites"/>, but keeps the shaft block handle (hex) for each
+        /// retained site — the first insert seen at that location wins.
+        /// </summary>
+        public static void DedupeShaftSitesWithHandles(
+            IList<Point3d> shaftPositions,
+            IList<string> shaftHandlesHex,
+            double tolerance,
+            out List<Point2d> sites,
+            out List<string> shaftHandlesPerSite)
+        {
+            sites = new List<Point2d>();
+            shaftHandlesPerSite = new List<string>();
+            if (shaftPositions == null)
+                return;
+
+            int n = shaftPositions.Count;
+            for (int i = 0; i < n; i++)
+            {
+                var p = shaftPositions[i];
+                string hx = (shaftHandlesHex != null && i < shaftHandlesHex.Count) ? shaftHandlesHex[i] : null;
+                var q = new Point2d(p.X, p.Y);
+                bool dup = false;
+                for (int j = 0; j < sites.Count; j++)
+                {
+                    if (sites[j].GetDistanceTo(q) <= tolerance)
+                    {
+                        dup = true;
+                        break;
+                    }
+                }
+
+                if (!dup)
+                {
+                    sites.Add(q);
+                    shaftHandlesPerSite.Add(hx);
+                }
+            }
+        }
+
+        /// <summary>
         /// Appends closed dashed polylines for each zone ring to model space, plus MText labels (Zone 1 …) on <see cref="SprinklerLayers.ZoneLabelLayer"/>.
         /// By default outlines go on <see cref="SprinklerLayers.ZoneLayer"/>; set <paramref name="zoneOutlinesOnFloorBoundaryLayer"/> so outlines use <see cref="SprinklerLayers.WorkLayer"/> (floor boundary).
         /// </summary>
@@ -51,6 +91,7 @@ namespace autocad_final.AreaWorkflow
         /// <param name="zoneOutlinesOnFloorBoundaryLayer">When true, zone polylines are placed on the floor boundary work layer (ByLayer color).</param>
         /// <param name="createdZonePolylineHandles">When non-null, each new zone outline polyline handle (hex) is appended in zone order.</param>
         /// <param name="useMcdZoneBoundaryLayer">When true, zone outline polylines use <see cref="SprinklerLayers.McdZoneBoundaryLayer"/> (create if missing).</param>
+        /// <param name="parentFloorBoundaryHandleHex">When set, stored on each zone outline as <see cref="SprinklerXData.ApplyParentFloorBoundaryTag"/>; when null and <paramref name="boundary"/> has a database id, uses <paramref name="boundary"/>'s handle.</param>
         public static void AppendZoneOutlinePolylines(
             Document doc,
             List<List<Point2d>> zoneRings,
@@ -58,7 +99,8 @@ namespace autocad_final.AreaWorkflow
             IList<ZoneTableEntry> zoneTable = null,
             bool zoneOutlinesOnFloorBoundaryLayer = false,
             List<string> createdZonePolylineHandles = null,
-            bool useMcdZoneBoundaryLayer = false)
+            bool useMcdZoneBoundaryLayer = false,
+            string parentFloorBoundaryHandleHex = null)
         {
             if (zoneRings == null || zoneRings.Count == 0)
                 return;
@@ -69,9 +111,13 @@ namespace autocad_final.AreaWorkflow
             using (doc.LockDocument())
             using (var tr = db.TransactionManager.StartTransaction())
             {
-                ObjectId layerId = zoneOutlinesOnFloorBoundaryLayer
-                    ? SprinklerLayers.EnsureWorkLayer(tr, db)
-                    : SprinklerLayers.EnsureZoneLayer(tr, db);
+                ObjectId layerId;
+                if (zoneOutlinesOnFloorBoundaryLayer)
+                    layerId = SprinklerLayers.EnsureWorkLayer(tr, db);
+                else if (useMcdZoneBoundaryLayer)
+                    layerId = SprinklerLayers.EnsureMcdZoneBoundaryLayer(tr, db);
+                else
+                    layerId = SprinklerLayers.EnsureZoneLayer(tr, db);
                 ObjectId labelLayerId = SprinklerLayers.EnsureZoneLabelLayer(tr, db);
                 ObjectId ltId = SprinklerLayers.EnsureLinetypePresent(tr, db, "DASHED", ed);
                 if (ltId.IsNull)
@@ -132,6 +178,19 @@ namespace autocad_final.AreaWorkflow
                     {
                         SprinklerXData.EnsureRegApp(tr, db);
                         SprinklerXData.ApplyZoneBoundaryTag(pl, pl.Handle.ToString());
+                    }
+                    catch
+                    {
+                        /* ignore */
+                    }
+
+                    try
+                    {
+                        string parentHex = parentFloorBoundaryHandleHex;
+                        if (string.IsNullOrEmpty(parentHex) && boundary != null && !boundary.ObjectId.IsNull && !boundary.IsErased)
+                            parentHex = boundary.Handle.ToString();
+                        if (!string.IsNullOrEmpty(parentHex))
+                            SprinklerXData.ApplyParentFloorBoundaryTag(pl, parentHex);
                     }
                     catch
                     {

@@ -45,6 +45,7 @@ namespace autocad_final.Commands
                     SprinklerLayers.EnsureMcdMainPipeLayer(tr, db);
                     SprinklerLayers.EnsureMcdBranchPipeLayer(tr, db);
                     SprinklerLayers.EnsureMcdLabelLayer(tr, db);
+                    SprinklerLayers.EnsureMcdRoomBoundaryLayer(tr, db);
 
                     // Block definitions — load from central BlocksLibrary.dwg when present,
                     // otherwise fall back to in-code geometry so the plugin still initializes.

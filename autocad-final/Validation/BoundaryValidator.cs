@@ -33,5 +33,19 @@ namespace autocad_final.Validation
                 return string.Equals(layer.Trim(), SprinklerLayers.McdFloorBoundaryLayer, StringComparison.OrdinalIgnoreCase);
             }
         }
+
+        public static bool IsMcdRoomBoundary(Database db, ObjectId boundaryEntityId)
+        {
+            if (db == null || boundaryEntityId.IsNull)
+                return false;
+
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                var obj = tr.GetObject(boundaryEntityId, OpenMode.ForRead, false) as Entity;
+                string layer = obj?.Layer ?? string.Empty;
+                tr.Commit();
+                return string.Equals(layer.Trim(), SprinklerLayers.McdRoomBoundaryLayer, StringComparison.OrdinalIgnoreCase);
+            }
+        }
     }
 }

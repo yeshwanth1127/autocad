@@ -4,23 +4,44 @@ using System.Globalization;
 using System.Text;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
+using Autodesk.AutoCAD.Runtime;
 using autocad_final.Geometry;
 
 namespace autocad_final.AreaWorkflow
 {
     public static class FindShaftsInsideBoundary
-    {        public readonly struct ShaftBlockInfo
+    {
+        /// <summary>Shaft block insert (or virtual hint): position, optional 2D extents, and block handle when applicable.</summary>
+        public readonly struct ShaftBlockInfo
         {
             public readonly Point3d Position;
             public readonly bool HasExtents;
             public readonly Extents2d Extents2d;
+            /// <summary>Insert database handle (hex), or null for session shaft hints.</summary>
+            public readonly string BlockHandleHex;
 
-            public ShaftBlockInfo(Point3d position, bool hasExtents, Extents2d extents2d)
+            public ShaftBlockInfo(Point3d position, bool hasExtents, Extents2d extents2d, string blockHandleHex = null)
             {
                 Position = position;
                 HasExtents = hasExtents;
                 Extents2d = extents2d;
+                BlockHandleHex = blockHandleHex;
             }
+        }
+
+        /// <summary>
+        /// Same rule as zoning / <see cref="GetShaftBlocksInsideBoundary"/>: block name contains "shaft",
+        /// or layer name contains "shaft", or layer is <see cref="SprinklerLayers.McdShaftsLayer"/>.
+        /// </summary>
+        public static bool IsShaftBlockInsert(BlockReference br, Transaction tr)
+        {
+            if (br == null || tr == null) return false;
+            string blockName = GetBlockName(br, tr);
+            string brLayer = br.Layer ?? string.Empty;
+            bool blockMatch = blockName.IndexOf("shaft", StringComparison.OrdinalIgnoreCase) >= 0;
+            bool layerMatch = brLayer.IndexOf("shaft", StringComparison.OrdinalIgnoreCase) >= 0
+                || string.Equals(brLayer, SprinklerLayers.McdShaftsLayer, StringComparison.OrdinalIgnoreCase);
+            return blockMatch || layerMatch;
         }
 
         /// <summary>
@@ -29,8 +50,19 @@ namespace autocad_final.AreaWorkflow
         /// </summary>
         public static List<ShaftBlockInfo> GetShaftBlocksInsideBoundary(Database db, Polyline boundary)
         {
+            if (boundary == null)
+                return new List<ShaftBlockInfo>();
+            return GetShaftBlocksInsidePolygonRing(db, GetPolygon2d(boundary));
+        }
+
+        /// <summary>
+        /// Same as <see cref="GetShaftBlocksInsideBoundary"/> but for an arbitrary closed 2D ring (plan).
+        /// </summary>
+        public static List<ShaftBlockInfo> GetShaftBlocksInsidePolygonRing(Database db, IList<Point2d> polygon)
+        {
             var blocks = new List<ShaftBlockInfo>();
-            var polygon = GetPolygon2d(boundary);
+            if (polygon == null || polygon.Count < 3)
+                return blocks;
 
             using (var tr = db.TransactionManager.StartTransaction())
             {
@@ -42,12 +74,7 @@ namespace autocad_final.AreaWorkflow
                     var ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
                     if (!(ent is BlockReference br)) continue;
 
-                    string blockName = GetBlockName(br, tr);
-                    string brLayer   = br.Layer ?? string.Empty;
-                    bool blockMatch  = blockName.IndexOf("shaft", System.StringComparison.OrdinalIgnoreCase) >= 0;
-                    bool layerMatch  = brLayer.IndexOf("shaft", System.StringComparison.OrdinalIgnoreCase) >= 0
-                        || string.Equals(brLayer, SprinklerLayers.McdShaftsLayer, System.StringComparison.OrdinalIgnoreCase);
-                    if (!blockMatch && !layerMatch)
+                    if (!IsShaftBlockInsert(br, tr))
                         continue;
 
                     var p2 = new Point2d(br.Position.X, br.Position.Y);
@@ -65,14 +92,11 @@ namespace autocad_final.AreaWorkflow
                         hasExt = false;
                     }
 
-                    // Include shaft if insertion point is inside zone, OR if its bounding box
-                    // overlaps the zone (handles shafts straddling the zone boundary).
                     bool inZone = IsPointInPolygonRing(polygon, p2);
                     if (!inZone && hasExt)
                     {
                         var mn = e2.MinPoint;
                         var mx = e2.MaxPoint;
-                        // Check if any bounding box corner is inside zone, or zone ring crosses box
                         inZone = IsPointInPolygonRing(polygon, mn)
                               || IsPointInPolygonRing(polygon, mx)
                               || IsPointInPolygonRing(polygon, new Point2d(mx.X, mn.Y))
@@ -82,12 +106,11 @@ namespace autocad_final.AreaWorkflow
                     if (!inZone)
                         continue;
 
-                    blocks.Add(new ShaftBlockInfo(br.Position, hasExt, e2));
+                    blocks.Add(new ShaftBlockInfo(br.Position, hasExt, e2, br.Handle.ToString()));
                 }
                 tr.Commit();
             }
 
-            // Merge session shaft hints (virtual shafts registered when drawing has no named shaft blocks).
             foreach (var hint in autocad_final.Agent.ShaftHintStore.GetAll())
             {
                 var p2 = new Point2d(hint.X, hint.Y);
@@ -108,6 +131,26 @@ namespace autocad_final.AreaWorkflow
             foreach (var b in blocks)
                 points.Add(b.Position);
             return points;
+        }
+
+        /// <summary>
+        /// Parallel shaft positions and block handles (hex), same order as <see cref="GetShaftBlocksInsideBoundary"/>.
+        /// Handle is null for session shaft hints (no block to assign on zone).
+        /// </summary>
+        public static void GetShaftHandlesAndPositionsInsideBoundary(
+            Database db,
+            Polyline boundary,
+            out List<Point3d> positions,
+            out List<string> handlesHex)
+        {
+            var blocks = GetShaftBlocksInsideBoundary(db, boundary);
+            positions = new List<Point3d>(blocks.Count);
+            handlesHex = new List<string>(blocks.Count);
+            foreach (var b in blocks)
+            {
+                positions.Add(b.Position);
+                handlesHex.Add(b.BlockHandleHex);
+            }
         }
 
         public static void Run(Database db, Polyline boundary, out int count, out string coordinates)
@@ -185,7 +228,7 @@ namespace autocad_final.AreaWorkflow
                                         }
                                         catch { }
 
-                                        shaft = new ShaftBlockInfo(br.Position, hasExt, e2);
+                                        shaft = new ShaftBlockInfo(br.Position, hasExt, e2, br.Handle.ToString());
                                         tr.Commit();
                                         return true;
                                     }
@@ -254,12 +297,7 @@ namespace autocad_final.AreaWorkflow
                     if (!(ent is BlockReference br))
                         continue;
 
-                    string blockName = GetBlockName(br, tr);
-                    string brLayer = br.Layer ?? string.Empty;
-                    bool blockMatch = blockName.IndexOf("shaft", StringComparison.OrdinalIgnoreCase) >= 0;
-                    bool layerMatch = brLayer.IndexOf("shaft", StringComparison.OrdinalIgnoreCase) >= 0
-                        || string.Equals(brLayer, SprinklerLayers.McdShaftsLayer, StringComparison.OrdinalIgnoreCase);
-                    if (!blockMatch && !layerMatch)
+                    if (!IsShaftBlockInsert(br, tr))
                         continue;
 
                     raw.Add(br.Position);
@@ -384,6 +422,138 @@ namespace autocad_final.AreaWorkflow
             return inside;
         }
 
+        /// <summary>
+        /// Every shaft block insert in model space matching <see cref="IsShaftBlockInsert"/> (no boundary filter).
+        /// Used when no floor ring can be resolved for palette scans.
+        /// </summary>
+        public static List<ShaftBlockInfo> GetAllShaftBlockInsertsInModelSpace(Database db)
+        {
+            var blocks = new List<ShaftBlockInfo>();
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+                foreach (ObjectId id in ms)
+                {
+                    var ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
+                    if (!(ent is BlockReference br)) continue;
+                    if (!IsShaftBlockInsert(br, tr)) continue;
+                    blocks.Add(new ShaftBlockInfo(br.Position, false, default, br.Handle.ToString()));
+                }
+
+                tr.Commit();
+            }
+
+            return blocks;
+        }
+
+        /// <summary>
+        /// Reads a closed model-space polyline vertex ring by handle (hex). Used to scope shaft lists to the floor parcel
+        /// stored in xdata when several floors exist in one drawing.
+        /// </summary>
+        public static bool TryGetClosedPolylineRingByHandle(Database db, string polylineHandleHex, out List<Point2d> ring)
+        {
+            ring = null;
+            if (db == null || string.IsNullOrWhiteSpace(polylineHandleHex))
+                return false;
+            if (!long.TryParse(polylineHandleHex.Trim(), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out long hval))
+                return false;
+            try
+            {
+                using (var tr = db.TransactionManager.StartOpenCloseTransaction())
+                {
+                    var h = new Handle(hval);
+                    if (!db.TryGetObjectId(h, out ObjectId id) || id.IsNull)
+                        return false;
+                    Polyline pl;
+                    try { pl = tr.GetObject(id, OpenMode.ForRead, false) as Polyline; }
+                    catch { return false; }
+                    if (pl == null || pl.IsErased || !pl.Closed)
+                        return false;
+                    List<Point2d> r;
+                    try { r = GetPolygon2d(pl); }
+                    catch { return false; }
+                    if (r == null || r.Count < 3)
+                        return false;
+                    ring = new List<Point2d>(r);
+                    tr.Commit();
+                }
+            }
+            catch
+            {
+                ring = null;
+                return false;
+            }
+            return ring != null && ring.Count >= 3;
+        }
+
+        /// <summary>
+        /// Among closed polylines on <see cref="SprinklerLayers.McdFloorBoundaryLayer"/>, <see cref="SprinklerLayers.WorkLayer"/>,
+        /// or <see cref="SprinklerLayers.BoundaryLayer"/>, picks the smallest-area polygon whose interior contains every point in <paramref name="points"/> (2D).
+        /// </summary>
+        public static bool TryFindSmallestFloorRingContainingAllPoints(
+            Database db,
+            Transaction tr,
+            IList<Point2d> points,
+            out List<Point2d> floorRing)
+        {
+            floorRing = null;
+            if (db == null || tr == null || points == null || points.Count == 0)
+                return false;
+
+            List<Point2d> bestRing = null;
+            double bestArea = double.MaxValue;
+
+            var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+            var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+            var polylineClass = RXClass.GetClass(typeof(Polyline));
+
+            foreach (ObjectId id in ms)
+            {
+                if (!id.ObjectClass.IsDerivedFrom(polylineClass)) continue;
+                Polyline pl;
+                try { pl = tr.GetObject(id, OpenMode.ForRead, false) as Polyline; }
+                catch { continue; }
+                if (pl == null || pl.IsErased || !pl.Closed) continue;
+
+                string lay = pl.Layer ?? string.Empty;
+                if (!string.Equals(lay, SprinklerLayers.McdFloorBoundaryLayer, StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(lay, SprinklerLayers.WorkLayer, StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(lay, SprinklerLayers.BoundaryLayer, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                List<Point2d> ring;
+                try { ring = GetPolygon2d(pl); }
+                catch { continue; }
+                if (ring.Count < 3) continue;
+
+                bool allInside = true;
+                for (int i = 0; i < points.Count; i++)
+                {
+                    if (!IsPointInPolygonRing(ring, points[i]))
+                    {
+                        allInside = false;
+                        break;
+                    }
+                }
+
+                if (!allInside) continue;
+
+                double area = 0;
+                try { area = Math.Abs(pl.Area); } catch { area = double.PositiveInfinity; }
+                if (area < bestArea)
+                {
+                    bestArea = area;
+                    bestRing = new List<Point2d>(ring);
+                }
+            }
+
+            if (bestRing == null)
+                return false;
+            floorRing = bestRing;
+            return true;
+        }
+
         private static string FormatCoordinates(IList<Point3d> points)
         {
             if (points == null || points.Count == 0)
@@ -401,6 +571,12 @@ namespace autocad_final.AreaWorkflow
             }
             return sb.ToString();
         }
+
+        /// <summary>
+        /// Formats WCS insertion points for the results table — order must match <see cref="IsShaftBlockInsert"/> scan
+        /// after the same left-to-right, bottom-to-top sort used for "Shaft N" labels.
+        /// </summary>
+        public static string FormatShaftPositionsForTable(IList<Point3d> points) => FormatCoordinates(points);
     }
 }
 

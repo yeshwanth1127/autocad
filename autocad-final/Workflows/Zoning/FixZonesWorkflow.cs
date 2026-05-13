@@ -5,6 +5,7 @@ using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
 using autocad_final.AreaWorkflow;
+using autocad_final.Commands;
 using autocad_final.Geometry;
 
 namespace autocad_final.Workflows.Zoning
@@ -86,8 +87,11 @@ namespace autocad_final.Workflows.Zoning
                                  " centroid-in-other-zone cases (review if unexpected).";
             }
 
-            var shafts3 = FindShaftsInsideBoundary.GetShaftPositionsInsideBoundary(db, floorBoundary);
-            var shaftSites = ShaftVoronoiZonesOnFloorPolyline.DedupeShaftSites(shafts3, tol);
+            FindShaftsInsideBoundary.GetShaftHandlesAndPositionsInsideBoundary(db, floorBoundary, out var shafts3, out var shaftHandlesRaw);
+            ShaftVoronoiZonesOnFloorPolyline.DedupeShaftSitesWithHandles(
+                shafts3, shaftHandlesRaw, tol,
+                out var shaftSites,
+                out var shaftHandlesDeduped);
 
             var ringsWithOwner = new List<(List<Point2d> Ring, int Owner)>();
             for (int i = 0; i < processedRings.Count; i++)
@@ -135,6 +139,14 @@ namespace autocad_final.Workflows.Zoning
                 zoneTable,
                 zoneOutlinesOnFloorBoundaryLayer: false,
                 createdZonePolylineHandles: createdZoneHandles);
+
+            var ownersList = new List<int>(ringsWithOwner.Count);
+            for (int i = 0; i < ringsWithOwner.Count; i++)
+                ownersList.Add(ringsWithOwner[i].Owner);
+            AssignShaftToZoneCommand.ApplyDefaultShaftAssignmentsForCreatedZones(
+                db, createdZoneHandles, ownersList, shaftHandlesDeduped, floorBoundary);
+
+            // Palette refreshes zone→shaft table via CommandEnded + Idle (see SprinklerPaletteExtensionApplication).
 
             // Remove legacy ManhattanFixed temporary output (lines + region polylines tagged with their own handle),
             // and clear any prior global-boundary separator lines so the output is the closed zone polylines only

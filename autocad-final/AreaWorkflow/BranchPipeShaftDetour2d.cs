@@ -66,7 +66,7 @@ namespace autocad_final.AreaWorkflow
             Point2d a,
             Point2d b,
             IList<(Point2d min, Point2d max)> boxes,
-            IList<Point2d> zoneRing,
+            IList<IList<Point2d>> zoneRings,
             double tol)
         {
             var two = new List<Point2d> { a, b };
@@ -83,15 +83,15 @@ namespace autocad_final.AreaWorkflow
                 return DedupeConsecutive(two, tol);
 
             if (horiz)
-                return DedupeConsecutive(HorizontalPath(a, b, boxes, zoneRing, tol), tol);
-            return DedupeConsecutive(VerticalPath(a, b, boxes, zoneRing, tol), tol);
+                return DedupeConsecutive(HorizontalPath(a, b, boxes, zoneRings, tol), tol);
+            return DedupeConsecutive(VerticalPath(a, b, boxes, zoneRings, tol), tol);
         }
 
         private static List<Point2d> HorizontalPath(
             Point2d a,
             Point2d b,
             IList<(Point2d min, Point2d max)> boxes,
-            IList<Point2d> zoneRing,
+            IList<IList<Point2d>> zoneRings,
             double tol)
         {
             double y = 0.5 * (a.Y + b.Y);
@@ -107,7 +107,7 @@ namespace autocad_final.AreaWorkflow
             if (merged.Count == 0)
                 return new List<Point2d> { a, b };
 
-            if (!TryPickHorizontalDetourY(y, ax, bx, merged, boxes, zoneRing, tol, out double yDet))
+            if (!TryPickHorizontalDetourY(y, ax, bx, merged, boxes, zoneRings, tol, out double yDet))
                 return new List<Point2d> { a, b };
 
             var forward = BuildHorizontalLeftToRight(ax, bx, y, merged, yDet, tol);
@@ -125,7 +125,7 @@ namespace autocad_final.AreaWorkflow
             Point2d a,
             Point2d b,
             IList<(Point2d min, Point2d max)> boxes,
-            IList<Point2d> zoneRing,
+            IList<IList<Point2d>> zoneRings,
             double tol)
         {
             double x = 0.5 * (a.X + b.X);
@@ -141,7 +141,7 @@ namespace autocad_final.AreaWorkflow
             if (merged.Count == 0)
                 return new List<Point2d> { a, b };
 
-            if (!TryPickVerticalDetourX(x, ay, by, merged, boxes, zoneRing, tol, out double xDet))
+            if (!TryPickVerticalDetourX(x, ay, by, merged, boxes, zoneRings, tol, out double xDet))
                 return new List<Point2d> { a, b };
 
             var forward = BuildVerticalBottomToTop(x, ay, by, merged, xDet, tol);
@@ -244,7 +244,7 @@ namespace autocad_final.AreaWorkflow
             double bx,
             List<(double lo, double hi)> merged,
             IList<(Point2d min, Point2d max)> boxes,
-            IList<Point2d> zoneRing,
+            IList<IList<Point2d>> zoneRings,
             double tol,
             out double yDet)
         {
@@ -284,12 +284,12 @@ namespace autocad_final.AreaWorkflow
             double first = preferUp ? yUp : yDn;
             double second = preferUp ? yDn : yUp;
 
-            if (HorizontalDetourFeasibleInZone(ax, bx, merged, first, zoneRing, te))
+            if (HorizontalDetourFeasibleInZone(ax, bx, merged, first, zoneRings, te))
             {
                 yDet = first;
                 return true;
             }
-            if (HorizontalDetourFeasibleInZone(ax, bx, merged, second, zoneRing, te))
+            if (HorizontalDetourFeasibleInZone(ax, bx, merged, second, zoneRings, te))
             {
                 yDet = second;
                 return true;
@@ -304,16 +304,16 @@ namespace autocad_final.AreaWorkflow
             double bx,
             List<(double lo, double hi)> merged,
             double yDet,
-            IList<Point2d> zoneRing,
+            IList<IList<Point2d>> zoneRings,
             double te)
         {
-            if (zoneRing == null || zoneRing.Count < 3)
+            if (zoneRings == null || zoneRings.Count == 0)
                 return true;
             foreach (var iv in merged)
             {
                 double mx = 0.5 * (Math.Max(ax, iv.lo) + Math.Min(bx, iv.hi));
                 var p = new Point2d(mx, yDet);
-                if (!RingGeometry.PointInPolygon(zoneRing, p))
+                if (!RingGeometry.PointInAnyOfRings(zoneRings, p))
                     return false;
             }
             return true;
@@ -325,7 +325,7 @@ namespace autocad_final.AreaWorkflow
             double by,
             List<(double lo, double hi)> merged,
             IList<(Point2d min, Point2d max)> boxes,
-            IList<Point2d> zoneRing,
+            IList<IList<Point2d>> zoneRings,
             double tol,
             out double xDet)
         {
@@ -364,12 +364,12 @@ namespace autocad_final.AreaWorkflow
             double first = preferRt ? xRt : xLt;
             double second = preferRt ? xLt : xRt;
 
-            if (VerticalDetourFeasibleInZone(ay, by, merged, first, zoneRing, te))
+            if (VerticalDetourFeasibleInZone(ay, by, merged, first, zoneRings, te))
             {
                 xDet = first;
                 return true;
             }
-            if (VerticalDetourFeasibleInZone(ay, by, merged, second, zoneRing, te))
+            if (VerticalDetourFeasibleInZone(ay, by, merged, second, zoneRings, te))
             {
                 xDet = second;
                 return true;
@@ -384,16 +384,16 @@ namespace autocad_final.AreaWorkflow
             double by,
             List<(double lo, double hi)> merged,
             double xDet,
-            IList<Point2d> zoneRing,
+            IList<IList<Point2d>> zoneRings,
             double te)
         {
-            if (zoneRing == null || zoneRing.Count < 3)
+            if (zoneRings == null || zoneRings.Count == 0)
                 return true;
             foreach (var iv in merged)
             {
                 double my = 0.5 * (Math.Max(ay, iv.lo) + Math.Min(by, iv.hi));
                 var p = new Point2d(xDet, my);
-                if (!RingGeometry.PointInPolygon(zoneRing, p))
+                if (!RingGeometry.PointInAnyOfRings(zoneRings, p))
                     return false;
             }
             return true;

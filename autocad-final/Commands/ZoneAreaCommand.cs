@@ -64,9 +64,13 @@ namespace autocad_final.Commands
             var db = doc.Database;
             try
             {
-                var shaftPts = FindShaftsInsideBoundary.GetShaftPositionsInsideBoundary(db, boundary);
+                FindShaftsInsideBoundary.GetShaftHandlesAndPositionsInsideBoundary(db, boundary, out var shaftPts, out var shaftHandlesRaw);
                 double tol = BoundaryEntityToClosedLwPolyline.CoincidentTolerance(db);
-                var sites = ShaftVoronoiZonesOnFloorPolyline.DedupeShaftSites(shaftPts, tol);
+                if (tol <= 0) tol = 1e-6;
+                ShaftVoronoiZonesOnFloorPolyline.DedupeShaftSitesWithHandles(
+                    shaftPts, shaftHandlesRaw, tol,
+                    out var sites,
+                    out _);
                 if (sites.Count < 2)
                 {
                     PaletteCommandErrorUi.ShowDialogThenCommandLine(
@@ -211,9 +215,15 @@ namespace autocad_final.Commands
                     ed.WriteMessage(s);
             }
 
-            var shaftPts = FindShaftsInsideBoundary.GetShaftPositionsInsideBoundary(db, boundary);
+            var outlineHandles = createdZoneBoundaryHandles ?? new List<string>();
+
+            FindShaftsInsideBoundary.GetShaftHandlesAndPositionsInsideBoundary(db, boundary, out var shaftPts, out var shaftHandlesRaw);
             double tol = BoundaryEntityToClosedLwPolyline.CoincidentTolerance(db);
-            var sites = ShaftVoronoiZonesOnFloorPolyline.DedupeShaftSites(shaftPts, tol);
+            if (tol <= 0) tol = 1e-6;
+            ShaftVoronoiZonesOnFloorPolyline.DedupeShaftSitesWithHandles(
+                shaftPts, shaftHandlesRaw, tol,
+                out var sites,
+                out var shaftHandlesDeduped);
 
             double rawArea = boundary.Area;
 
@@ -301,7 +311,8 @@ namespace autocad_final.Commands
                     }
 
                     ShaftVoronoiZonesOnFloorPolyline.AppendZoneOutlinePolylines(
-                        doc, zoneRings, boundary, metrics.ZoneTable, zoneOutlinesOnFloorBoundaryLayer: true, createdZoneBoundaryHandles);
+                        doc, zoneRings, boundary, metrics.ZoneTable, zoneOutlinesOnFloorBoundaryLayer: true, outlineHandles);
+                    FinishZoneOutlinesWithAutoShaftAssignment(db, metrics, outlineHandles, ringShaftIdx, shaftHandlesDeduped, boundary);
                     Msg("\nZone outlines added on layer \"" + SprinklerLayers.WorkLayer + "\" (floor boundary, dashed); labels on \"" +
                         SprinklerLayers.ZoneLabelLayer + "\".\n");
                     foreach (var z in metrics.ZoneTable)
@@ -382,7 +393,9 @@ namespace autocad_final.Commands
                 }
 
                 ShaftVoronoiZonesOnFloorPolyline.AppendZoneOutlinePolylines(
-                    doc, zoneRings, boundary, metrics.ZoneTable, zoneOutlinesOnFloorBoundaryLayer: true, createdZoneBoundaryHandles);
+                    doc, zoneRings, boundary, metrics.ZoneTable, zoneOutlinesOnFloorBoundaryLayer: true, outlineHandles);
+                var shaftHexMidline = dedupBlocks.ConvertAll(b => b.BlockHandleHex);
+                FinishZoneOutlinesWithAutoShaftAssignment(db, metrics, outlineHandles, ringShaftIdx, shaftHexMidline, boundary);
                 Msg("\nZone outlines added on layer \"" + SprinklerLayers.WorkLayer + "\" (floor boundary, dashed); labels on \"" +
                     SprinklerLayers.ZoneLabelLayer + "\".\n");
                 return true;
@@ -426,7 +439,8 @@ namespace autocad_final.Commands
 
                 ShaftVoronoiZonesOnFloorPolyline.AppendZoneOutlinePolylines(
                     doc, bisectRings, boundary, metrics.ZoneTable,
-                    zoneOutlinesOnFloorBoundaryLayer: false, createdZoneBoundaryHandles);
+                    zoneOutlinesOnFloorBoundaryLayer: false, outlineHandles);
+                FinishZoneOutlinesWithAutoShaftAssignment(db, metrics, outlineHandles, bisectOwners, shaftHandlesDeduped, boundary);
                 Msg("\nZone outlines added on layer \"" + SprinklerLayers.ZoneLayer + "\" (equal-area bisection, dashed); labels on \"" +
                     SprinklerLayers.ZoneLabelLayer + "\".\n");
                 return true;
@@ -514,7 +528,8 @@ namespace autocad_final.Commands
                     }
 
                     ShaftVoronoiZonesOnFloorPolyline.AppendZoneOutlinePolylines(
-                        doc, zoneRings, boundary, metrics.ZoneTable, zoneOutlinesOnFloorBoundaryLayer: false, createdZoneBoundaryHandles);
+                        doc, zoneRings, boundary, metrics.ZoneTable, zoneOutlinesOnFloorBoundaryLayer: false, outlineHandles);
+                    FinishZoneOutlinesWithAutoShaftAssignment(db, metrics, outlineHandles, ringShaftIdx, shaftHandlesDeduped, boundary);
                     Msg("\nZone outlines added on layer \"" + SprinklerLayers.ZoneLayer + "\" (green, dashed); labels on \"" +
                         SprinklerLayers.ZoneLabelLayer + "\".\n");
                     foreach (var z in metrics.ZoneTable)
@@ -554,9 +569,15 @@ namespace autocad_final.Commands
                     ed.WriteMessage(s);
             }
 
-            var shaftPts = FindShaftsInsideBoundary.GetShaftPositionsInsideBoundary(db, boundary);
+            var outlineHandles = createdZoneBoundaryHandles ?? new List<string>();
+
+            FindShaftsInsideBoundary.GetShaftHandlesAndPositionsInsideBoundary(db, boundary, out var shaftPts, out var shaftHandlesRaw);
             double tol = BoundaryEntityToClosedLwPolyline.CoincidentTolerance(db);
-            var sites = ShaftVoronoiZonesOnFloorPolyline.DedupeShaftSites(shaftPts, tol);
+            if (tol <= 0) tol = 1e-6;
+            ShaftVoronoiZonesOnFloorPolyline.DedupeShaftSitesWithHandles(
+                shaftPts, shaftHandlesRaw, tol,
+                out var sites,
+                out var shaftHandlesDeduped);
 
             metrics = new PolygonMetrics
             {
@@ -634,7 +655,11 @@ namespace autocad_final.Commands
 
             ShaftVoronoiZonesOnFloorPolyline.AppendZoneOutlinePolylines(
                 doc, zoneRings, boundary, metrics.ZoneTable,
-                zoneOutlinesOnFloorBoundaryLayer: false, createdZoneBoundaryHandles);
+                zoneOutlinesOnFloorBoundaryLayer: false, outlineHandles);
+            var llmOwners = new List<int>(zoneRings.Count);
+            for (int zi = 0; zi < zoneRings.Count; zi++)
+                llmOwners.Add(zi);
+            FinishZoneOutlinesWithAutoShaftAssignment(db, metrics, outlineHandles, llmOwners, shaftHandlesDeduped, boundary);
             Msg("\nZone outlines added on layer \"" + SprinklerLayers.ZoneLayer + "\" (LLM straight cuts, dashed); labels on \"" +
                 SprinklerLayers.ZoneLabelLayer + "\".\n");
             return true;
@@ -643,6 +668,22 @@ namespace autocad_final.Commands
         /// <summary>Returns true when zoning produced at least one zone outline row.</summary>
         public static bool OutlinesWereDrawn(PolygonMetrics metrics)
             => metrics?.ZoneTable != null && metrics.ZoneTable.Count > 0;
+
+        private static void FinishZoneOutlinesWithAutoShaftAssignment(
+            Database db,
+            PolygonMetrics metrics,
+            List<string> outlineHandles,
+            IList<int> ownerIndexPerRing,
+            IList<string> shaftHandleHexPerDedupedSite,
+            Polyline floorBoundary)
+        {
+            if (outlineHandles == null || outlineHandles.Count == 0 || metrics == null ||
+                ownerIndexPerRing == null || shaftHandleHexPerDedupedSite == null)
+                return;
+            AssignShaftToZoneCommand.ApplyDefaultShaftAssignmentsForCreatedZones(
+                db, outlineHandles, ownerIndexPerRing, shaftHandleHexPerDedupedSite, floorBoundary);
+            AssignShaftToZoneCommand.MergeShaftAssignmentDisplayNamesIntoZoneTable(db, metrics);
+        }
 
         private static List<FindShaftsInsideBoundary.ShaftBlockInfo> DedupeShaftBlocks(
             IList<FindShaftsInsideBoundary.ShaftBlockInfo> blocks,

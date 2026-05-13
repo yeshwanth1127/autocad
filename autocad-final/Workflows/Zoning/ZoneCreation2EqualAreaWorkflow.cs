@@ -5,6 +5,7 @@ using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
 using autocad_final.AreaWorkflow;
+using autocad_final.Commands;
 using autocad_final.Geometry;
 
 namespace autocad_final.Workflows.Zoning
@@ -13,6 +14,10 @@ namespace autocad_final.Workflows.Zoning
     /// Zone creation 2: partition the floor into <c>N</c> approximately equal-area zones (one per shaft),
     /// using recursive equal-area bisection when possible, otherwise equal-area axis-aligned strips.
     /// </summary>
+    /// <remarks>
+    /// Future: subtract labeled room footprints (see <see cref="SprinklerRoomFootprintExclusion"/>) from the floor
+    /// region before partition so zone separators do not bisect defined rooms — requires robust 2D region booleans and QA.
+    /// </remarks>
     public static class ZoneCreation2EqualAreaWorkflow
     {
         public static bool TryRun(Document doc, Polyline boundary, ObjectId boundaryEntityId, out string message)
@@ -25,8 +30,11 @@ namespace autocad_final.Workflows.Zoning
             double tol = BoundaryEntityToClosedLwPolyline.CoincidentTolerance(db);
             if (tol <= 0) tol = 1e-6;
 
-            var shaftPts3 = FindShaftsInsideBoundary.GetShaftPositionsInsideBoundary(db, boundary);
-            var shaftSites = ShaftVoronoiZonesOnFloorPolyline.DedupeShaftSites(shaftPts3, tol);
+            FindShaftsInsideBoundary.GetShaftHandlesAndPositionsInsideBoundary(db, boundary, out var shaftPts3, out var shaftHandlesRaw);
+            ShaftVoronoiZonesOnFloorPolyline.DedupeShaftSitesWithHandles(
+                shaftPts3, shaftHandlesRaw, tol,
+                out var shaftSites,
+                out var shaftHandlesDeduped);
             if (shaftSites.Count < 2)
             {
                 message =
@@ -165,6 +173,11 @@ namespace autocad_final.Workflows.Zoning
                 zoneOutlinesOnFloorBoundaryLayer: false,
                 createdZonePolylineHandles: createdHandles,
                 useMcdZoneBoundaryLayer: true);
+
+            AssignShaftToZoneCommand.ApplyDefaultShaftAssignmentsForCreatedZones(
+                db, createdHandles, ownerPerRing, shaftHandlesDeduped, boundary);
+
+            // Palette refreshes zone→shaft table via CommandEnded + Idle (see SprinklerPaletteExtensionApplication).
 
             // Clear any legacy global-boundary separator lines so the output is the closed zone
             // polylines only (what the user expects to see/select — consistent with ZoneCreation1).

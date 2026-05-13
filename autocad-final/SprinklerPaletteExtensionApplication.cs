@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.Runtime;
 using Autodesk.AutoCAD.Windows;
+using autocad_final.Commands;
 using autocad_final.Licensing;
 using autocad_final.UI;
 using AcApp = Autodesk.AutoCAD.ApplicationServices.Application;
@@ -49,6 +50,7 @@ namespace autocad_final
 
             AttachDocumentCommandEvents();
             try { PluginMenu.EnsureInstalled(); } catch { /* ignore */ }
+            try { EnsurePaletteControlCreated(); } catch { /* palette optional */ }
             RequestShowPaletteOnIdle();
         }
 
@@ -128,6 +130,9 @@ namespace autocad_final
 
             if (IsCommand(e, "NETLOAD") && !TrialExpiry.IsExpired())
                 RequestShowPaletteOnIdle();
+
+            if (!TrialExpiry.IsExpired())
+                ScheduleZoneShaftTableRefresh(sender as Document, TryGetGlobalCommandName(e));
         }
 
         private static void OnDocumentCommandFinished(object sender, EventArgs e)
@@ -136,25 +141,81 @@ namespace autocad_final
             catch { /* ignore */ }
         }
 
+        private static string TryGetGlobalCommandName(EventArgs e)
+        {
+            try
+            {
+                var prop = e?.GetType().GetProperty("GlobalCommandName");
+                var value = prop?.GetValue(e, null) as string;
+                if (string.IsNullOrWhiteSpace(value))
+                    return null;
+                return value.Trim().TrimStart('.', '_');
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
         private static bool IsCommand(EventArgs e, string commandName)
         {
             if (e == null || string.IsNullOrWhiteSpace(commandName))
                 return false;
 
-            try
-            {
-                var prop = e.GetType().GetProperty("GlobalCommandName");
-                var value = prop?.GetValue(e, null) as string;
-                if (string.IsNullOrWhiteSpace(value))
-                    return false;
+            var value = TryGetGlobalCommandName(e);
+            return value != null && string.Equals(value, commandName, StringComparison.OrdinalIgnoreCase);
+        }
 
-                value = value.Trim().TrimStart('.', '_');
-                return string.Equals(value, commandName, StringComparison.OrdinalIgnoreCase);
-            }
-            catch
-            {
+        /// <summary>
+        /// Zone workflows call into Publish during the command; we also refresh after CommandEnded on Idle so the
+        /// grid catches late commits. Palette buttons use the same commands, so duplicate rows can occur — palette
+        /// dedupes by clearing assignment-only duplicates is not implemented; rare duplicate row is acceptable.
+        /// </summary>
+        private static bool ShouldRefreshZoneShaftTableAfterCommand(string cmd)
+        {
+            if (string.IsNullOrEmpty(cmd))
                 return false;
+            switch (cmd.ToUpperInvariant())
+            {
+                case "ZONECREATION1":
+                case "ZONECREATION2":
+                case "CREATEZONES2":
+                case "FIXZONES":
+                case "SPRINKLERFIXZONES":
+                    return true;
+                default:
+                    return false;
             }
+        }
+
+        private static void ScheduleZoneShaftTableRefresh(Document doc, string cmd)
+        {
+            if (doc == null || !ShouldRefreshZoneShaftTableAfterCommand(cmd))
+                return;
+
+            EventHandler idleHandler = null;
+            idleHandler = (_, __) =>
+            {
+                AcApp.Idle -= idleHandler;
+                try
+                {
+                    AssignShaftToZoneCommand.PublishZoneShaftAssignmentScan(doc.Database);
+                }
+                catch
+                {
+                    // ignore
+                }
+            };
+            AcApp.Idle += idleHandler;
+        }
+
+        /// <summary>Creates the palette (and <see cref="SprinklerPaletteControl"/> event subscriptions) without showing it.</summary>
+        private static void EnsurePaletteControlCreated()
+        {
+            if (_paletteSet != null)
+                return;
+            _paletteSet = CreatePaletteSet();
+            try { _paletteSet.Visible = false; } catch { /* ignore */ }
         }
 
         private static void RequestShowPaletteOnIdle()
@@ -191,8 +252,7 @@ namespace autocad_final
             {
                 try
                 {
-                    if (_paletteSet == null)
-                        _paletteSet = CreatePaletteSet();
+                    EnsurePaletteControlCreated();
 
                     _paletteSet.Visible = true;
                     try { _paletteSet.Activate(0); } catch { /* ignore */ }

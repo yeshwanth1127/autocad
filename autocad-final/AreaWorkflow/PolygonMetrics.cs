@@ -14,7 +14,7 @@ namespace autocad_final.AreaWorkflow
         /// <summary>Grid zoning: 0-based shaft index, or -1 for uncovered. Null if not set.</summary>
         public int? ZoneOwnerIndex { get; set; }
 
-        /// <summary>Block name of the shaft explicitly assigned via ASSIGNSHAFTOZONE. Null when using spatial (nearest-shaft) assignment.</summary>
+        /// <summary>Resolved label for the shaft assigned to this zone (xdata from ASSIGNSHAFTOZONE or default assignment after zoning).</summary>
         public string AssignedShaftName { get; set; }
     }
 

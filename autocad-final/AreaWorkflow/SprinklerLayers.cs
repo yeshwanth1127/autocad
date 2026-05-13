@@ -22,6 +22,8 @@ namespace autocad_final.AreaWorkflow
         // ── MCD layer standard (new work; layers created on demand) ─────────────
         public const string McdFloorBoundaryLayer = "MCD-floor boundary";
         public const string McdZoneBoundaryLayer = "MCD-zone boundary";
+        /// <summary>Closed room outlines for a separate in-room sprinkler grid (labels optional; command may require text).</summary>
+        public const string McdRoomBoundaryLayer = "MCD-room";
         public const string McdSprinklersLayer = "MCD-sprinklers";
         public const string McdShaftsLayer = "MCD-shafts";
         public const string McdMainPipeLayer = "MCD-main pipe";
@@ -328,6 +330,9 @@ namespace autocad_final.AreaWorkflow
         public static ObjectId EnsureMcdZoneBoundaryLayer(Transaction tr, Database db) =>
             EnsureNamedAciLayer(tr, db, McdZoneBoundaryLayer, ZoneLayerAciGreen);
 
+        public static ObjectId EnsureMcdRoomBoundaryLayer(Transaction tr, Database db) =>
+            EnsureNamedAciLayer(tr, db, McdRoomBoundaryLayer, ZoneGlobalBoundaryAciCyan);
+
         public static ObjectId EnsureMcdSprinklersLayer(Transaction tr, Database db) =>
             EnsureNamedAciLayer(tr, db, McdSprinklersLayer, SprinklerMarkerAboveAciCyan);
 
@@ -457,6 +462,7 @@ namespace autocad_final.AreaWorkflow
             EnsureZoneLayer(tr, db);
             EnsureZoneLabelLayer(tr, db);
             EnsureMcdZoneBoundaryLayer(tr, db);
+            EnsureMcdRoomBoundaryLayer(tr, db);
         }
 
         public static double SprinklerMarkerRadius(Database db)

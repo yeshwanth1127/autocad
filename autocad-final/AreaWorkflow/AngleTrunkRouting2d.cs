@@ -124,20 +124,35 @@ namespace autocad_final.AreaWorkflow
                 return path;
             }
 
-            // Try H then V.
-            var mid1 = new Point2d(trunkFoot.X, inside.Y);
-            if (PointInPolygon(ring, mid1.X, mid1.Y))
+            var midH = new Point2d(trunkFoot.X, inside.Y);
+            var midV = new Point2d(inside.X, trunkFoot.Y);
+            bool okH = PointInPolygon(ring, midH.X, midH.Y);
+            bool okV = PointInPolygon(ring, midV.X, midV.Y);
+            if (okH && okV)
             {
-                path.Add(mid1);
+                double lenH = inside.GetDistanceTo(midH) + midH.GetDistanceTo(trunkFoot);
+                double lenV = inside.GetDistanceTo(midV) + midV.GetDistanceTo(trunkFoot);
+                if (lenH <= lenV)
+                {
+                    path.Add(midH);
+                    path.Add(trunkFoot);
+                }
+                else
+                {
+                    path.Add(midV);
+                    path.Add(trunkFoot);
+                }
+                return path;
+            }
+            if (okH)
+            {
+                path.Add(midH);
                 path.Add(trunkFoot);
                 return path;
             }
-
-            // Try V then H.
-            var mid2 = new Point2d(inside.X, trunkFoot.Y);
-            if (PointInPolygon(ring, mid2.X, mid2.Y))
+            if (okV)
             {
-                path.Add(mid2);
+                path.Add(midV);
                 path.Add(trunkFoot);
                 return path;
             }

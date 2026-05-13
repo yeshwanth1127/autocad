@@ -1,3 +1,4 @@
+using System.Globalization;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Runtime;
 
@@ -35,6 +36,18 @@ namespace autocad_final.Geometry
         /// Stored on a shaft block insert: comma-separated zone boundary handles this shaft is assigned to.
         /// </summary>
         private const string KeyZoneAssignments = "ZONE_ASSIGNMENTS";
+
+        /// <summary>
+        /// Stored on a zone outline polyline: handle (hex) of the floor boundary parcel used when the zone was created.
+        /// Used to scope shaft counts / numbering to the correct floor when several floors exist in one drawing.
+        /// </summary>
+        private const string KeyParentFloorBoundary = "PARENT_FLOOR";
+
+        /// <summary>
+        /// Floor-scoped unique shaft index (1-based), ASCII decimal. Stored on shaft block inserts; copied to a zone
+        /// boundary polyline when that zone is assigned to the shaft (manual or automatic).
+        /// </summary>
+        private const string KeyShaftUid = "SHAFT_UID";
 
         public static void EnsureRegApp(Transaction tr, Database db)
         {
@@ -488,6 +501,42 @@ namespace autocad_final.Geometry
                     zoneHandles.Add(t);
             }
             return zoneHandles.Count > 0;
+        }
+
+        /// <summary>
+        /// Stores the outer floor boundary handle (hex) used when this zone outline was created (multi-floor drawings).
+        /// </summary>
+        public static void ApplyParentFloorBoundaryTag(Entity ent, string floorBoundaryHandleHex)
+        {
+            if (ent == null || string.IsNullOrEmpty(floorBoundaryHandleHex)) return;
+            MergeStringTag(ent, KeyParentFloorBoundary, floorBoundaryHandleHex.Trim());
+        }
+
+        /// <summary>Reads <see cref="ApplyParentFloorBoundaryTag"/> value when present.</summary>
+        public static bool TryGetParentFloorBoundaryHandle(Entity ent, out string floorBoundaryHandleHex)
+            => TryReadStringTag(ent, KeyParentFloorBoundary, out floorBoundaryHandleHex);
+
+        /// <summary>Writes <see cref="KeyShaftUid"/> on a shaft block insert (or refreshes it).</summary>
+        public static void ApplyShaftUidTag(Entity ent, int shaftUid)
+        {
+            if (ent == null || shaftUid < 1) return;
+            MergeStringTag(ent, KeyShaftUid, shaftUid.ToString(CultureInfo.InvariantCulture));
+        }
+
+        /// <summary>
+        /// Writes the assigned shaft's <see cref="KeyShaftUid"/> onto a zone boundary polyline (same key/value semantics as on the shaft).
+        /// </summary>
+        public static void ApplyAssignedShaftUidOnZone(Entity zoneEnt, int shaftUid)
+            => ApplyShaftUidTag(zoneEnt, shaftUid);
+
+        /// <summary>Reads <see cref="KeyShaftUid"/> when present and parses as a positive integer.</summary>
+        public static bool TryGetShaftUid(Entity ent, out int shaftUid)
+        {
+            shaftUid = 0;
+            if (!TryReadStringTag(ent, KeyShaftUid, out string s) || string.IsNullOrWhiteSpace(s))
+                return false;
+            return int.TryParse(s.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out shaftUid)
+                && shaftUid >= 1;
         }
 
         // ── Private helpers ───────────────────────────────────────────────────────

@@ -6,9 +6,8 @@ using Autodesk.AutoCAD.Geometry;
 namespace autocad_final.AreaWorkflow
 {
     /// <summary>
-    /// Drops sprinkler grid points that lie inside excluded "room" footprints.
-    /// A room footprint is detected as a closed polyline inside the floor boundary that contains a text label (DBText/MText).
-    /// If the label contains any excluded room-type token, sprinkler points inside that room outline are removed.
+    /// Drops sprinkler grid points that lie inside "room" footprints: closed polylines inside the floor
+    /// boundary with a DBText/MText label inside the outline.
     /// </summary>
     public static class SprinklerRoomFootprintExclusion
     {
@@ -18,7 +17,7 @@ namespace autocad_final.AreaWorkflow
             public string Text { get; set; }
         }
 
-        private sealed class RoomItem
+        internal sealed class RoomItem
         {
             public List<Point2d> Ring { get; set; }
             public double MinX { get; set; }
@@ -29,7 +28,6 @@ namespace autocad_final.AreaWorkflow
         }
 
         // Default excluded room-type tokens (case-insensitive; token-based match, not substring).
-        // Example: "BEDROOM" does NOT match "ROOM" unless the label is split into tokens "BED" "ROOM".
         private static readonly HashSet<string> ExcludedRoomTypeTokens = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "ROOM",
@@ -51,6 +49,29 @@ namespace autocad_final.AreaWorkflow
             "SHAFT"
         };
 
+        /// <summary>
+        /// Floor grid: remove points inside any labeled room footprint (any non-empty interior label),
+        /// not only legacy token-matched room types.
+        /// </summary>
+        public static List<Point2d> RemovePointsInsideLabeledRoomFootprints(
+            Database db,
+            Polyline floorBoundary,
+            IEnumerable<Point2d> points,
+            out int labeledRoomFootprintCount,
+            out int removedPointCount)
+        {
+            return RemovePointsInsideRoomFootprintsCore(
+                db,
+                floorBoundary,
+                points,
+                requireExcludedTypeTokens: false,
+                out labeledRoomFootprintCount,
+                out removedPointCount);
+        }
+
+        /// <summary>
+        /// Legacy: remove points only when the interior label matches excluded room-type tokens (WC, STAIRS, …).
+        /// </summary>
         public static List<Point2d> RemovePointsInsideExcludedRooms(
             Database db,
             Polyline floorBoundary,
@@ -58,7 +79,24 @@ namespace autocad_final.AreaWorkflow
             out int excludedRoomCount,
             out int removedPointCount)
         {
-            excludedRoomCount = 0;
+            return RemovePointsInsideRoomFootprintsCore(
+                db,
+                floorBoundary,
+                points,
+                requireExcludedTypeTokens: true,
+                out excludedRoomCount,
+                out removedPointCount);
+        }
+
+        private static List<Point2d> RemovePointsInsideRoomFootprintsCore(
+            Database db,
+            Polyline floorBoundary,
+            IEnumerable<Point2d> points,
+            bool requireExcludedTypeTokens,
+            out int roomFootprintCount,
+            out int removedPointCount)
+        {
+            roomFootprintCount = 0;
             removedPointCount = 0;
 
             if (points == null)
@@ -73,6 +111,51 @@ namespace autocad_final.AreaWorkflow
             double floorAreaAbs = 0.0;
             try { floorAreaAbs = Math.Abs(floorBoundary.Area); } catch { floorAreaAbs = 0.0; }
 
+            var excludedRooms = CollectRoomFootprints(db, floorBoundary, floorRing, floorAreaAbs, requireExcludedTypeTokens);
+
+            roomFootprintCount = excludedRooms.Count;
+            if (excludedRooms.Count == 0)
+                return new List<Point2d>(points);
+
+            var kept = new List<Point2d>();
+            foreach (var p in points)
+            {
+                bool insideExcluded = false;
+                for (int i = 0; i < excludedRooms.Count; i++)
+                {
+                    var r = excludedRooms[i];
+                    if (p.X < r.MinX || p.X > r.MaxX || p.Y < r.MinY || p.Y > r.MaxY)
+                        continue;
+                    if (FindShaftsInsideBoundary.IsPointInPolygonRing(r.Ring, p))
+                    {
+                        insideExcluded = true;
+                        break;
+                    }
+                }
+
+                if (insideExcluded)
+                {
+                    removedPointCount++;
+                    continue;
+                }
+
+                kept.Add(p);
+            }
+
+            return kept;
+        }
+
+        /// <summary>
+        /// Collects closed polylines fully inside <paramref name="floorBoundary"/> that contain non-empty text.
+        /// When <paramref name="requireExcludedTypeTokens"/> is true, only labels matching <see cref="ExcludedRoomTypeTokens"/> qualify.
+        /// </summary>
+        internal static List<RoomItem> CollectRoomFootprints(
+            Database db,
+            Polyline floorBoundary,
+            List<Point2d> floorRing,
+            double floorAreaAbs,
+            bool requireExcludedTypeTokens)
+        {
             var excludedRooms = new List<RoomItem>();
 
             using (var tr = db.TransactionManager.StartTransaction())
@@ -113,7 +196,6 @@ namespace autocad_final.AreaWorkflow
                     if (!pl.Closed || pl.NumberOfVertices < 3) continue;
                     if (pl.ObjectId == floorBoundary.ObjectId) continue;
 
-                    // Skip "room candidates" that are essentially the floor itself.
                     if (floorAreaAbs > 0)
                     {
                         try
@@ -128,7 +210,6 @@ namespace autocad_final.AreaWorkflow
                     var ring = GetRingPoints2d(pl);
                     if (ring.Count < 3) continue;
 
-                    // Ensure the room outline is inside the floor boundary.
                     bool allInside = true;
                     for (int i = 0; i < ring.Count; i++)
                     {
@@ -142,7 +223,6 @@ namespace autocad_final.AreaWorkflow
 
                     GetBbox(ring, out double minX, out double minY, out double maxX, out double maxY);
 
-                    // Find a label inside the room outline.
                     string label = null;
                     for (int ti = 0; ti < texts.Count; ti++)
                     {
@@ -157,16 +237,19 @@ namespace autocad_final.AreaWorkflow
                     }
                     if (string.IsNullOrWhiteSpace(label)) continue;
 
-                    bool excluded = false;
-                    foreach (var token in Tokenize(label))
+                    if (requireExcludedTypeTokens)
                     {
-                        if (ExcludedRoomTypeTokens.Contains(token))
+                        bool excluded = false;
+                        foreach (var token in Tokenize(label))
                         {
-                            excluded = true;
-                            break;
+                            if (ExcludedRoomTypeTokens.Contains(token))
+                            {
+                                excluded = true;
+                                break;
+                            }
                         }
+                        if (!excluded) continue;
                     }
-                    if (!excluded) continue;
 
                     excludedRooms.Add(new RoomItem
                     {
@@ -182,36 +265,61 @@ namespace autocad_final.AreaWorkflow
                 tr.Commit();
             }
 
-            excludedRoomCount = excludedRooms.Count;
-            if (excludedRooms.Count == 0)
-                return new List<Point2d>(points);
+            return excludedRooms;
+        }
 
-            var kept = new List<Point2d>();
-            foreach (var p in points)
+        /// <summary>
+        /// True if some DBText/MText with non-empty trimmed content lies strictly inside <paramref name="roomOutline"/>.
+        /// </summary>
+        public static bool TryHasInteriorLabel(Database db, Polyline roomOutline, out string firstLabel)
+        {
+            firstLabel = null;
+            if (db == null || roomOutline == null || !roomOutline.Closed || roomOutline.NumberOfVertices < 3)
+                return false;
+
+            var ring = GetRingPoints2d(roomOutline);
+            if (ring.Count < 3) return false;
+            GetBbox(ring, out double minX, out double minY, out double maxX, out double maxY);
+
+            using (var tr = db.TransactionManager.StartTransaction())
             {
-                bool insideExcluded = false;
-                for (int i = 0; i < excludedRooms.Count; i++)
+                var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+
+                foreach (ObjectId id in ms)
                 {
-                    var r = excludedRooms[i];
-                    if (p.X < r.MinX || p.X > r.MaxX || p.Y < r.MinY || p.Y > r.MaxY)
-                        continue;
-                    if (FindShaftsInsideBoundary.IsPointInPolygonRing(r.Ring, p))
+                    var ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
+                    Point2d pos = default;
+                    string txt = null;
+                    if (ent is DBText dbText)
                     {
-                        insideExcluded = true;
-                        break;
+                        txt = (dbText.TextString ?? string.Empty).Trim();
+                        if (txt.Length == 0) continue;
+                        pos = new Point2d(dbText.Position.X, dbText.Position.Y);
                     }
+                    else if (ent is MText mText)
+                    {
+                        txt = (mText.Text ?? mText.Contents ?? string.Empty).Trim();
+                        if (txt.Length == 0) continue;
+                        pos = new Point2d(mText.Location.X, mText.Location.Y);
+                    }
+                    else
+                        continue;
+
+                    if (pos.X < minX || pos.X > maxX || pos.Y < minY || pos.Y > maxY)
+                        continue;
+                    if (!FindShaftsInsideBoundary.IsPointInPolygonRing(ring, pos))
+                        continue;
+
+                    firstLabel = txt;
+                    tr.Commit();
+                    return true;
                 }
 
-                if (insideExcluded)
-                {
-                    removedPointCount++;
-                    continue;
-                }
-
-                kept.Add(p);
+                tr.Commit();
             }
 
-            return kept;
+            return false;
         }
 
         private static List<Point2d> GetRingPoints2d(Polyline pl)
@@ -243,7 +351,6 @@ namespace autocad_final.AreaWorkflow
             if (string.IsNullOrWhiteSpace(raw))
                 yield break;
 
-            // Basic cleanup for common MText formatting.
             string s = raw.Replace("\\P", " ").Replace("\r", " ").Replace("\n", " ");
 
             var buf = new char[s.Length];
@@ -271,4 +378,3 @@ namespace autocad_final.AreaWorkflow
         }
     }
 }
-

@@ -134,8 +134,8 @@ namespace autocad_final.AreaWorkflow
             {
                 // Simple, stable “route main pipe” behavior:
                 // - trunk is a straight H/V scanline through the zone centroid (nudged if needed)
-                // - connector targets the centroid-projection point on that trunk (not an endpoint),
-                //   producing an obvious orthogonal L toward the zone center.
+                // - connector meets the trunk at the point closest to the shaft / snapped entry
+                //   (short orthogonal or A* path inside the zone).
                 Point2d mid = PolygonUtils.ApproxCentroidAreaWeighted(ring);
                 NudgeMidpointOffSprinklers(ref mid, sprinklers, spacingDu, eps);
 
@@ -159,21 +159,32 @@ namespace autocad_final.AreaWorkflow
 
                 var trunkSegC = trunkSegCenter;
                 var shaft2C = new Point2d(shaftPoint.X, shaftPoint.Y);
-
-                // Connector target = centroid projected onto the trunk segment.
-                Point2d targetC = ClosestPointOnSegmentL2(mid, trunkSegC);
+                var ep0C = new Point2d(trunkSegC.X0, trunkSegC.Y0);
+                var ep1C = new Point2d(trunkSegC.X1, trunkSegC.Y1);
 
                 bool shaftOutsideC = !PointInPolygon(ring, shaft2C.X, shaft2C.Y);
                 Point2d connectStartC = shaft2C;
                 if (shaftOutsideC)
                 {
                     double minNudge = spacingDu / 4.0;
-                    if (!TrySnapInsideRing(ring, shaft2C, targetC, eps, minNudge, out connectStartC))
+                    var snapAimC = ClosestPointOnSegmentL2(shaft2C, trunkSegC);
+                    bool snappedC = TrySnapInsideRing(ring, shaft2C, snapAimC, eps, minNudge, out connectStartC);
+                    if (!snappedC)
+                    {
+                        GetExtents(ring, out double cxMinC, out double cyMinC, out double cxMaxC, out double cyMaxC);
+                        var centroidC = new Point2d(0.5 * (cxMinC + cxMaxC), 0.5 * (cyMinC + cyMaxC));
+                        snappedC = TrySnapInsideRing(ring, shaft2C, centroidC, eps, minNudge, out connectStartC);
+                    }
+                    if (!snappedC)
                     {
                         errorMessage = "Shaft is outside the zone and no entry point found on the boundary.";
                         return false;
                     }
                 }
+
+                Point2d targetC = ClosestPointOnSegmentL2(connectStartC, trunkSegC);
+                if (targetC.GetDistanceTo(ep0C) <= eps) targetC = ep0C;
+                else if (targetC.GetDistanceTo(ep1C) <= eps) targetC = ep1C;
 
                 if (!TryOrthogonalConnectInside(ring, connectStartC, targetC, spacingDu / 6.0, out var connectorC))
                 {
@@ -384,15 +395,11 @@ namespace autocad_final.AreaWorkflow
             };
 
             AgentLog.Write("TryRoute", "TryPickBestTrunkSegment done");
-            // C) Connect shaft to trunk — bias toward zone center (not an endpoint) so the connector is meaningful.
+            // C) Connect shaft to trunk at the point on the trunk closest to the in-zone routing start
+            // (minimizes connector length vs tying the hit point to the zone centroid).
             var shaft2 = new Point2d(shaftPoint.X, shaftPoint.Y);
             var ep0 = new Point2d(trunkSeg.X0, trunkSeg.Y0);
             var ep1 = new Point2d(trunkSeg.X1, trunkSeg.Y1);
-            Point2d mid2 = PolygonUtils.ApproxCentroidAreaWeighted(ring);
-            var target = ClosestPointOnSegmentL2(mid2, trunkSeg);
-            // Safety: if centroid projection is numerically off the segment for degenerate inputs, fall back.
-            if (target.GetDistanceTo(ep0) <= eps) target = ep0;
-            else if (target.GetDistanceTo(ep1) <= eps) target = ep1;
 
             // Shafts/risers often sit on or outside the zone boundary — snap the connector's
             // start point to just inside the ring so the orthogonal/A* routers don't reject it.
@@ -402,10 +409,11 @@ namespace autocad_final.AreaWorkflow
             {
                 // Nudge at least one A* cell inward so the cell-center inside check doesn't reject the entry.
                 double minNudge = spacingDu / 4.0;
-                bool snapped = TrySnapInsideRing(ring, shaft2, target, eps, minNudge, out connectStart);
+                var snapAim = ClosestPointOnSegmentL2(shaft2, trunkSeg);
+                bool snapped = TrySnapInsideRing(ring, shaft2, snapAim, eps, minNudge, out connectStart);
                 if (!snapped)
                 {
-                    // Fallback: ray toward zone centroid instead of trunk point.
+                    // Fallback: ray toward bbox center (same as prior centroid fallback for snap only).
                     GetExtents(ring, out double cxMin, out double cyMin, out double cxMax, out double cyMax);
                     var centroid = new Point2d(0.5 * (cxMin + cxMax), 0.5 * (cyMin + cyMax));
                     snapped = TrySnapInsideRing(ring, shaft2, centroid, eps, minNudge, out connectStart);
@@ -420,6 +428,10 @@ namespace autocad_final.AreaWorkflow
                     + connectStart.X.ToString("F2", CultureInfo.InvariantCulture) + ","
                     + connectStart.Y.ToString("F2", CultureInfo.InvariantCulture) + ")");
             }
+
+            var target = ClosestPointOnSegmentL2(connectStart, trunkSeg);
+            if (target.GetDistanceTo(ep0) <= eps) target = ep0;
+            else if (target.GetDistanceTo(ep1) <= eps) target = ep1;
 
             AgentLog.Write("TryRoute", "TryOrthogonalConnectInside start");
             if (!TryOrthogonalConnectInside(ring, connectStart, target, spacingDu / 6.0, out var connector))
@@ -596,30 +608,29 @@ namespace autocad_final.AreaWorkflow
             }
             double spacingDu = sprinklerSpacingMeters * duPerMeter;
 
-            // Closest point from shaft to trunk segment (L2).
-            double tx0 = trunkStart.X, ty0 = trunkStart.Y;
-            double tx1 = trunkEnd.X, ty1 = trunkEnd.Y;
-            double vx = tx1 - tx0;
-            double vy = ty1 - ty0;
-            double wx = shaftPoint.X - tx0;
-            double wy = shaftPoint.Y - ty0;
-            double c2 = vx * vx + vy * vy;
-            double t = c2 > 1e-18 ? (vx * wx + vy * wy) / c2 : 0.0;
-            if (t < 0) t = 0;
-            if (t > 1) t = 1;
-            var target = new Point2d(tx0 + t * vx, ty0 + t * vy);
+            var trunkSegConn = new Segment(trunkStart.X, trunkStart.Y, trunkEnd.X, trunkEnd.Y);
+            var snapAimConn = ClosestPointOnSegmentL2(shaftPoint, trunkSegConn);
 
             bool shaftOutside = !PointInPolygon(zoneRing, shaftPoint.X, shaftPoint.Y);
             Point2d connectStart = shaftPoint;
             if (shaftOutside)
             {
                 double minNudge = spacingDu / 4.0;
-                if (!TrySnapInsideRing(zoneRing, shaftPoint, target, eps, minNudge, out connectStart))
+                bool snappedConn = TrySnapInsideRing(zoneRing, shaftPoint, snapAimConn, eps, minNudge, out connectStart);
+                if (!snappedConn)
+                {
+                    GetExtents(zoneRing, out double cxMinZ, out double cyMinZ, out double cxMaxZ, out double cyMaxZ);
+                    var centroidZ = new Point2d(0.5 * (cxMinZ + cxMaxZ), 0.5 * (cyMinZ + cyMaxZ));
+                    snappedConn = TrySnapInsideRing(zoneRing, shaftPoint, centroidZ, eps, minNudge, out connectStart);
+                }
+                if (!snappedConn)
                 {
                     errorMessage = "Shaft is outside the zone and no entry point found on the boundary.";
                     return false;
                 }
             }
+
+            var target = ClosestPointOnSegmentL2(connectStart, trunkSegConn);
 
             if (!TryOrthogonalConnectInside(zoneRing, connectStart, target, spacingDu / 6.0, out var connector))
             {
@@ -1548,18 +1559,35 @@ namespace autocad_final.AreaWorkflow
         {
             path = null;
             var p1 = new List<Point2d> { a, new Point2d(b.X, a.Y), b };
-            if (PathSegmentsInside(ring, p1, step))
+            var p2 = new List<Point2d> { a, new Point2d(a.X, b.Y), b };
+            bool ok1 = PathSegmentsInside(ring, p1, step);
+            bool ok2 = PathSegmentsInside(ring, p2, step);
+            if (ok1 && ok2)
+            {
+                path = OrthogonalLPathLength(p1) <= OrthogonalLPathLength(p2) ? p1 : p2;
+                return true;
+            }
+            if (ok1)
             {
                 path = p1;
                 return true;
             }
-            var p2 = new List<Point2d> { a, new Point2d(a.X, b.Y), b };
-            if (PathSegmentsInside(ring, p2, step))
+            if (ok2)
             {
                 path = p2;
                 return true;
             }
             return false;
+        }
+
+        private static double OrthogonalLPathLength(List<Point2d> pts)
+        {
+            if (pts == null || pts.Count < 2)
+                return 0;
+            double sum = 0;
+            for (int i = 0; i < pts.Count - 1; i++)
+                sum += pts[i].GetDistanceTo(pts[i + 1]);
+            return sum;
         }
 
         private static bool PathSegmentsInside(List<Point2d> ring, List<Point2d> path, double step)
