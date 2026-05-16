@@ -335,6 +335,7 @@ namespace autocad_final.Commands
         {
             errorMessage = null;
             if (!TryComputeLateralsForZone(
+                    doc,
                     db,
                     zone,
                     zoneRing,
@@ -773,6 +774,105 @@ namespace autocad_final.Commands
         }
 
         /// <summary>
+        /// Maximum schedule nominal (mm) for branch sizing at this tap: the main segment feeding the tap
+        /// carries cumulative downstream head count (same basis as <see cref="TryDrawMainPipeScheduleLabels"/>).
+        /// Branch labels/widths must not exceed this so redesign does not show Ø32 drops on a Ø25 main.
+        /// </summary>
+        private static int GetMainNominalCapMmAtBranchAttach(
+            List<Lateral> laterals,
+            Lateral lat,
+            bool trunkHorizontal,
+            double trunkMin,
+            double trunkMax,
+            bool downstreamPositive,
+            int totalZoneHeadCount,
+            double clusterTol)
+        {
+            if (lat.FromConnectorFeed)
+            {
+                NfpaBranchPipeSizing.TryGetMinNominalMmForSprinklerCount(totalZoneHeadCount, out int c);
+                return c;
+            }
+
+            if (laterals == null || laterals.Count == 0 || totalZoneHeadCount <= 0)
+            {
+                NfpaBranchPipeSizing.TryGetMinNominalMmForSprinklerCount(1, out int c0);
+                return c0;
+            }
+
+            if (double.IsNaN(trunkMin) || double.IsInfinity(trunkMin) ||
+                double.IsNaN(trunkMax) || double.IsInfinity(trunkMax) ||
+                Math.Abs(trunkMax - trunkMin) < 1e-9)
+            {
+                NfpaBranchPipeSizing.TryGetMinNominalMmForSprinklerCount(totalZoneHeadCount, out int c1);
+                return c1;
+            }
+
+            var raw = new List<(double along, int load)>();
+            foreach (var L in laterals)
+            {
+                if (L.FromConnectorFeed) continue;
+                int n = (L.Sprinklers?.Count ?? 0) + (L.SubSprinklers?.Count ?? 0);
+                if (n <= 0) continue;
+                double along = trunkHorizontal ? L.AttachPoint.X : L.AttachPoint.Y;
+                raw.Add((along, n));
+            }
+
+            if (raw.Count == 0)
+            {
+                NfpaBranchPipeSizing.TryGetMinNominalMmForSprinklerCount(totalZoneHeadCount, out int c2);
+                return c2;
+            }
+
+            raw.Sort((a, b) => a.along.CompareTo(b.along));
+            var merged = new List<(double along, int load)>();
+            foreach (var item in raw)
+            {
+                if (merged.Count == 0)
+                {
+                    merged.Add(item);
+                    continue;
+                }
+
+                var last = merged[merged.Count - 1];
+                if (Math.Abs(item.along - last.along) <= clusterTol)
+                    merged[merged.Count - 1] = (last.along, last.load + item.load);
+                else
+                    merged.Add(item);
+            }
+
+            int m = merged.Count;
+            var upAlong = new double[m];
+            var w = new int[m];
+            for (int i = 0; i < m; i++)
+            {
+                int ui = downstreamPositive ? i : (m - 1 - i);
+                upAlong[ui] = merged[i].along;
+                w[ui] = merged[i].load;
+            }
+
+            double attachAlong = trunkHorizontal ? lat.AttachPoint.X : lat.AttachPoint.Y;
+            int tapIdx = 0;
+            double bestD = double.MaxValue;
+            for (int k = 0; k < m; k++)
+            {
+                double d = Math.Abs(upAlong[k] - attachAlong);
+                if (d < bestD)
+                {
+                    bestD = d;
+                    tapIdx = k;
+                }
+            }
+
+            int totalPlan = 0;
+            for (int j = tapIdx; j < m; j++)
+                totalPlan += w[j];
+
+            NfpaBranchPipeSizing.TryGetMinNominalMmForSprinklerCount(totalPlan, out int nominal);
+            return nominal;
+        }
+
+        /// <summary>
         /// Labels each segment of the connector pipe (shaft→main) with the total zone sprinkler load,
         /// since the entire flow passes through the connector to reach the main.
         /// </summary>
@@ -848,6 +948,7 @@ namespace autocad_final.Commands
         /// Builds branch laterals the same path as attach / route branch pipes, without drawing geometry.
         /// </summary>
         private static bool TryComputeLateralsForZone(
+            Document doc,
             Database db,
             Polyline zone,
             List<Point2d> zoneRing,
@@ -900,6 +1001,21 @@ namespace autocad_final.Commands
                 return false;
             }
 
+            if (sprinklers.Count == 0 && doc != null)
+            {
+                // Auto-apply: try trunk-anchored grid first (main pipe likely already exists), then basic grid.
+                bool applied = ApplySprinklersCommand.TryApplySprinklersForZone(
+                    doc, zone, zoneBoundaryHandleHex, out _,
+                    useTrunkAnchoredGrid: true,
+                    requireMainPipeForCenteredGrid: false);
+                if (!applied)
+                    ApplySprinklersCommand.TryApplySprinklersForZone(
+                        doc, zone, zoneBoundaryHandleHex, out _,
+                        useTrunkAnchoredGrid: false,
+                        requireMainPipeForCenteredGrid: false);
+                TryReadSprinklersInZone(db, zoneRing, zoneBoundaryHandleHex, clusterTol, out sprinklers, out _);
+            }
+
             if (sprinklers.Count == 0)
             {
                 errorMessage = "No sprinklers found inside this zone. Run Apply sprinklers first.";
@@ -932,6 +1048,7 @@ namespace autocad_final.Commands
                 IsStraightAxisAligned(trunkPlAxis, tol);
 
             List<(double lo, double hi)> trunkAlongSpansInZone = null;
+            double trunkPhysAlongMin = double.NaN, trunkPhysAlongMax = double.NaN;
             if (canUseLegacyAxisAligned)
             {
                 // Re-run the existing resolver so all span filtering / connector-feed logic stays intact.
@@ -948,6 +1065,8 @@ namespace autocad_final.Commands
                             out trunkAlongSpansInZone,
                             out downstreamPositive,
                             out mainW,
+                            out trunkPhysAlongMin,
+                            out trunkPhysAlongMax,
                             out errorMessage))
                         return false;
                 }
@@ -963,6 +1082,8 @@ namespace autocad_final.Commands
                             out trunkAlongSpansInZone,
                             out downstreamPositive,
                             out mainW,
+                            out trunkPhysAlongMin,
+                            out trunkPhysAlongMax,
                             out string pipeErr))
                     {
                         errorMessage = pipeErr ?? "Main pipe detection failed.";
@@ -1028,110 +1149,133 @@ namespace autocad_final.Commands
                     errorMessage = "No branch laterals could be constructed from the main pipe path(s).";
                     return false;
                 }
-
-                return true;
             }
 
-            List<Point2d> connPath = null;
-            bool useConnectorFeed =
-                routeBranchPipesFromConnectorFirst &&
-                TryGetConnectorPathInZone(db, zoneRing, out connPath, out _) &&
-                connPath != null &&
-                connPath.Count >= 2;
+            if (canUseLegacyAxisAligned)
+            {
+                List<Point2d> connPath = null;
+                bool useConnectorFeed =
+                    routeBranchPipesFromConnectorFirst &&
+                    TryGetConnectorPathInZone(db, zoneRing, out connPath, out _) &&
+                    connPath != null &&
+                    connPath.Count >= 2;
 
-            List<Point2d> routingPool;
-            if (useConnectorFeed)
-            {
-                routingPool = new List<Point2d>(sprinklers);
-            }
-            else
-            {
-                int beforeCt = sprinklers.Count;
-                routingPool = FilterSprinklersOnTrunkSpans(sprinklers, trunkHorizontal, trunkAlongSpansInZone, trunkSpanTol);
-                skippedOutsideTrunkSpan = beforeCt - routingPool.Count;
-            }
-
-            if (useConnectorFeed)
-            {
-                laterals = BuildLateralsConnectorThenTrunk(
-                    routingPool,
-                    connPath,
-                    trunkHorizontal,
-                    trunkAxis,
-                    trunkAlongSpansInZone,
-                    trunkSpanTol,
-                    clusterTol,
-                    spacingDu,
-                    downstreamPositive,
-                    tol);
-            }
-            else if (trunkHorizontal)
-            {
-                if (routingPool.Count == 0)
+                List<Point2d> routingPool;
+                if (useConnectorFeed)
                 {
-                    errorMessage =
-                        "No sprinklers lie within the main pipe span for orthogonal branches." +
-                        (skippedOutsideTrunkSpan > 0
-                            ? " (" + skippedOutsideTrunkSpan + " head(s) skipped — outside trunk coverage along the main.)"
-                            : string.Empty);
-                    return false;
+                    routingPool = new List<Point2d>(sprinklers);
+                }
+                else
+                {
+                    int beforeCt = sprinklers.Count;
+                    routingPool = FilterSprinklersForOrthogonalTrunkRouting(
+                        sprinklers,
+                        trunkHorizontal,
+                        trunkAxis,
+                        trunkAlongSpansInZone,
+                        trunkPhysAlongMin,
+                        trunkPhysAlongMax,
+                        trunkSpanTol,
+                        spacingDu,
+                        clusterTol);
+                    skippedOutsideTrunkSpan = beforeCt - routingPool.Count;
                 }
 
-                laterals = BuildVerticalLateralsFromSprinklers(
-                    routingPool,
-                    trunkAxis,
-                    clusterTol,
-                    downstreamPositive);
-                CollapseMicroLateralsIntoSubBranches(laterals, trunkAxis, spacingDu, clusterTol);
-            }
-            else
-            {
-                if (routingPool.Count == 0)
+                if (useConnectorFeed)
                 {
-                    errorMessage =
-                        "No sprinklers lie within the main pipe span for orthogonal branches." +
-                        (skippedOutsideTrunkSpan > 0
-                            ? " (" + skippedOutsideTrunkSpan + " head(s) skipped — outside trunk coverage along the main.)"
-                            : string.Empty);
-                    return false;
+                    laterals = BuildLateralsConnectorThenTrunk(
+                        routingPool,
+                        connPath,
+                        trunkHorizontal,
+                        trunkAxis,
+                        trunkAlongSpansInZone,
+                        trunkPhysAlongMin,
+                        trunkPhysAlongMax,
+                        trunkSpanTol,
+                        clusterTol,
+                        spacingDu,
+                        downstreamPositive,
+                        tol);
                 }
-
-                var rs = new List<Point2d>(routingPool.Count);
-                for (int si = 0; si < routingPool.Count; si++)
-                    rs.Add(Rotate90CcwWcs(routingPool[si]));
-
-                double rTrunkY = trunkAxis;
-
-                laterals = BuildVerticalLateralsFromSprinklers(rs, rTrunkY, clusterTol, downstreamPositive);
-                CollapseMicroLateralsIntoSubBranches(laterals, rTrunkY, spacingDu, clusterTol);
-
-                for (int li = 0; li < laterals.Count; li++)
+                else if (trunkHorizontal)
                 {
-                    laterals[li].AttachPoint = Rotate90CwWcs(laterals[li].AttachPoint);
-                    for (int pj = 0; pj < laterals[li].Sprinklers.Count; pj++)
-                        laterals[li].Sprinklers[pj] = Rotate90CwWcs(laterals[li].Sprinklers[pj]);
-                    for (int pj = 0; pj < laterals[li].SubSprinklers.Count; pj++)
-                        laterals[li].SubSprinklers[pj] = Rotate90CwWcs(laterals[li].SubSprinklers[pj]);
+                    if (routingPool.Count == 0)
+                    {
+                        if (skippedOutsideTrunkSpan > 0 && trunkIds != null && trunkIds.Count > 0)
+                        {
+                            laterals = BuildLateralsFromPolylineTrunks(db, zoneRing, trunkIds, sprinklers, clusterTol);
+                            skippedOutsideTrunkSpan = 0;
+                        }
+                        else
+                        {
+                            errorMessage =
+                                "No sprinklers lie within the main pipe span for orthogonal branches." +
+                                (skippedOutsideTrunkSpan > 0
+                                    ? " (" + skippedOutsideTrunkSpan + " head(s) skipped — outside trunk coverage along the main.)"
+                                    : string.Empty);
+                            return false;
+                        }
+                    }
+                    else
+                    {
+                        laterals = BuildVerticalLateralsFromSprinklers(
+                            routingPool,
+                            trunkAxis,
+                            clusterTol,
+                            downstreamPositive);
+                        CollapseMicroLateralsIntoSubBranches(laterals, trunkAxis, spacingDu, clusterTol);
+                    }
+                }
+                else
+                {
+                    if (routingPool.Count == 0)
+                    {
+                        if (skippedOutsideTrunkSpan > 0 && trunkIds != null && trunkIds.Count > 0)
+                        {
+                            laterals = BuildLateralsFromPolylineTrunks(db, zoneRing, trunkIds, sprinklers, clusterTol);
+                            skippedOutsideTrunkSpan = 0;
+                        }
+                        else
+                        {
+                            errorMessage =
+                                "No sprinklers lie within the main pipe span for orthogonal branches." +
+                                (skippedOutsideTrunkSpan > 0
+                                    ? " (" + skippedOutsideTrunkSpan + " head(s) skipped — outside trunk coverage along the main.)"
+                                    : string.Empty);
+                            return false;
+                        }
+                    }
+                    else
+                    {
+                        var rs = new List<Point2d>(routingPool.Count);
+                        for (int si = 0; si < routingPool.Count; si++)
+                            rs.Add(Rotate90CcwWcs(routingPool[si]));
+
+                        double rTrunkY = trunkAxis;
+
+                        laterals = BuildVerticalLateralsFromSprinklers(rs, rTrunkY, clusterTol, downstreamPositive);
+                        CollapseMicroLateralsIntoSubBranches(laterals, rTrunkY, spacingDu, clusterTol);
+
+                        for (int li = 0; li < laterals.Count; li++)
+                        {
+                            laterals[li].AttachPoint = Rotate90CwWcs(laterals[li].AttachPoint);
+                            for (int pj = 0; pj < laterals[li].Sprinklers.Count; pj++)
+                                laterals[li].Sprinklers[pj] = Rotate90CwWcs(laterals[li].Sprinklers[pj]);
+                            for (int pj = 0; pj < laterals[li].SubSprinklers.Count; pj++)
+                                laterals[li].SubSprinklers[pj] = Rotate90CwWcs(laterals[li].SubSprinklers[pj]);
+                        }
+                    }
                 }
             }
 
-            if (laterals.Count == 0)
+            if (laterals == null || laterals.Count == 0)
             {
                 errorMessage = "No branch laterals could be constructed (sprinklers do not align to a grid).";
                 return false;
             }
 
             // Reroute any branch pipes that would cross shaft obstacles via a sub-main spine bypass.
-            // branchHorizontal is inferred from the actual laterals (not trunkHorizontal) because
-            // the polyline-trunk path forces trunkHorizontal=true regardless of real trunk angle.
             ApplyShaftBypassSpines(db, zone, zoneRing, laterals, clusterTol);
-
-            foreach (var lat in laterals)
-            {
-                int m = lat.Sprinklers.Count;
-                if (m == 0)
-                    continue;
-            }
 
             return true;
         }
@@ -1292,31 +1436,6 @@ namespace autocad_final.Commands
             return width > 0;
         }
 
-        /// <summary>
-        /// True when the trunk polyline's bbox is taller than wide — same classification as
-        /// <c>|tangent.X| &lt;= |tangent.Y|</c> for axis-aligned mains (vertical run → horizontal branches, grid by Y).
-        /// </summary>
-        private static bool TrunkRunsMostlyVertical(List<Point2d> pts, double tol)
-        {
-            if (pts == null || pts.Count < 2)
-                return true;
-            double minX = double.MaxValue, minY = double.MaxValue, maxX = double.MinValue, maxY = double.MinValue;
-            for (int i = 0; i < pts.Count; i++)
-            {
-                var p = pts[i];
-                if (p.X < minX) minX = p.X;
-                if (p.X > maxX) maxX = p.X;
-                if (p.Y < minY) minY = p.Y;
-                if (p.Y > maxY) maxY = p.Y;
-            }
-            double spanX = maxX - minX;
-            double spanY = maxY - minY;
-            double te = tol > 0 ? tol : 1e-6;
-            if (spanX <= te && spanY <= te)
-                return true;
-            return spanY >= spanX;
-        }
-
         private static List<Lateral> BuildLateralsFromPolylineTrunks(
             Database db,
             List<Point2d> zoneRing,
@@ -1354,6 +1473,8 @@ namespace autocad_final.Commands
             // or tiny segments), splitting gridKey between Y and X and producing one parallel branch per head.
             int n = sprinklers.Count;
             var assigned = new List<(int trunkIdx, bool branchHorizontal, double gridKey, Point2d attach, Point2d spr, double dist)>(n);
+            var oneSpr = new List<Point2d>(1);
+            double teAssign = clusterTol > 0 ? clusterTol : 1e-6;
             for (int i = 0; i < n; i++)
             {
                 var s = sprinklers[i];
@@ -1373,9 +1494,34 @@ namespace autocad_final.Commands
                 }
 
                 var winPts = trunks[bestTi].pts;
-                bool branchHorizontal = TrunkRunsMostlyVertical(winPts, clusterTol);
-                double gridKey = branchHorizontal ? s.Y : s.X;
-                assigned.Add((bestTi, branchHorizontal, gridKey, bestAttach, s, bestD));
+                bool globalPreferHorizBranches = PolylineTrunkGridAttach2d.TrunkPolylineRunsMostlyVertical(winPts, clusterTol);
+                bool chosenHoriz = globalPreferHorizBranches;
+                double chosenCost = double.MaxValue;
+                bool foundOrient = false;
+
+                oneSpr.Clear();
+                oneSpr.Add(s);
+
+                foreach (bool branchHorizontal in new[] { false, true })
+                {
+                    double gridKeyTry = branchHorizontal ? s.Y : s.X;
+                    if (!TryFindGridAxisAttachOnPolyline(winPts, zoneRing, branchHorizontal, gridKeyTry, oneSpr, teAssign, out var attachGrid))
+                        continue;
+                    double cost = s.GetDistanceTo(attachGrid);
+                    bool matchesGlobal = branchHorizontal == globalPreferHorizBranches;
+                    if (!foundOrient || cost < chosenCost - 1e-9 || (Math.Abs(cost - chosenCost) <= 1e-9 && matchesGlobal))
+                    {
+                        foundOrient = true;
+                        chosenCost = cost;
+                        chosenHoriz = branchHorizontal;
+                    }
+                }
+
+                if (!foundOrient)
+                    chosenHoriz = globalPreferHorizBranches;
+
+                double gridKey = chosenHoriz ? s.Y : s.X;
+                assigned.Add((bestTi, chosenHoriz, gridKey, bestAttach, s, bestD));
             }
 
             // For each trunk, group sprinklers by grid row/column to form axis-aligned lateral taps.
@@ -1682,6 +1828,39 @@ namespace autocad_final.Commands
         }
 
         /// <summary>
+        /// True when <paramref name="axis"/> is nearly parallel to WCS X or WCS Y.
+        /// </summary>
+        private static bool IsAxisAlignedBranchAxisWcs(Vector2d axis, double tol)
+        {
+            double te = tol > 0 ? tol : 1e-6;
+            if (axis.Length <= te)
+                return false;
+            var n = axis.GetNormal();
+            return Math.Abs(n.Y) <= te * 10.0 || Math.Abs(n.X) <= te * 10.0;
+        }
+
+        /// <summary>
+        /// For Manhattan branch drawing: first leg vertical vs horizontal when decomposing a diagonal into an L.
+        /// Matches horizontal-main → vertical-drop expectation when <see cref="Lateral.BranchAxis"/> is unset.
+        /// </summary>
+        private static bool GetVerticalFirstLegForBranchDraw(Lateral lat, bool trunkHorizontal, double clusterTol)
+        {
+            double te = clusterTol > 0 ? clusterTol : 1e-6;
+            if (lat != null && lat.BranchAxis.Length > te && IsAxisAlignedBranchAxisWcs(lat.BranchAxis, te))
+                return Math.Abs(lat.BranchAxis.Y) >= Math.Abs(lat.BranchAxis.X);
+            return trunkHorizontal;
+        }
+
+        /// <summary>|cos(angle between segment direction and axis)| — <paramref name="axis"/> may be unnormalized.</summary>
+        private static double AbsCosineSegmentToAxis(double segDx, double segDy, double segLen, Vector2d axis)
+        {
+            if (segLen <= 1e-18 || axis.Length <= 1e-18)
+                return 1.0;
+            var n = axis.GetNormal();
+            return Math.Abs((segDx * n.X + segDy * n.Y) / segLen);
+        }
+
+        /// <summary>
         /// Post-processes the lateral list to handle sprinklers whose direct branch path
         /// would cross a shaft obstacle.
         ///
@@ -1756,7 +1935,9 @@ namespace autocad_final.Commands
                         { shaftIdx = si; break; }
                     }
 
-                    // Check diagonal: segment must be roughly aligned with branchDir
+                    // Check diagonal: segment must be roughly aligned with this lateral's branch axis
+                    // (connector / tangent-based laterals use a non-axis-aligned BranchAxis — compare to that
+                    // instead of a global WCS X/Y branchDir to avoid false positives).
                     bool diagonal = false;
                     if (shaftIdx < 0)
                     {
@@ -1765,9 +1946,18 @@ namespace autocad_final.Commands
                         double segLen = Math.Sqrt(segDx * segDx + segDy * segDy);
                         if (segLen > tol)
                         {
-                            double dot = Math.Abs((segDx * branchDir.X + segDy * branchDir.Y) / segLen);
-                            // cos(30°) ≈ 0.866 — reject segments more than 30° off the branch axis
-                            if (dot < 0.75) diagonal = true;
+                            bool skipSlantCheck =
+                                lat.Role == BranchRole.PrimaryBranch &&
+                                lat.BranchAxis.Length > tol &&
+                                !IsAxisAlignedBranchAxisWcs(lat.BranchAxis, tol);
+
+                            if (!skipSlantCheck)
+                            {
+                                Vector2d alignAxis = lat.BranchAxis.Length > tol ? lat.BranchAxis : branchDir;
+                                double dot = AbsCosineSegmentToAxis(segDx, segDy, segLen, alignAxis);
+                                // cos(30°) ≈ 0.866 — reject segments more than 30° off the branch axis
+                                if (dot < 0.75) diagonal = true;
+                            }
                         }
                     }
 
@@ -2233,6 +2423,7 @@ namespace autocad_final.Commands
             }
 
             if (!TryComputeLateralsForZone(
+                    doc,
                     db,
                     zone,
                     zoneRing,
@@ -2242,15 +2433,18 @@ namespace autocad_final.Commands
                     out List<Lateral> laterals,
                     out bool trunkHorizontal,
                     out double trunkAxis,
-                    out _,
-                    out _,
-                    out _,
+                    out double trunkMin,
+                    out double trunkMax,
+                    out bool downstreamPositive,
                     out double mainW,
                     out double clusterTol,
                     out int skippedOutsideTrunkSpan,
                     out errorMessage))
                 return false;
 
+            int totalZoneHeadCountRed = 0;
+            foreach (var lt in laterals)
+                totalZoneHeadCountRed += (lt.Sprinklers?.Count ?? 0) + (lt.SubSprinklers?.Count ?? 0);
             double tickLen = 1.0;
             try
             {
@@ -2313,6 +2507,9 @@ namespace autocad_final.Commands
                         continue;
 
                     var nomIn = new int[m];
+                    int mainNominalCapMm = GetMainNominalCapMmAtBranchAttach(
+                        laterals, lat, trunkHorizontal, trunkMin, trunkMax,
+                        downstreamPositive, totalZoneHeadCountRed, clusterTol);
                     for (int i = 0; i < m; i++)
                     {
                         int planHeadsServedOnSegment = PlanSprinklersServedOnBranchSegmentFromTip(i, m);
@@ -2323,6 +2520,7 @@ namespace autocad_final.Commands
                                 planHeadsServedOnSegment + " on this segment.";
                             return false;
                         }
+                        nomIn[i] = Math.Min(nomIn[i], mainNominalCapMm);
                     }
 
                     int mainNomMm = ApproximateTrunkNominalMmFromDisplayWidth(db, mainW, mainW);
@@ -2500,6 +2698,171 @@ namespace autocad_final.Commands
             }
         }
 
+        /// <summary>
+        /// Ensures every in-zone sprinkler appears on at least one lateral's Sprinklers or SubSprinklers list.
+        ///
+        /// Strategy (in priority order):
+        ///   1. Add as SubSprinkler on the nearest existing (non-spine) lateral — guarantees the resulting
+        ///      sub-branch taps off an already-connected pipe rather than creating a floating isolated stub.
+        ///   2. Only if no eligible laterals exist, fall back to a trunk-attached stub lateral.
+        /// </summary>
+        private static void MergeFallbackStubLateralsForUnservedHeads(
+            Database db,
+            List<Point2d> zoneRing,
+            List<Lateral> laterals,
+            List<(Point2d pt, ObjectId id)> allHeadEntities,
+            double clusterTol)
+        {
+            if (laterals == null || zoneRing == null || zoneRing.Count < 3 || db == null)
+                return;
+
+            double tol = clusterTol > 0 ? clusterTol : 1e-6;
+
+            // Collect all already-served head positions.
+            var served = new List<Point2d>();
+            foreach (var lat in laterals)
+            {
+                if (lat == null || lat.IsSubMainSpine)
+                    continue;
+                if (lat.Sprinklers != null)
+                    foreach (var p in lat.Sprinklers)
+                        served.Add(p);
+                if (lat.SubSprinklers != null)
+                    foreach (var p in lat.SubSprinklers)
+                        served.Add(p);
+            }
+
+            var unserved = new List<Point2d>();
+            if (allHeadEntities != null && allHeadEntities.Count > 0)
+            {
+                foreach (var (pt, _) in allHeadEntities)
+                {
+                    bool matched = false;
+                    for (int si = 0; si < served.Count; si++)
+                    {
+                        if (pt.GetDistanceTo(served[si]) <= tol)
+                        {
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if (!matched)
+                        unserved.Add(pt);
+                }
+            }
+
+            if (unserved.Count == 0)
+                return;
+
+            // ── Strategy 1: attach as SubSprinkler on nearest existing connected lateral ──────────────
+            // Build (lateral, run-polyline) pairs for all eligible laterals.
+            // Spine laterals store T-junctions not heads — exclude them.
+            var eligibleRuns = new List<(Lateral lat, List<Point2d> run)>();
+            foreach (var lat in laterals)
+            {
+                if (lat == null || lat.IsSubMainSpine) continue;
+                if (lat.Sprinklers == null || lat.Sprinklers.Count == 0) continue;
+                var run = new List<Point2d>(lat.Sprinklers.Count + 1) { lat.AttachPoint };
+                run.AddRange(lat.Sprinklers);
+                eligibleRuns.Add((lat, run));
+            }
+
+            var stillUnserved = new List<Point2d>();
+            foreach (var head in unserved)
+            {
+                if (eligibleRuns.Count > 0)
+                {
+                    // Find the lateral whose run-polyline is closest to this head.
+                    Lateral bestLat = null;
+                    double bestD = double.MaxValue;
+                    foreach (var (lat, run) in eligibleRuns)
+                    {
+                        ClosestPointOnPolyline(run, head, out _, out _, out double d);
+                        if (d < bestD) { bestD = d; bestLat = lat; }
+                    }
+
+                    if (bestLat != null)
+                    {
+                        // Connecting as a sub-branch: the draw loop will call PickTapPointOnLateral,
+                        // which finds the closest point on the lateral's run — always an orthogonal tap.
+                        bestLat.SubSprinklers.Add(head);
+                        continue;
+                    }
+                }
+
+                stillUnserved.Add(head);
+            }
+
+            if (stillUnserved.Count == 0)
+                return;
+
+            // ── Strategy 2: trunk stub fallback (no eligible laterals) ────────────────────────────────
+            var mainPolys = new List<List<Point2d>>();
+            if (TryFindMainPipePolylinesInZone(db, zoneRing, out List<ObjectId> trunkIds, out _) && trunkIds != null && trunkIds.Count > 0)
+            {
+                using (var tr = db.TransactionManager.StartTransaction())
+                {
+                    SprinklerXData.EnsureRegApp(tr, db);
+                    for (int i = 0; i < trunkIds.Count; i++)
+                    {
+                        if (trunkIds[i].IsErased) continue;
+                        Polyline pl = null;
+                        try { pl = tr.GetObject(trunkIds[i], OpenMode.ForRead, false) as Polyline; }
+                        catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                        if (pl == null) continue;
+                        if (SprinklerXData.IsTaggedTrunkCap(pl)) continue;
+                        var pts = PolylineToPoint2dList(pl);
+                        if (pts.Count >= 2)
+                            mainPolys.Add(pts);
+                    }
+                    tr.Commit();
+                }
+            }
+
+            if (TryGetConnectorPathInZone(db, zoneRing, out List<Point2d> connPath, out _) && connPath != null && connPath.Count >= 2)
+                mainPolys.Add(connPath);
+
+            if (mainPolys.Count == 0)
+                return;
+
+            foreach (var head in stillUnserved)
+            {
+                Point2d bestTap = head;
+                double bestD = double.MaxValue;
+                List<Point2d> bestPoly = mainPolys[0];
+                foreach (var poly in mainPolys)
+                {
+                    ClosestPointOnPolylineInsideRing(poly, zoneRing, head, out var tap, out _, out double d);
+                    if (d < bestD)
+                    {
+                        bestD = d;
+                        bestTap = tap;
+                        bestPoly = poly;
+                    }
+                }
+
+                Vector2d tangent = PolylineTangentNearPoint(bestPoly, bestTap, tol);
+                double dx = head.X - bestTap.X;
+                double dy = head.Y - bestTap.Y;
+                Vector2d branchAxis = Math.Abs(dx) >= Math.Abs(dy)
+                    ? new Vector2d(dx >= 0 ? 1 : -1, 0)
+                    : new Vector2d(0, dy >= 0 ? 1 : -1);
+
+                laterals.Add(new Lateral
+                {
+                    AttachPoint = bestTap,
+                    Sprinklers = new List<Point2d> { head },
+                    SubSprinklers = new List<Point2d>(),
+                    IsTopOrRight = true,
+                    AxisValue = Math.Abs(branchAxis.X) > 0.5 ? head.Y : head.X,
+                    FromConnectorFeed = false,
+                    TrunkTangent = tangent,
+                    BranchAxis = branchAxis,
+                    Role = BranchRole.PrimaryBranch,
+                });
+            }
+        }
+
         internal static bool TryAttachBranchesForZone(
             Document doc,
             Database db,
@@ -2509,6 +2872,31 @@ namespace autocad_final.Commands
             out string errorMessage,
             bool routeBranchPipesFromConnectorFirst = false)
         {
+            return TryAttachBranchesForZone(
+                doc,
+                db,
+                zone,
+                zoneRing,
+                zoneBoundaryHandleHex,
+                routeBranchPipesFromConnectorFirst,
+                ObjectId.Null,
+                out errorMessage);
+        }
+
+        /// <summary>
+        /// When <paramref name="explicitMainPipePolylineId"/> is set, lateral generation uses only that trunk
+        /// (e.g. redesign-from-trunk) so we do not pick up other mains that merely sample inside the zone bbox.
+        /// </summary>
+        internal static bool TryAttachBranchesForZone(
+            Document doc,
+            Database db,
+            Polyline zone,
+            List<Point2d> zoneRing,
+            string zoneBoundaryHandleHex,
+            bool routeBranchPipesFromConnectorFirst,
+            ObjectId explicitMainPipePolylineId,
+            out string errorMessage)
+        {
             errorMessage = null;
             if (doc == null || db == null || zone == null || zoneRing == null || zoneRing.Count < 3)
             {
@@ -2517,17 +2905,18 @@ namespace autocad_final.Commands
             }
 
             if (!TryComputeLateralsForZone(
+                    doc,
                     db,
                     zone,
                     zoneRing,
                     zoneBoundaryHandleHex,
                     routeBranchPipesFromConnectorFirst,
-                    ObjectId.Null,
+                    explicitMainPipePolylineId,
                     out List<Lateral> laterals,
                     out bool trunkHorizontal,
                     out double trunkAxis,
-                    out _,
-                    out _,
+                    out double trunkMin,
+                    out double trunkMax,
                     out bool downstreamPositive,
                     out double mainW,
                     out double clusterTol,
@@ -2535,6 +2924,13 @@ namespace autocad_final.Commands
                     out errorMessage))
                 return false;
 
+            SprinklerHeadReader2d.TryEnumerateSprinklerHeadEntitiesInZoneForRouting(db, zoneRing, zoneBoundaryHandleHex, out var allHeadEntities, out _);
+            MergeFallbackStubLateralsForUnservedHeads(db, zoneRing, laterals, allHeadEntities, clusterTol);
+            ApplyShaftBypassSpines(db, zone, zoneRing, laterals, clusterTol);
+
+            int totalZoneHeadCount = 0;
+            foreach (var lt in laterals)
+                totalZoneHeadCount += (lt.Sprinklers?.Count ?? 0) + (lt.SubSprinklers?.Count ?? 0);
             List<IList<Point2d>> branchClipRings = BuildBranchClipRingsUnion(db, zoneRing, zoneBoundaryHandleHex);
 
             double tickLen = 1.0;
@@ -2545,7 +2941,6 @@ namespace autocad_final.Commands
             }
             catch { /* ignore */ }
 
-            SprinklerHeadReader2d.TryEnumerateSprinklerHeadEntitiesInZoneForRouting(db, zoneRing, zoneBoundaryHandleHex, out var allHeadEntities, out _);
             List<ObjectId> skippedNoBranchIds = ComputeHeadsWithoutBranchConnectivity(allHeadEntities, laterals, clusterTol);
 
             using (doc.LockDocument())
@@ -2592,9 +2987,10 @@ namespace autocad_final.Commands
                 var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
 
                 int segmentsDrawn = 0;
-                int ticksDrawn = 0;
                 int labelsDrawn = 0;
                 bool tagZone = !string.IsNullOrEmpty(zoneBoundaryHandleHex);
+                // Positions of heads that actually received at least one drawn branch segment.
+                var drawnSprinklerPositions = new List<Point2d>();
                 double boundaryW = SprinklerLayers.BoundaryPolylineConstantWidth(db);
                 double labelOffsetDu = Math.Max(tickLen * 0.65, boundaryW * 0.08);
                 double labelTextHeight = Math.Max(boundaryW * 0.22, tickLen * 0.55);
@@ -2614,6 +3010,9 @@ namespace autocad_final.Commands
                         continue;
 
                     ObjectId pipeLayerId = lat.FromConnectorFeed ? branchConnectorLayerId : branchMainLayerId;
+                    int mainNominalCapMm = GetMainNominalCapMmAtBranchAttach(
+                        laterals, lat, trunkHorizontal, trunkMin, trunkMax,
+                        downstreamPositive, totalZoneHeadCount, clusterTol);
 
                     int m = lat.Sprinklers.Count;
                     Point2d attachPt = lat.AttachPoint;
@@ -2629,9 +3028,9 @@ namespace autocad_final.Commands
                     if (useConnectorSingleHeadStep)
                     {
                         Point2d cur = lat.Sprinklers[0];
-
-                        var stepWpts = BranchPipeShaftDetour2d.AxisAlignedWaypointsAvoidingBoxes(
-                            prev, cur, shaftObstacles, branchClipRings, clusterTol);
+                        bool vf = GetVerticalFirstLegForBranchDraw(lat, trunkHorizontal, clusterTol);
+                        var stepWpts = BranchPipeShaftDetour2d.OrthogonalWaypointsAvoidingBoxes(
+                            prev, cur, vf, shaftObstacles, branchClipRings, clusterTol);
                         int stepSegmentsDrawn = 0;
                         for (int wi = 0; wi + 1 < stepWpts.Count; wi++)
                         {
@@ -2642,30 +3041,15 @@ namespace autocad_final.Commands
                             stepSegmentsDrawn += drew;
                         }
 
-                        // If nothing was drawn (fully clipped/blocked), do not leave a floating tick.
                         if (stepSegmentsDrawn <= 0)
                             continue;
-
-                        Point2d tickFrom = attachPt;
-                        if (stepWpts.Count >= 2)
-                            tickFrom = stepWpts[stepWpts.Count - 2];
-                        double sdxS = cur.X - tickFrom.X;
-                        double sdyS = cur.Y - tickFrom.Y;
-                        bool stepSegVertical = Math.Abs(sdyS) >= Math.Abs(sdxS);
-                        var tickStep = MakePerpendicularTick(cur, stepSegVertical, tickLen, zone.Elevation);
-                        tickStep.SetDatabaseDefaults(db);
-                        tickStep.LayerId = mainPipeLayerId;
-                        tickStep.Color = Color.FromColorIndex(ColorMethod.ByLayer, 256);
-                        if (tagZone)
-                            SprinklerXData.ApplyZoneBoundaryTag(tickStep, zoneBoundaryHandleHex);
-                        ms.AppendEntity(tickStep);
-                        tr.AddNewlyCreatedDBObject(tickStep, true);
-                        ticksDrawn++;
+                        drawnSprinklerPositions.Add(cur);
                     }
                     else
                     for (int i = 0; i < m; i++)
                     {
                         Point2d cur = lat.Sprinklers[i];
+                        bool vf = GetVerticalFirstLegForBranchDraw(lat, trunkHorizontal, clusterTol);
                         // For sub-main spine laterals the "sprinklers" are T-junction points; use the
                         // pre-computed cumulative head count so the spine is sized correctly.
                         int planHeadsServedOnSegment =
@@ -2681,10 +3065,11 @@ namespace autocad_final.Commands
                             return false;
                         }
 
+                        nominalMm = Math.Min(nominalMm, mainNominalCapMm);
                         double w = NfpaBranchPipeSizing.GetBranchPolylineDisplayWidthDu(db, nominalMm, mainW);
 
-                        var legWpts = BranchPipeShaftDetour2d.AxisAlignedWaypointsAvoidingBoxes(
-                            prev, cur, shaftObstacles, branchClipRings, clusterTol);
+                        var legWpts = BranchPipeShaftDetour2d.OrthogonalWaypointsAvoidingBoxes(
+                            prev, cur, vf, shaftObstacles, branchClipRings, clusterTol);
                         int legSegmentsDrawn = 0;
                         for (int wi = 0; wi + 1 < legWpts.Count; wi++)
                         {
@@ -2699,10 +3084,14 @@ namespace autocad_final.Commands
                         if (legSegmentsDrawn <= 0)
                             continue;
 
+                        // Label/tick align to the last drawn leg (orthogonal paths may have a bend).
+                        Point2d wayPrev = legWpts.Count >= 2 ? legWpts[legWpts.Count - 2] : prev;
+                        Point2d wayCur = legWpts.Count >= 1 ? legWpts[legWpts.Count - 1] : cur;
+
                         {
-                            var mid = new Point2d((prev.X + cur.X) * 0.5, (prev.Y + cur.Y) * 0.5);
-                            double dx = cur.X - prev.X;
-                            double dy = cur.Y - prev.Y;
+                            var mid = new Point2d((wayPrev.X + wayCur.X) * 0.5, (wayPrev.Y + wayCur.Y) * 0.5);
+                            double dx = wayCur.X - wayPrev.X;
+                            double dy = wayCur.Y - wayPrev.Y;
                             double len = Math.Sqrt(dx * dx + dy * dy);
                             double px = 0, py = 1;
                             if (len > 1e-9)
@@ -2725,7 +3114,8 @@ namespace autocad_final.Commands
 
                             var pA = new Point2d(mid.X + px * labelOffsetDu, mid.Y + py * labelOffsetDu);
                             var pB = new Point2d(mid.X - px * labelOffsetDu, mid.Y - py * labelOffsetDu);
-                            var ins2d = pA;
+                            var ins2d = NudgeBranchLabelOffTrunkRow(
+                                pA, mid, dx, dy, trunkHorizontal, trunkAxis, mainW, clusterTol, labelOffsetDu);
 
                             var mt = new MText();
                             mt.SetDatabaseDefaults(db);
@@ -2747,19 +3137,7 @@ namespace autocad_final.Commands
                             labelsDrawn++;
                         }
 
-                        double sdx = cur.X - prev.X;
-                        double sdy = cur.Y - prev.Y;
-                        bool branchSegVertical = Math.Abs(sdy) >= Math.Abs(sdx);
-                        var tick = MakePerpendicularTick(cur, branchSegVertical, tickLen, zone.Elevation);
-                        tick.SetDatabaseDefaults(db);
-                        tick.LayerId = pipeLayerId;
-                        tick.Color = Color.FromColorIndex(ColorMethod.ByLayer, 256);
-                        if (tagZone)
-                            SprinklerXData.ApplyZoneBoundaryTag(tick, zoneBoundaryHandleHex);
-                        ms.AppendEntity(tick);
-                        tr.AddNewlyCreatedDBObject(tick, true);
-                        ticksDrawn++;
-
+                        drawnSprinklerPositions.Add(cur);
                         lastNominalMm = nominalMm;
                         prev = cur;
                     }
@@ -2770,6 +3148,7 @@ namespace autocad_final.Commands
                         int subNominalMm;
                         if (!NfpaBranchPipeSizing.TryGetMinNominalMmForSprinklerCount(nSub, out subNominalMm))
                             subNominalMm = Math.Max(lastNominalMm, 25);
+                        subNominalMm = Math.Min(subNominalMm, mainNominalCapMm);
                         double wSub = NfpaBranchPipeSizing.GetBranchPolylineDisplayWidthDu(db, subNominalMm, mainW);
 
                         for (int si = 0; si < lat.SubSprinklers.Count; si++)
@@ -2777,28 +3156,75 @@ namespace autocad_final.Commands
                             var sp = lat.SubSprinklers[si];
                             var tap = PickTapPointOnLateral(lat, sp);
 
-                            var subWpts = BranchPipeShaftDetour2d.AxisAlignedWaypointsAvoidingBoxes(
-                                tap, sp, shaftObstacles, branchClipRings, clusterTol);
+                            bool vfSub = GetVerticalFirstLegForBranchDraw(lat, trunkHorizontal, clusterTol);
+                            var subWpts = BranchPipeShaftDetour2d.OrthogonalWaypointsAvoidingBoxes(
+                                tap, sp, vfSub, shaftObstacles, branchClipRings, clusterTol);
+
+                            int subSegsDrawn = 0;
                             for (int wi = 0; wi + 1 < subWpts.Count; wi++)
                             {
                                 int drew = DrawClippedBranchSegment(
                                     ms, tr, db, branchClipRings, zone, tagZone, zoneBoundaryHandleHex,
                                     subWpts[wi], subWpts[wi + 1], pipeLayerId, wSub, tagAsConnector: false, shaftObstacles: shaftObstacles);
                                 segmentsDrawn += drew;
+                                subSegsDrawn += drew;
                             }
 
-                            double sdxSub = sp.X - tap.X;
-                            double sdySub = sp.Y - tap.Y;
+                            if (subSegsDrawn <= 0)
+                                continue;
+                            drawnSprinklerPositions.Add(sp);
+
+                            // Use last waypoint segment for direction — the path may be an L-shape.
+                            Point2d subWayPrev = subWpts.Count >= 2 ? subWpts[subWpts.Count - 2] : tap;
+                            Point2d subWayCur  = subWpts.Count >= 1 ? subWpts[subWpts.Count - 1] : sp;
+
+                            double sdxSub = subWayCur.X - subWayPrev.X;
+                            double sdySub = subWayCur.Y - subWayPrev.Y;
                             bool subSegVertical = Math.Abs(sdySub) >= Math.Abs(sdxSub);
-                            var tickSub = MakePerpendicularTick(sp, subSegVertical, tickLen, zone.Elevation);
-                            tickSub.SetDatabaseDefaults(db);
-                            tickSub.LayerId = pipeLayerId;
-                            tickSub.Color = Color.FromColorIndex(ColorMethod.ByLayer, 256);
-                            if (tagZone)
-                                SprinklerXData.ApplyZoneBoundaryTag(tickSub, zoneBoundaryHandleHex);
-                            ms.AppendEntity(tickSub);
-                            tr.AddNewlyCreatedDBObject(tickSub, true);
-                            ticksDrawn++;
+
+                            // Diameter label — same placement logic as primary branch segments.
+                            {
+                                double subLen = Math.Sqrt(sdxSub * sdxSub + sdySub * sdySub);
+                                var subMid = new Point2d(
+                                    (subWayPrev.X + subWayCur.X) * 0.5,
+                                    (subWayPrev.Y + subWayCur.Y) * 0.5);
+
+                                double px = subSegVertical ? 1 : 0;
+                                double py = subSegVertical ? 0 : 1;
+
+                                var ins2d = NudgeBranchLabelOffTrunkRow(
+                                    new Point2d(
+                                        subMid.X + px * labelOffsetDu,
+                                        subMid.Y + py * labelOffsetDu),
+                                    subMid,
+                                    sdxSub,
+                                    sdySub,
+                                    trunkHorizontal,
+                                    trunkAxis,
+                                    mainW,
+                                    clusterTol,
+                                    labelOffsetDu);
+
+                                var mtSub = new MText();
+                                mtSub.SetDatabaseDefaults(db);
+                                mtSub.LayerId = branchLabelLayerId;
+                                mtSub.Color = Color.FromColorIndex(ColorMethod.ByLayer, 256);
+                                mtSub.Location = new Point3d(ins2d.X, ins2d.Y, zone.Elevation);
+                                mtSub.Attachment = AttachmentPoint.MiddleCenter;
+                                mtSub.TextHeight = labelTextHeight;
+                                mtSub.Contents = "Ø" + subNominalMm.ToString();
+                                double subRot = Math.Atan2(sdySub, sdxSub);
+                                if (subRot > Math.PI * 0.5)  subRot -= Math.PI;
+                                else if (subRot < -Math.PI * 0.5) subRot += Math.PI;
+                                mtSub.Rotation = subRot;
+                                SprinklerXData.TagAsBranchPipeScheduleLabel(mtSub);
+                                if (tagZone)
+                                    SprinklerXData.ApplyZoneBoundaryTag(mtSub, zoneBoundaryHandleHex);
+                                ms.AppendEntity(mtSub);
+                                tr.AddNewlyCreatedDBObject(mtSub, true);
+                                labelsDrawn++;
+                            }
+
                         }
                     }
                 }
@@ -2817,26 +3243,40 @@ namespace autocad_final.Commands
                     out int subMainFeederVerts,
                     out int subMainBranchPls);
 
+                // Last-resort pass: serve any head not yet drawn via nearest lateral attach point.
+                int lastResortRecovered = TryDrawLastResortBranchesForStranded(
+                    tr, db, ms, zone, zoneRing, zoneBoundaryHandleHex,
+                    allHeadEntities, drawnSprinklerPositions, laterals,
+                    mainW, trunkHorizontal, trunkAxis, shaftObstacles, branchClipRings, clusterTol,
+                    tagZone, branchMainLayerId, branchLabelLayerId,
+                    labelOffsetDu, labelTextHeight, totalZoneHeadCount,
+                    ref segmentsDrawn, ref labelsDrawn);
+
                 foreach (var oid in skippedNoBranchIds)
                 {
                     if (headsRecoveredByRoomSubMain.Contains(oid))
                         continue;
                     if (oid.IsErased) continue;
+                    // Check if last-resort drawing covered this head
                     Entity he = null;
-                    try { he = tr.GetObject(oid, OpenMode.ForWrite, false) as Entity; }
+                    try { he = tr.GetObject(oid, OpenMode.ForRead, false) as Entity; }
                     catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
-                    if (he != null)
-                    {
-                        he.LayerId = highlightNoBranchLayerId;
-                        he.Color = Color.FromColorIndex(ColorMethod.ByLayer, 256);
-                    }
+                    if (he == null) continue;
+                    Point2d hPt = GetEntityPoint2d(he);
+                    bool coveredByLastResort = false;
+                    foreach (var dp in drawnSprinklerPositions)
+                        if ((dp - hPt).Length <= clusterTol * 2.0) { coveredByLastResort = true; break; }
+                    if (coveredByLastResort) continue;
+
+                    try { he.UpgradeOpen(); } catch { continue; }
+                    he.LayerId = highlightNoBranchLayerId;
+                    he.Color = Color.FromColorIndex(ColorMethod.ByLayer, 256);
                 }
 
                 tr.Commit();
                 errorMessage =
                     "Branches attached. Laterals: " + laterals.Count +
                     ", segments: " + segmentsDrawn +
-                    ", markers: " + ticksDrawn +
                     ", labels: " + labelsDrawn + "." +
                     (skippedOutsideTrunkSpan > 0
                         ? " Skipped " + skippedOutsideTrunkSpan + " sprinkler(s) outside main pipe span (highlighted yellow)."
@@ -2845,12 +3285,162 @@ namespace autocad_final.Commands
                         ? " Room sub-main: " + subMainRoomsOk + " room outline(s) routed (feeder verts≈" +
                           subMainFeederVerts + ", branch polylines=" + subMainBranchPls + ")."
                         : string.Empty) +
+                    (lastResortRecovered > 0
+                        ? " Last-resort routing connected " + lastResortRecovered + " stranded head(s)."
+                        : string.Empty) +
                     (skippedNoBranchIds.Count > 0
-                        ? " " + (skippedNoBranchIds.Count - headsRecoveredByRoomSubMain.Count) +
+                        ? " " + Math.Max(0, skippedNoBranchIds.Count - headsRecoveredByRoomSubMain.Count - lastResortRecovered) +
                           " head(s) still have no branch pipe — placed on layer \"" +
                           SprinklerLayers.McdNoBranchPipeHighlightLayer + "\" (yellow)."
                         : string.Empty);
                 return true;
+            }
+        }
+
+        /// <summary>
+        /// Final fallback: for every sprinkler head in the zone that still has no drawn branch segment,
+        /// finds the nearest lateral attach point and routes an orthogonal path to the head.
+        /// </summary>
+        private static int TryDrawLastResortBranchesForStranded(
+            Transaction tr,
+            Database db,
+            BlockTableRecord ms,
+            Polyline zone,
+            List<Point2d> zoneRing,
+            string zoneBoundaryHandleHex,
+            List<(Point2d pt, ObjectId id)> allHeadEntities,
+            List<Point2d> drawnSprinklerPositions,
+            List<Lateral> laterals,
+            double mainW,
+            bool trunkHorizontal,
+            double trunkAxis,
+            IList<(Point2d min, Point2d max)> shaftObstacles,
+            IList<IList<Point2d>> branchClipRings,
+            double clusterTol,
+            bool tagZone,
+            ObjectId branchLayerId,
+            ObjectId branchLabelLayerId,
+            double labelOffsetDu,
+            double labelTextHeight,
+            int totalZoneHeadCount,
+            ref int segmentsDrawn,
+            ref int labelsDrawn)
+        {
+            if (allHeadEntities == null || allHeadEntities.Count == 0) return 0;
+            if (laterals == null || laterals.Count == 0) return 0;
+
+            // Collect all lateral attach points as candidate feed points.
+            var feedPoints = new List<Point2d>();
+            foreach (var lat in laterals)
+            {
+                if (lat == null) continue;
+                feedPoints.Add(lat.AttachPoint);
+                // Also use each sprinkler on the lateral as a potential tap-off point.
+                if (lat.Sprinklers != null)
+                    feedPoints.AddRange(lat.Sprinklers);
+            }
+            if (feedPoints.Count == 0) return 0;
+
+            double tol = clusterTol > 0 ? clusterTol : 1e-6;
+            int recovered = 0;
+
+            NfpaBranchPipeSizing.TryGetMinNominalMmForSprinklerCount(1, out int nominalMm);
+            NfpaBranchPipeSizing.TryGetMinNominalMmForSprinklerCount(
+                Math.Max(1, totalZoneHeadCount), out int zoneMainNominalCap);
+            nominalMm = Math.Min(nominalMm, zoneMainNominalCap);
+            double w = NfpaBranchPipeSizing.GetBranchPolylineDisplayWidthDu(db, nominalMm, mainW);
+
+            foreach (var (headPt, oid) in allHeadEntities)
+            {
+                // Skip heads that already received a drawn branch.
+                bool alreadyDrawn = false;
+                foreach (var dp in drawnSprinklerPositions)
+                    if ((dp - headPt).Length <= tol * 2.0) { alreadyDrawn = true; break; }
+                if (alreadyDrawn) continue;
+
+                // Find the nearest feed point.
+                Point2d bestFeed = default;
+                double bestDist = double.MaxValue;
+                bool found = false;
+                foreach (var fp in feedPoints)
+                {
+                    double d = Math.Sqrt((fp.X - headPt.X) * (fp.X - headPt.X) + (fp.Y - headPt.Y) * (fp.Y - headPt.Y));
+                    if (d < bestDist) { bestDist = d; bestFeed = fp; found = true; }
+                }
+                if (!found) continue;
+
+                // Route and draw — OrthogonalWaypointsAvoidingBoxes handles shaft detours.
+                bool vfSub = trunkHorizontal;
+                var wpts = BranchPipeShaftDetour2d.OrthogonalWaypointsAvoidingBoxes(
+                    bestFeed, headPt, vfSub, shaftObstacles, branchClipRings, tol);
+
+                int drawn = 0;
+                for (int wi = 0; wi + 1 < wpts.Count; wi++)
+                    drawn += DrawClippedBranchSegment(
+                        ms, tr, db, branchClipRings, zone, tagZone, zoneBoundaryHandleHex,
+                        wpts[wi], wpts[wi + 1], branchLayerId, w, tagAsConnector: false,
+                        shaftObstacles: shaftObstacles);
+
+                segmentsDrawn += drawn;
+                if (drawn <= 0) continue;
+
+                drawnSprinklerPositions.Add(headPt);
+                recovered++;
+
+                // Draw diameter label on the last segment.
+                var wayPrev = wpts.Count >= 2 ? wpts[wpts.Count - 2] : bestFeed;
+                var wayCur  = wpts.Count >= 1 ? wpts[wpts.Count - 1] : headPt;
+                double dx = wayCur.X - wayPrev.X;
+                double dy = wayCur.Y - wayPrev.Y;
+                bool segV = Math.Abs(dy) >= Math.Abs(dx);
+                var mid   = new Point2d((wayPrev.X + wayCur.X) * 0.5, (wayPrev.Y + wayCur.Y) * 0.5);
+                var ins2d = NudgeBranchLabelOffTrunkRow(
+                    new Point2d(mid.X + (segV ? labelOffsetDu : 0), mid.Y + (segV ? 0 : labelOffsetDu)),
+                    mid,
+                    dx,
+                    dy,
+                    trunkHorizontal,
+                    trunkAxis,
+                    mainW,
+                    tol,
+                    labelOffsetDu);
+
+                var mt = new MText();
+                mt.SetDatabaseDefaults(db);
+                mt.LayerId = branchLabelLayerId;
+                mt.Color = Color.FromColorIndex(ColorMethod.ByLayer, 256);
+                mt.Location = new Point3d(ins2d.X, ins2d.Y, zone.Elevation);
+                mt.Attachment = AttachmentPoint.MiddleCenter;
+                mt.TextHeight = labelTextHeight;
+                mt.Contents = "Ø" + nominalMm.ToString();
+                double rot = Math.Atan2(dy, dx);
+                if (rot > Math.PI * 0.5)  rot -= Math.PI;
+                else if (rot < -Math.PI * 0.5) rot += Math.PI;
+                mt.Rotation = rot;
+                SprinklerXData.TagAsBranchPipeScheduleLabel(mt);
+                if (tagZone) SprinklerXData.ApplyZoneBoundaryTag(mt, zoneBoundaryHandleHex);
+                ms.AppendEntity(mt);
+                tr.AddNewlyCreatedDBObject(mt, true);
+                labelsDrawn++;
+            }
+
+            return recovered;
+        }
+
+        private static Point2d GetEntityPoint2d(Entity ent)
+        {
+            if (ent is BlockReference br)
+                return new Point2d(br.Position.X, br.Position.Y);
+            try
+            {
+                var ext = ent.GeometricExtents;
+                return new Point2d(
+                    (ext.MinPoint.X + ext.MaxPoint.X) * 0.5,
+                    (ext.MinPoint.Y + ext.MaxPoint.Y) * 0.5);
+            }
+            catch
+            {
+                return Point2d.Origin;
             }
         }
 
@@ -2894,14 +3484,11 @@ namespace autocad_final.Commands
                 if (ent == null) continue;
                 if (!SprinklerLayers.IsSprinklerHeadEntity(tr, ent)) continue;
 
-                Point2d p = default;
+                Point2d p;
                 if (ent is Circle c)
                     p = new Point2d(c.Center.X, c.Center.Y);
                 else if (ent is BlockReference br)
-                {
-                    if (!SprinklerLayers.IsPendentSprinklerBlock(tr, br)) continue;
                     p = new Point2d(br.Position.X, br.Position.Y);
-                }
                 else
                     continue;
 
@@ -3228,7 +3815,7 @@ namespace autocad_final.Commands
             int created = 0;
             var clipIntervals = RingGeometry.ClipSegmentToRingsUnion(a, b, clipRings);
             if (clipIntervals == null || clipIntervals.Count == 0)
-                clipIntervals = new List<(double, double)> { (0.0, 1.0) };
+                return 0; // Segment is entirely outside all zone rings — skip it
 
             double segDx = b.X - a.X;
             double segDy = b.Y - a.Y;
@@ -3377,114 +3964,7 @@ namespace autocad_final.Commands
             List<Point2d> sprinklers,
             double tol,
             out Point2d attach)
-        {
-            attach = default;
-            double te = tol > 0 ? tol : 1e-6;
-            if (poly == null || poly.Count < 2)
-                return false;
-
-            double target = 0;
-            int count = 0;
-            if (sprinklers != null)
-            {
-                for (int i = 0; i < sprinklers.Count; i++)
-                {
-                    target += branchHorizontal ? sprinklers[i].X : sprinklers[i].Y;
-                    count++;
-                }
-            }
-            if (count > 0)
-                target /= count;
-
-            bool found = false;
-            double best = double.MaxValue;
-            Point2d bestPoint = default;
-
-            for (int i = 0; i + 1 < poly.Count; i++)
-            {
-                var a = poly[i];
-                var b = poly[i + 1];
-                Point2d p;
-                if (branchHorizontal)
-                {
-                    double dyA = a.Y - gridKey;
-                    double dyB = b.Y - gridKey;
-                    if (Math.Abs(dyA) <= te && Math.Abs(dyB) <= te)
-                    {
-                        double lo = Math.Min(a.X, b.X);
-                        double hi = Math.Max(a.X, b.X);
-                        double x = Math.Max(lo, Math.Min(hi, target));
-                        p = new Point2d(x, gridKey);
-                    }
-                    else if ((dyA < -te && dyB < -te) || (dyA > te && dyB > te))
-                    {
-                        continue;
-                    }
-                    else
-                    {
-                        double denom = b.Y - a.Y;
-                        if (Math.Abs(denom) <= te)
-                            continue;
-                        double u = (gridKey - a.Y) / denom;
-                        if (u < -1e-9 || u > 1.0 + 1e-9)
-                            continue;
-                        p = new Point2d(a.X + (b.X - a.X) * u, gridKey);
-                    }
-
-                    double d = Math.Abs(p.X - target);
-                    if (zoneRing != null && zoneRing.Count >= 3 && !PointInPolygon(zoneRing, p))
-                        d += te * 100.0;
-                    if (d < best)
-                    {
-                        best = d;
-                        bestPoint = p;
-                        found = true;
-                    }
-                }
-                else
-                {
-                    double dxA = a.X - gridKey;
-                    double dxB = b.X - gridKey;
-                    if (Math.Abs(dxA) <= te && Math.Abs(dxB) <= te)
-                    {
-                        double lo = Math.Min(a.Y, b.Y);
-                        double hi = Math.Max(a.Y, b.Y);
-                        double y = Math.Max(lo, Math.Min(hi, target));
-                        p = new Point2d(gridKey, y);
-                    }
-                    else if ((dxA < -te && dxB < -te) || (dxA > te && dxB > te))
-                    {
-                        continue;
-                    }
-                    else
-                    {
-                        double denom = b.X - a.X;
-                        if (Math.Abs(denom) <= te)
-                            continue;
-                        double u = (gridKey - a.X) / denom;
-                        if (u < -1e-9 || u > 1.0 + 1e-9)
-                            continue;
-                        p = new Point2d(gridKey, a.Y + (b.Y - a.Y) * u);
-                    }
-
-                    double d = Math.Abs(p.Y - target);
-                    if (zoneRing != null && zoneRing.Count >= 3 && !PointInPolygon(zoneRing, p))
-                        d += te * 100.0;
-                    if (d < best)
-                    {
-                        best = d;
-                        bestPoint = p;
-                        found = true;
-                    }
-                }
-            }
-
-            if (!found)
-                return false;
-
-            attach = bestPoint;
-            return true;
-        }
+            => PolylineTrunkGridAttach2d.TryFindGridAxisAttach(poly, zoneRing, branchHorizontal, gridKey, sprinklers, tol, out attach);
 
         private static Vector2d PickBranchAxisFromTangent(Point2d attach, List<Point2d> sprinklers, Vector2d tangent, double tol)
         {
@@ -3594,6 +4074,35 @@ namespace autocad_final.Commands
             return bestT;
         }
 
+        /// <summary>Shifts branch Ø labels off the main centerline when the segment runs parallel to the trunk.</summary>
+        private static Point2d NudgeBranchLabelOffTrunkRow(
+            Point2d candidate,
+            Point2d mid,
+            double dx,
+            double dy,
+            bool trunkHorizontal,
+            double trunkAxis,
+            double mainW,
+            double clusterTol,
+            double labelOffsetDu)
+        {
+            if (double.IsNaN(trunkAxis) || double.IsInfinity(trunkAxis) || !(labelOffsetDu > 0))
+                return candidate;
+            double nearTol = Math.Max(mainW * 0.9, clusterTol * 6.0);
+            double n = Math.Max(labelOffsetDu * 0.55, clusterTol * 3.0);
+            if (trunkHorizontal)
+            {
+                if (Math.Abs(dx) >= Math.Abs(dy) && Math.Abs(mid.Y - trunkAxis) <= nearTol)
+                    return new Point2d(candidate.X, candidate.Y + (mid.Y >= trunkAxis ? n : -n));
+            }
+            else
+            {
+                if (Math.Abs(dy) >= Math.Abs(dx) && Math.Abs(mid.X - trunkAxis) <= nearTol)
+                    return new Point2d(candidate.X + (mid.X >= trunkAxis ? n : -n), candidate.Y);
+            }
+            return candidate;
+        }
+
         /// <summary>
         /// Keeps only sprinklers whose orthogonal foot on the trunk lies on a clipped main segment inside the zone
         /// (same notion as main-pipe orthogonal coverage along the trunk axis).
@@ -3632,6 +4141,58 @@ namespace autocad_final.Commands
         }
 
         /// <summary>
+        /// Like <see cref="FilterSprinklersOnTrunkSpans"/> but also keeps heads on the same grid row as the trunk
+        /// (small orthogonal offset) near the physical main extents so end-of-run heads past the zone-clipped span
+        /// still receive a lateral (horizontal branch along the row from the trunk end).
+        /// </summary>
+        private static List<Point2d> FilterSprinklersForOrthogonalTrunkRouting(
+            List<Point2d> sprinklers,
+            bool trunkHorizontal,
+            double trunkAxis,
+            List<(double lo, double hi)> trunkAlongSpansInZone,
+            double physicalAlongMin,
+            double physicalAlongMax,
+            double spanTol,
+            double spacingDu,
+            double clusterTol)
+        {
+            if (sprinklers == null || sprinklers.Count == 0)
+                return sprinklers ?? new List<Point2d>();
+            if (trunkAlongSpansInZone == null || trunkAlongSpansInZone.Count == 0)
+                return new List<Point2d>();
+
+            bool useEndCap =
+                !double.IsNaN(physicalAlongMin) && !double.IsInfinity(physicalAlongMin) &&
+                !double.IsNaN(physicalAlongMax) && !double.IsInfinity(physicalAlongMax) &&
+                Math.Abs(physicalAlongMax - physicalAlongMin) > 1e-9;
+
+            double te = clusterTol > 0 ? clusterTol : 1e-6;
+            double orthoBand = Math.Max(te * 8.0, spacingDu * 0.7);
+            double endMargin = Math.Max(spanTol > 0 ? spanTol : te, spacingDu * 3.0);
+
+            var kept = new List<Point2d>(sprinklers.Count);
+            foreach (var p in sprinklers)
+            {
+                double along = trunkHorizontal ? p.X : p.Y;
+                double ortho = trunkHorizontal ? p.Y - trunkAxis : p.X - trunkAxis;
+
+                if (AlongCoordinateWithinAnySpan(along, trunkAlongSpansInZone, spanTol))
+                {
+                    kept.Add(p);
+                    continue;
+                }
+
+                if (useEndCap &&
+                    Math.Abs(ortho) <= orthoBand &&
+                    along >= physicalAlongMin - endMargin &&
+                    along <= physicalAlongMax + endMargin)
+                    kept.Add(p);
+            }
+
+            return kept;
+        }
+
+        /// <summary>
         /// Reads the shaft→main connector polyline (tagged CONNECTOR) that lies in the zone; vertices define routing order.
         /// </summary>
         private static bool TryGetConnectorPathInZone(
@@ -3650,6 +4211,7 @@ namespace autocad_final.Commands
                 double bestLen = -1.0;
                 foreach (ObjectId id in ms)
                 {
+                    if (id.IsErased) continue;
                     Polyline pl = null;
                     try { pl = tr.GetObject(id, OpenMode.ForRead, false) as Polyline; }
                     catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
@@ -3759,6 +4321,8 @@ namespace autocad_final.Commands
             bool trunkHorizontal,
             double trunkAxis,
             List<(double lo, double hi)> trunkAlongSpansInZone,
+            double trunkPhysicalAlongMin,
+            double trunkPhysicalAlongMax,
             double trunkSpanTol,
             double clusterTol,
             double spacingDu,
@@ -3828,7 +4392,9 @@ namespace autocad_final.Commands
                 }
             }
 
-            var trunkPool = FilterSprinklersOnTrunkSpans(pool, trunkHorizontal, trunkAlongSpansInZone, trunkSpanTol);
+            var trunkPool = FilterSprinklersForOrthogonalTrunkRouting(
+                pool, trunkHorizontal, trunkAxis, trunkAlongSpansInZone,
+                trunkPhysicalAlongMin, trunkPhysicalAlongMax, trunkSpanTol, spacingDu, clusterTol);
             if (trunkPool.Count == 0)
                 return result;
 
@@ -3912,6 +4478,8 @@ namespace autocad_final.Commands
             out List<(double lo, double hi)> trunkAlongSpansInZone,
             out bool downstreamPositive,
             out double trunkWidth,
+            out double trunkPhysicalAlongMin,
+            out double trunkPhysicalAlongMax,
             out string errorMessage)
         {
             trunkHorizontal = true;
@@ -3921,6 +4489,8 @@ namespace autocad_final.Commands
             trunkAlongSpansInZone = null;
             downstreamPositive = true;
             trunkWidth = 0;
+            trunkPhysicalAlongMin = double.NaN;
+            trunkPhysicalAlongMax = double.NaN;
             errorMessage = null;
 
             using (var tr = db.TransactionManager.StartTransaction())
@@ -3974,6 +4544,8 @@ namespace autocad_final.Commands
                 double axis = isHorizontal ? 0.5 * (minY + maxY) : 0.5 * (minX + maxX);
                 double aMin = isHorizontal ? minX : minY;
                 double aMax = isHorizontal ? maxX : maxY;
+                trunkPhysicalAlongMin = aMin;
+                trunkPhysicalAlongMax = aMax;
 
                 var clip = isHorizontal
                     ? ClipHorizontalSegmentToZoneRing(axis, aMin, aMax, zoneRing, tol)
@@ -4026,6 +4598,8 @@ namespace autocad_final.Commands
             out List<(double lo, double hi)> trunkAlongSpansInZone,
             out bool downstreamPositive,
             out double trunkWidth,
+            out double trunkPhysicalAlongMin,
+            out double trunkPhysicalAlongMax,
             out string errorMessage)
         {
             trunkHorizontal = true;
@@ -4035,6 +4609,8 @@ namespace autocad_final.Commands
             trunkAlongSpansInZone = null;
             downstreamPositive = true;
             trunkWidth = 0;
+            trunkPhysicalAlongMin = double.NaN;
+            trunkPhysicalAlongMax = double.NaN;
             errorMessage = null;
 
             var candidates = new List<ObjectId>();
@@ -4064,9 +4640,11 @@ namespace autocad_final.Commands
                             continue;
                         }
                         if (PolylineHasSampleInsideZone(pl, zoneRing))
+                        {
                             candidates.Add(id);
-                        if (SprinklerXData.IsTaggedTrunk(pl))
-                            taggedTrunks.Add(id);
+                            if (SprinklerXData.IsTaggedTrunk(pl))
+                                taggedTrunks.Add(id);
+                        }
                     }
                 }
                 if (candidates.Count == 0)
@@ -4115,6 +4693,8 @@ namespace autocad_final.Commands
                     axis = isHorizontal ? 0.5 * (minY + maxY) : 0.5 * (minX + maxX);
                     double aMin = isHorizontal ? minX : minY;
                     double aMax = isHorizontal ? maxX : maxY;
+                    trunkPhysicalAlongMin = aMin;
+                    trunkPhysicalAlongMax = aMax;
 
                     var clip = isHorizontal
                         ? ClipHorizontalSegmentToZoneRing(axis, aMin, aMax, zoneRing, tol)
@@ -4491,16 +5071,21 @@ namespace autocad_final.Commands
                     if (pl == null) continue;
                     if (!pl.Closed)
                         continue;
-                    if (!SprinklerLayers.IsUnifiedZoneDesignLayerName(pl.Layer))
+                    bool isMcdZone = SprinklerLayers.IsMcdZoneOutlineLayerName(pl.Layer);
+                    bool isUnifiedZone = SprinklerLayers.IsUnifiedZoneDesignLayerName(pl.Layer);
+                    if (!isMcdZone && !isUnifiedZone)
                         continue;
 
-                    bool taggedSelf = false;
-                    if (SprinklerXData.TryGetZoneBoundaryHandle(pl, out var h)
+                    bool taggedSelf =
+                        SprinklerXData.TryGetZoneBoundaryHandle(pl, out var h)
                         && !string.IsNullOrWhiteSpace(h)
-                        && string.Equals(h, pl.Handle.ToString(), StringComparison.OrdinalIgnoreCase))
-                    {
-                        taggedSelf = true;
-                    }
+                        && string.Equals(h, pl.Handle.ToString(), StringComparison.OrdinalIgnoreCase);
+
+                    // "sprinkler - zone" is a shared layer (main pipes, floor outlines, etc. all live there).
+                    // Only self-tagged polylines on that layer are confirmed zone boundaries.
+                    // "MCD-zone boundary" is exclusive to zone boundaries — no self-tag required.
+                    if (isUnifiedZone && !taggedSelf)
+                        continue;
 
                     var ring = PolylineClosedBoundaryRingSampler2d.ConvertPolylineToRingPoints(pl);
                     if (ring == null || ring.Count < 3)
@@ -4927,23 +5512,6 @@ namespace autocad_final.Commands
             return Math.Max(
                 lengthDu * 0.5,
                 Math.Max(Math.Max(bigHalf, smallHalf) * 0.9, 1e-6));
-        }
-
-        private static Line MakePerpendicularTick(Point2d at, bool branchIsVertical, double len, double elevation)
-        {
-            double h = len * 0.5;
-            if (branchIsVertical)
-            {
-                var a = new Point3d(at.X - h, at.Y, elevation);
-                var b = new Point3d(at.X + h, at.Y, elevation);
-                return new Line(a, b);
-            }
-            else
-            {
-                var a = new Point3d(at.X, at.Y - h, elevation);
-                var b = new Point3d(at.X, at.Y + h, elevation);
-                return new Line(a, b);
-            }
         }
 
         private static bool PolylineHasSampleInsideZone(Polyline pl, List<Point2d> zoneRing)

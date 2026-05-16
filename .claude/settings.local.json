@@ -11,7 +11,9 @@
       "Bash(\"C:/Program Files \\(x86\\)/Microsoft Visual Studio/2022/BuildTools/MSBuild/Current/Bin/MSBuild.exe\" \"c:/Users/admin/source/repos/autocad-final/autocad-final/autocad-final.csproj\" /p:Configuration=Debug /verbosity:minimal)",
       "Bash(/c/Windows/Microsoft.NET/Framework64/v4.0.30319/MSBuild.exe autocad-final.csproj /p:Configuration=Debug /nologo /verbosity:minimal)",
       "Bash(\"/c/Windows/Microsoft.NET/Framework64/v4.0.30319/MSBuild.exe\" \"c:/Users/admin/source/repos/autocad-final/autocad-final/autocad-final.csproj\" \"/p:Configuration=Debug\" /nologo /verbosity:minimal)",
-      "Bash(\"/c/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/MSBuild.exe\" autocad-final/autocad-final.csproj /t:Build /p:Configuration=Debug /v:minimal /nologo)"
+      "Bash(\"/c/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/MSBuild.exe\" autocad-final/autocad-final.csproj /t:Build /p:Configuration=Debug /v:minimal /nologo)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\admin\\\\source\\\\repos\\\\autocad-final\\\\autocad-final\\\\Commands\" -Filter \"*.cs\" -ErrorAction SilentlyContinue)",
+      "Bash(Select-Object -ExpandProperty FullName)"
     ]
   }
 }

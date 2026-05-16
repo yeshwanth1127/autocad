@@ -70,6 +70,10 @@ namespace autocad_final.AreaWorkflow
             for (int i = 0; i < n; i++)
                 sites.Add(new Point2d(shafts[i].Position.X, shafts[i].Position.Y));
 
+            var shaftOrder = new int[n];
+            for (int i = 0; i < n; i++)
+                shaftOrder[i] = i;
+
             if (!EqualAreaAxisStripZonesInPolygon2d.TryGetIdealInteriorStripCuts(
                     boundary,
                     sites,
@@ -92,6 +96,15 @@ namespace autocad_final.AreaWorkflow
             }
 
             splitVertical = eaVertical;
+            bool orderVertical = splitVertical;
+            Array.Sort(shaftOrder, (a, b) =>
+            {
+                double va = orderVertical ? sites[a].X : sites[a].Y;
+                double vb = orderVertical ? sites[b].X : sites[b].Y;
+                int c = va.CompareTo(vb);
+                return c != 0 ? c : a.CompareTo(b);
+            });
+
             double axisEps = Math.Max(ringEps, 1e-6 * Math.Max(extent, 1.0));
             var candidates = CollectTaggedBoundaryAxisSnapCandidates(ring, splitVertical, axisEps, ringEps);
 
@@ -147,15 +160,21 @@ namespace autocad_final.AreaWorkflow
                                 out var outRings,
                                 out string clipErr))
                         {
-                            continue;
+                            errorMessage = "Strip " + (strip + 1).ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                                           " region clip failed: " + (clipErr ?? "empty intersection");
+                            return false;
                         }
 
-                        foreach (var r in outRings)
+                        int shaftIndex = shaftOrder[strip];
+                        var selected = SelectRingForShaft(outRings, sites[shaftIndex], tolerance);
+                        if (selected == null || selected.Count < 3)
                         {
-                            if (r == null || r.Count < 3) continue;
-                            rings.Add(r);
-                            ringShaftIdx.Add(strip);
+                            errorMessage = "A snapped strip did not contain the expected shaft, so zone count would not match shaft count.";
+                            return false;
                         }
+
+                        rings.Add(selected);
+                        ringShaftIdx.Add(shaftIndex);
                     }
                     finally
                     {
@@ -174,10 +193,102 @@ namespace autocad_final.AreaWorkflow
                 return false;
             }
 
+            if (rings.Count != n)
+            {
+                errorMessage = "Zone count mismatch after strip snapping: expected " + n.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                               " zones for " + n.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                               " shafts, actual zone count: " + rings.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".";
+                return false;
+            }
+
             errorMessage = (splitVertical ? "Strips: vertical." : "Strips: horizontal.") +
                            " Snap within " + snapM.ToString(System.Globalization.CultureInfo.InvariantCulture) +
                            " m of ideal cut to corners/wall lines when possible (Region clipping).";
             return true;
+        }
+
+        private static List<Point2d> SelectRingForShaft(IList<List<Point2d>> rings, Point2d shaft, double tol)
+        {
+            if (rings == null || rings.Count == 0)
+                return null;
+
+            List<Point2d> best = null;
+            double bestArea = double.NegativeInfinity;
+            double eps = Math.Max(tol, 1e-9);
+            foreach (var ring in rings)
+            {
+                if (ring == null || ring.Count < 3)
+                    continue;
+
+                double area = PolygonVerticalHalfPlaneClip2d.AbsArea(ring);
+                if (PointInPolygonOrOnEdge(ring, shaft, eps))
+                    return ring;
+
+                if (area > bestArea)
+                {
+                    bestArea = area;
+                    best = ring;
+                }
+            }
+
+            return best;
+        }
+
+        private static bool PointInPolygonOrOnEdge(IList<Point2d> poly, Point2d p, double tol)
+        {
+            if (poly == null || poly.Count < 3)
+                return false;
+
+            for (int i = 0, j = poly.Count - 1; i < poly.Count; j = i++)
+            {
+                if (DistancePointToSegment(p, poly[j], poly[i]) <= tol)
+                    return true;
+            }
+
+            bool inside = false;
+            for (int i = 0, j = poly.Count - 1; i < poly.Count; j = i++)
+            {
+                var a = poly[i];
+                var b = poly[j];
+                bool crosses = ((a.Y > p.Y) != (b.Y > p.Y));
+                if (!crosses)
+                    continue;
+
+                double denom = b.Y - a.Y;
+                if (Math.Abs(denom) <= 1e-12)
+                    continue;
+
+                double xInt = (b.X - a.X) * (p.Y - a.Y) / denom + a.X;
+                if (p.X < xInt)
+                    inside = !inside;
+            }
+
+            return inside;
+        }
+
+        private static double DistancePointToSegment(Point2d p, Point2d a, Point2d b)
+        {
+            double vx = b.X - a.X, vy = b.Y - a.Y;
+            double wx = p.X - a.X, wy = p.Y - a.Y;
+            double c1 = vx * wx + vy * wy;
+            if (c1 <= 0)
+                return Math.Sqrt(wx * wx + wy * wy);
+
+            double c2 = vx * vx + vy * vy;
+            if (c2 <= 0)
+                return Math.Sqrt(wx * wx + wy * wy);
+
+            double t = c1 / c2;
+            if (t >= 1)
+            {
+                double dx = p.X - b.X, dy = p.Y - b.Y;
+                return Math.Sqrt(dx * dx + dy * dy);
+            }
+
+            double projX = a.X + t * vx;
+            double projY = a.Y + t * vy;
+            double px = p.X - projX, py = p.Y - projY;
+            return Math.Sqrt(px * px + py * py);
         }
 
         /// <summary>Backward-compatible overload using <see cref="SnapSearchMeters"/>.</summary>

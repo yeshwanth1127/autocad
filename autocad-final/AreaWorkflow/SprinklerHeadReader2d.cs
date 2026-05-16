@@ -8,6 +8,13 @@ namespace autocad_final.AreaWorkflow
 {
     public static class SprinklerHeadReader2d
     {
+        private sealed class FloorRoomOwnership
+        {
+            public List<Point2d> Ring;
+            public string ParentZoneHex;
+            public double Area;
+        }
+
         public static bool TryReadSprinklerHeadPoints(
             Database db,
             List<Point2d> zoneRing,
@@ -45,6 +52,11 @@ namespace autocad_final.AreaWorkflow
                 return false;
             }
 
+            string zoneHex = string.IsNullOrWhiteSpace(zoneBoundaryHandleHex) ? null : zoneBoundaryHandleHex.Trim();
+            var roomOwnerships = !string.IsNullOrWhiteSpace(zoneHex)
+                ? BuildFloorRoomOwnerships(db)
+                : null;
+
             using (var tr = db.TransactionManager.StartTransaction())
             {
                 var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
@@ -60,31 +72,21 @@ namespace autocad_final.AreaWorkflow
                     if (!SprinklerLayers.IsSprinklerHeadEntity(tr, ent))
                         continue;
 
+                    Point2d p;
                     if (ent is Circle c)
-                    {
-                        var p = new Point2d(c.Center.X, c.Center.Y);
-                        if (!PointInPolygon(zoneRing, p))
-                            continue;
-                        AddDedupe(sprinklers, p, dedupeTol);
-                    }
+                        p = new Point2d(c.Center.X, c.Center.Y);
                     else if (ent is BlockReference br)
-                    {
-                        if (!SprinklerLayers.IsPendentSprinklerBlock(tr, br))
-                            continue;
+                        p = new Point2d(br.Position.X, br.Position.Y);
+                    else
+                        continue;
 
-                        var pos = br.Position;
-                        var p = new Point2d(pos.X, pos.Y);
-                        if (!PointInPolygon(zoneRing, p))
-                            continue;
-                        AddDedupe(sprinklers, p, dedupeTol);
-                    }
+                    if (!PointBelongsToZoneForRouting(zoneRing, zoneHex, roomOwnerships, p))
+                        continue;
+                    AddDedupe(sprinklers, p, dedupeTol);
                 }
 
                 tr.Commit();
             }
-
-            if (!string.IsNullOrWhiteSpace(zoneBoundaryHandleHex))
-                AppendSprinklerPointsFromRoomsParentedToZone(db, zoneRing, zoneBoundaryHandleHex.Trim(), dedupeTol, sprinklers);
 
             return true;
         }
@@ -127,6 +129,11 @@ namespace autocad_final.AreaWorkflow
                 return false;
             }
 
+            string zoneHex = string.IsNullOrWhiteSpace(zoneBoundaryHandleHex) ? null : zoneBoundaryHandleHex.Trim();
+            var roomOwnerships = !string.IsNullOrWhiteSpace(zoneHex)
+                ? BuildFloorRoomOwnerships(db)
+                : null;
+
             using (var tr = db.TransactionManager.StartTransaction())
             {
                 var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
@@ -142,147 +149,23 @@ namespace autocad_final.AreaWorkflow
                     if (!SprinklerLayers.IsSprinklerHeadEntity(tr, ent))
                         continue;
 
+                    Point2d p;
                     if (ent is Circle c)
-                    {
-                        var p = new Point2d(c.Center.X, c.Center.Y);
-                        if (!PointInPolygon(zoneRing, p))
-                            continue;
-                        heads.Add((p, id));
-                    }
+                        p = new Point2d(c.Center.X, c.Center.Y);
                     else if (ent is BlockReference br)
-                    {
-                        if (!SprinklerLayers.IsPendentSprinklerBlock(tr, br))
-                            continue;
+                        p = new Point2d(br.Position.X, br.Position.Y);
+                    else
+                        continue;
 
-                        var pos = br.Position;
-                        var p = new Point2d(pos.X, pos.Y);
-                        if (!PointInPolygon(zoneRing, p))
-                            continue;
-                        heads.Add((p, id));
-                    }
+                    if (!PointBelongsToZoneForRouting(zoneRing, zoneHex, roomOwnerships, p))
+                        continue;
+                    heads.Add((p, id));
                 }
 
                 tr.Commit();
             }
-
-            if (!string.IsNullOrWhiteSpace(zoneBoundaryHandleHex))
-                AppendHeadEntitiesFromRoomsParentedToZone(db, zoneRing, zoneBoundaryHandleHex.Trim(), heads);
 
             return true;
-        }
-
-        private static void AppendSprinklerPointsFromRoomsParentedToZone(
-            Database db,
-            List<Point2d> zoneRing,
-            string zoneHex,
-            double dedupeTol,
-            List<Point2d> sprinklers)
-        {
-            if (!TryGetFloorRoomRingsParentedToZone(db, zoneRing, zoneHex, out var roomRings))
-                return;
-
-            using (var tr = db.TransactionManager.StartTransaction())
-            {
-                var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
-                var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
-
-                foreach (ObjectId id in ms)
-                {
-                    Entity ent = null;
-                    try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
-                    catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
-                    if (ent == null) continue;
-
-                    if (!SprinklerLayers.IsSprinklerHeadEntity(tr, ent))
-                        continue;
-                    if (!SprinklerXData.TryGetZoneBoundaryHandle(ent, out string h) || string.IsNullOrWhiteSpace(h))
-                        continue;
-                    if (!string.Equals(h.Trim(), zoneHex, StringComparison.OrdinalIgnoreCase))
-                        continue;
-
-                    Point2d p = default;
-                    if (ent is Circle c)
-                        p = new Point2d(c.Center.X, c.Center.Y);
-                    else if (ent is BlockReference br)
-                    {
-                        if (!SprinklerLayers.IsPendentSprinklerBlock(tr, br))
-                            continue;
-                        p = new Point2d(br.Position.X, br.Position.Y);
-                    }
-                    else
-                        continue;
-
-                    if (PointInPolygon(zoneRing, p))
-                        continue;
-
-                    if (!PointInsideAnyRing(roomRings, p))
-                        continue;
-
-                    AddDedupe(sprinklers, p, dedupeTol);
-                }
-
-                tr.Commit();
-            }
-        }
-
-        private static void AppendHeadEntitiesFromRoomsParentedToZone(
-            Database db,
-            List<Point2d> zoneRing,
-            string zoneHex,
-            List<(Point2d pt, ObjectId id)> heads)
-        {
-            if (!TryGetFloorRoomRingsParentedToZone(db, zoneRing, zoneHex, out var roomRings))
-                return;
-
-            var seen = new HashSet<ObjectId>();
-            for (int i = 0; i < heads.Count; i++)
-                seen.Add(heads[i].id);
-
-            using (var tr = db.TransactionManager.StartTransaction())
-            {
-                var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
-                var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
-
-                foreach (ObjectId id in ms)
-                {
-                    if (seen.Contains(id)) continue;
-
-                    Entity ent = null;
-                    try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
-                    catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
-                    if (ent == null) continue;
-
-                    if (!SprinklerLayers.IsSprinklerHeadEntity(tr, ent))
-                        continue;
-                    if (!SprinklerXData.TryGetZoneBoundaryHandle(ent, out string h) || string.IsNullOrWhiteSpace(h))
-                        continue;
-                    if (!string.Equals(h.Trim(), zoneHex, StringComparison.OrdinalIgnoreCase))
-                        continue;
-
-                    Point2d p = default;
-                    if (ent is Circle c)
-                        p = new Point2d(c.Center.X, c.Center.Y);
-                    else if (ent is BlockReference br)
-                    {
-                        if (!SprinklerLayers.IsPendentSprinklerBlock(tr, br))
-                            continue;
-                        p = new Point2d(br.Position.X, br.Position.Y);
-                    }
-                    else
-                        continue;
-
-                    if (PointInPolygon(zoneRing, p))
-                        continue;
-
-                    if (!PointInsideAnyRing(roomRings, p))
-                        continue;
-
-                    heads.Add((p, id));
-                    seen.Add(id);
-                }
-
-                tr.Commit();
-            }
         }
 
         /// <summary>
@@ -297,6 +180,132 @@ namespace autocad_final.AreaWorkflow
         {
             roomRings = new List<List<Point2d>>();
             PolygonUtils.GetBoundingBox(zoneRing, out double zminX, out double zminY, out double zmaxX, out double zmaxY);
+
+            var rooms = BuildFloorRoomOwnerships(db);
+            for (int i = 0; i < rooms.Count; i++)
+            {
+                var room = rooms[i];
+                if (room == null || room.Ring == null || room.Ring.Count < 3)
+                    continue;
+                if (string.IsNullOrWhiteSpace(room.ParentZoneHex) ||
+                    !string.Equals(room.ParentZoneHex.Trim(), zoneHex, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                PolygonUtils.GetBoundingBox(room.Ring, out double rminX, out double rminY, out double rmaxX, out double rmaxY);
+                if (rmaxX < zminX || rminX > zmaxX || rmaxY < zminY || rminY > zmaxY)
+                    continue;
+
+                roomRings.Add(room.Ring);
+            }
+
+            return roomRings.Count > 0;
+        }
+
+        private static bool PointInsideAnyRing(List<List<Point2d>> rings, Point2d p)
+        {
+            for (int i = 0; i < rings.Count; i++)
+            {
+                if (rings[i] != null && FindShaftsInsideBoundary.IsPointInPolygonRing(rings[i], p))
+                    return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// True if <paramref name="p"/> lies inside a <see cref="SprinklerLayers.McdFloorBoundaryLayer"/> room
+        /// whose majority parent zone matches <paramref name="zoneHex"/> (same rings as
+        /// <see cref="TryGetFloorRoomRingsParentedToZone"/>). Used so redesign cleanup matches routing inclusion.
+        /// </summary>
+        public static bool IsPointInsideFloorRoomParentedToZone(Database db, List<Point2d> zoneRing, string zoneHex, Point2d p)
+        {
+            if (db == null || zoneRing == null || zoneRing.Count < 3 || string.IsNullOrWhiteSpace(zoneHex))
+                return false;
+            var rooms = BuildFloorRoomOwnerships(db);
+            if (!TryFindContainingRoomOwner(rooms, p, out string ownerHex))
+                return false;
+            return string.Equals(ownerHex, zoneHex.Trim(), StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Union of the zone polygon and floor-boundary rooms parented to <paramref name="zoneHex"/> (same footprint
+        /// notion as branch clip rings in attach-branches). Used for redesign cleanup so branches to straddling-room heads are not wiped.
+        /// </summary>
+        public static bool IsPointInZoneOrParentedFloorRoomForRouting(Database db, List<Point2d> zoneRing, string zoneHex, Point2d p)
+        {
+            if (zoneRing == null || zoneRing.Count < 3)
+                return false;
+            if (db == null || string.IsNullOrWhiteSpace(zoneHex))
+                return PointInPolygon(zoneRing, p);
+            return IsPointOwnedByZoneForRouting(db, zoneRing, zoneHex, p);
+        }
+
+        /// <summary>
+        /// A point inside a room outline belongs only to that room's majority parent zone. Points outside rooms
+        /// still use normal zone polygon containment.
+        /// </summary>
+        public static bool IsPointOwnedByZoneForRouting(Database db, List<Point2d> zoneRing, string zoneHex, Point2d p)
+        {
+            if (zoneRing == null || zoneRing.Count < 3)
+                return false;
+            if (db == null || string.IsNullOrWhiteSpace(zoneHex))
+                return PointInPolygon(zoneRing, p);
+            return PointBelongsToZoneForRouting(zoneRing, zoneHex.Trim(), BuildFloorRoomOwnerships(db), p);
+        }
+
+        private static bool PointBelongsToZoneForRouting(
+            List<Point2d> zoneRing,
+            string zoneHex,
+            List<FloorRoomOwnership> roomOwnerships,
+            Point2d p)
+        {
+            // Zone polygon containment always qualifies — never let room ownership override this.
+            if (PointInPolygon(zoneRing, p))
+                return true;
+
+            // Outside the zone polygon: also include heads in floor rooms parented to this zone
+            // (straddling rooms whose geometric centroid falls in a neighbouring zone).
+            if (!string.IsNullOrWhiteSpace(zoneHex) &&
+                TryFindContainingRoomOwner(roomOwnerships, p, out string ownerHex))
+                return string.Equals(ownerHex, zoneHex.Trim(), StringComparison.OrdinalIgnoreCase);
+
+            return false;
+        }
+
+        private static bool TryFindContainingRoomOwner(List<FloorRoomOwnership> rooms, Point2d p, out string ownerHex)
+        {
+            ownerHex = null;
+            if (rooms == null || rooms.Count == 0)
+                return false;
+
+            double bestArea = double.PositiveInfinity;
+            for (int i = 0; i < rooms.Count; i++)
+            {
+                var room = rooms[i];
+                if (room == null || room.Ring == null || room.Ring.Count < 3)
+                    continue;
+                if (string.IsNullOrWhiteSpace(room.ParentZoneHex))
+                    continue;
+                if (!FindShaftsInsideBoundary.IsPointInPolygonRing(room.Ring, p))
+                    continue;
+                double area = room.Area;
+                if (!(area > 0) || double.IsInfinity(area) || double.IsNaN(area))
+                    area = double.PositiveInfinity;
+                if (area < bestArea)
+                {
+                    bestArea = area;
+                    ownerHex = room.ParentZoneHex.Trim();
+                }
+            }
+
+            return !string.IsNullOrWhiteSpace(ownerHex);
+        }
+
+        private static List<FloorRoomOwnership> BuildFloorRoomOwnerships(Database db)
+        {
+            var result = new List<FloorRoomOwnership>();
+            if (db == null)
+                return result;
 
             var floorRoomIds = new List<ObjectId>();
             using (var tr = db.TransactionManager.StartTransaction())
@@ -314,13 +323,6 @@ namespace autocad_final.AreaWorkflow
 
                     string lay = pl.Layer ?? string.Empty;
                     if (!string.Equals(lay.Trim(), SprinklerLayers.McdFloorBoundaryLayer, StringComparison.OrdinalIgnoreCase))
-                        continue;
-
-                    var rr = PolylineClosedBoundaryRingSampler2d.ConvertPolylineToRingPoints(pl);
-                    if (rr == null || rr.Count < 3) continue;
-
-                    PolygonUtils.GetBoundingBox(rr, out double rminX, out double rminY, out double rmaxX, out double rmaxY);
-                    if (rmaxX < zminX || rminX > zmaxX || rmaxY < zminY || rminY > zmaxY)
                         continue;
 
                     floorRoomIds.Add(rid);
@@ -347,15 +349,22 @@ namespace autocad_final.AreaWorkflow
                         tr.Commit();
                     }
 
+                    var ring = PolylineClosedBoundaryRingSampler2d.ConvertPolylineToRingPoints(plClone);
+                    if (ring == null || ring.Count < 3)
+                        continue;
                     if (!RoomParentZoneResolver.TryGetMajorityParentZoneForRoomOutline(db, plClone, out _, out string phex, out _))
                         continue;
-                    if (string.IsNullOrWhiteSpace(phex) ||
-                        !string.Equals(phex.Trim(), zoneHex, StringComparison.OrdinalIgnoreCase))
+                    if (string.IsNullOrWhiteSpace(phex))
                         continue;
 
-                    var ring = PolylineClosedBoundaryRingSampler2d.ConvertPolylineToRingPoints(plClone);
-                    if (ring != null && ring.Count >= 3)
-                        roomRings.Add(ring);
+                    double area = double.PositiveInfinity;
+                    try { area = Math.Abs(plClone.Area); } catch { /* ignore */ }
+                    result.Add(new FloorRoomOwnership
+                    {
+                        Ring = ring,
+                        ParentZoneHex = phex.Trim(),
+                        Area = area
+                    });
                 }
                 finally
                 {
@@ -363,18 +372,70 @@ namespace autocad_final.AreaWorkflow
                 }
             }
 
-            return roomRings.Count > 0;
+            return RemoveOuterFloorParcelFromRoomOwnerships(result);
         }
 
-        private static bool PointInsideAnyRing(List<List<Point2d>> rings, Point2d p)
+        /// <summary>
+        /// The building parcel on <see cref="SprinklerLayers.McdFloorBoundaryLayer"/> must not participate in
+        /// "room owns this zone" logic: sprinklers in corridors (inside the parcel only, not in an inner room loop)
+        /// would otherwise all inherit one majority zone for the whole footprint, and attach-branches / redesign
+        /// would route branches for heads across the entire floor when working on that zone.
+        /// </summary>
+        private static List<FloorRoomOwnership> RemoveOuterFloorParcelFromRoomOwnerships(List<FloorRoomOwnership> rooms)
         {
-            for (int i = 0; i < rings.Count; i++)
+            if (rooms == null || rooms.Count == 0)
+                return new List<FloorRoomOwnership>();
+            if (rooms.Count == 1)
+                return rooms;
+
+            int outerIdx = -1;
+            double bestArea = -1;
+            for (int i = 0; i < rooms.Count; i++)
             {
-                if (rings[i] != null && FindShaftsInsideBoundary.IsPointInPolygonRing(rings[i], p))
-                    return true;
+                var cand = rooms[i];
+                if (cand.Ring == null || cand.Ring.Count < 3)
+                    continue;
+
+                double a = cand.Area;
+                if (!(a > 0) || double.IsInfinity(a) || double.IsNaN(a))
+                    a = 0;
+
+                bool containsEveryOther = true;
+                for (int j = 0; j < rooms.Count; j++)
+                {
+                    if (i == j) continue;
+                    var inner = rooms[j];
+                    if (inner.Ring == null || inner.Ring.Count < 3)
+                    {
+                        containsEveryOther = false;
+                        break;
+                    }
+                    var testPt = inner.Ring[0];
+                    if (!FindShaftsInsideBoundary.IsPointInPolygonRing(cand.Ring, testPt))
+                    {
+                        containsEveryOther = false;
+                        break;
+                    }
+                }
+
+                if (containsEveryOther && a > bestArea)
+                {
+                    bestArea = a;
+                    outerIdx = i;
+                }
             }
 
-            return false;
+            if (outerIdx < 0)
+                return rooms;
+
+            var filtered = new List<FloorRoomOwnership>(rooms.Count - 1);
+            for (int i = 0; i < rooms.Count; i++)
+            {
+                if (i != outerIdx)
+                    filtered.Add(rooms[i]);
+            }
+
+            return filtered;
         }
 
         private static void AddDedupe(List<Point2d> pts, Point2d p, double tol)

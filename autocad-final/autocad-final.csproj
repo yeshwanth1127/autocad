@@ -128,6 +128,7 @@
     <Compile Include="Commands\CheckSprinklersAndFixCommand.cs" />
     <Compile Include="Commands\FixOnSlantCommand.cs" />
     <Compile Include="Commands\AttachBranchesCommand.cs" />
+    <Compile Include="Commands\RoutingRegressionCommand.cs" />
     <Compile Include="Commands\ConnectBranchesManuallyCommand.cs" />
     <Compile Include="Commands\DeleteAllOnLayerCommand.cs" />
     <Compile Include="Commands\RebuildFromTrunkCommand.cs" />
@@ -189,6 +190,8 @@
     <Compile Include="Geometry\OffsetService.cs" />
     <Compile Include="Geometry\PointGenerator.cs" />
     <Compile Include="Geometry\PolygonUtils.cs" />
+    <Compile Include="Geometry\PolylineTrunkGridAttach2d.cs" />
+    <Compile Include="Geometry\PolylineTrunkBranchRoutingRegression.cs" />
     <Compile Include="Geometry\OrthogonalVoronoiPostProcessor2d.cs" />
     <Compile Include="Geometry\ConvexHull2d.cs" />
     <Compile Include="Geometry\BoundaryEntityToClosedLwPolyline.cs" />

@@ -180,8 +180,11 @@ namespace autocad_final.Commands
                 SprinklerXData.EnsureRegApp(tr, db);
                 foreach (ObjectId id in ms)
                 {
-                    if (!(tr.GetObject(id, OpenMode.ForRead, false) is Entity ent))
-                        continue;
+                    if (id.IsErased) continue;
+                    Entity ent = null;
+                    try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
+                    catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                    if (ent == null) continue;
                     // Use LayerId comparison to avoid ent.Layer throwing eInvalidLayer for
                     // entities that have a corrupt/xref-dependent layer reference.
                     ObjectId entLayerId;
@@ -283,8 +286,11 @@ namespace autocad_final.Commands
 
                 foreach (ObjectId id in ms)
                 {
-                    if (!(tr.GetObject(id, OpenMode.ForRead, false) is Entity ent))
-                        continue;
+                    if (id.IsErased) continue;
+                    Entity ent = null;
+                    try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
+                    catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                    if (ent == null) continue;
 
                     if (!SprinklerLayers.IsMainPipeLayerName(ent.Layer))
                         continue;

@@ -18,6 +18,15 @@ namespace autocad_final.AreaWorkflow
     /// </summary>
     public static class ShaftVoronoiZonesOnFloorPolyline
     {
+
+        /// <summary>
+        /// Zone ring vertices within this distance of the floor boundary edge are snapped onto it.
+        /// Expressed in metres; converted to drawing units at runtime.
+        /// Kept in line with <see cref="ShaftMidlineStripZonesInPolygon2d.SnapSearchMeters"/> so "Zone boundary + threshold"
+        /// expectations match the post-outline glue-to-floor pass (multi-metre gaps were wrongly left by the old 5 cm cap).
+        /// </summary>
+        public const double FloorBoundarySnapThresholdMeters = ShaftMidlineStripZonesInPolygon2d.SnapSearchMeters;
+
         /// <summary>
         /// Collapses shaft insertion points that coincide within tolerance (duplicate inserts).
         /// </summary>
@@ -146,11 +155,69 @@ namespace autocad_final.AreaWorkflow
                 var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
                 var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
 
+                // Pre-compute floor ring and snap threshold once for all zone rings.
+                var floorRing = boundary != null
+                    ? PolylineClosedBoundaryRingSampler2d.ConvertPolylineToRingPoints(boundary)
+                    : new List<Point2d>();
+                double snapThresholdDu = 0;
+                if (floorRing.Count >= 2)
+                {
+                    if (DrawingUnitsHelper.TryMetersToDrawingLength(
+                            db.Insunits, FloorBoundarySnapThresholdMeters, out double snapDu) && snapDu > 0)
+                    {
+                        snapThresholdDu = snapDu;
+                    }
+                    else if (boundary != null)
+                    {
+                        // INSUNITS unset: still snap using scale inferred from floor extent (same idea as grid spacing).
+                        try
+                        {
+                            var ext = boundary.GeometricExtents;
+                            double extentDu = Math.Max(
+                                Math.Abs(ext.MaxPoint.X - ext.MinPoint.X),
+                                Math.Abs(ext.MaxPoint.Y - ext.MinPoint.Y));
+                            if (DrawingUnitsHelper.TryAutoGetDrawingScale(
+                                    db.Insunits, spacingMeters: 1.0, extentHint: extentDu, out double duPerMeter)
+                                && duPerMeter > 0)
+                            {
+                                snapThresholdDu = FloorBoundarySnapThresholdMeters * duPerMeter;
+                            }
+                        }
+                        catch
+                        {
+                            /* ignore */
+                        }
+                    }
+                }
+
+                int zonesDrawn = 0;
                 for (int zi = 0; zi < zoneRings.Count; zi++)
                 {
                     var ring = zoneRings[zi];
                     if (ring == null || ring.Count < 3)
+                    {
+                        ed.WriteMessage(
+                            "\n[autocad-final] Zone " + (zi + 1).ToString(CultureInfo.InvariantCulture) +
+                            " skipped: invalid ring before snap (" + (ring?.Count ?? 0).ToString(CultureInfo.InvariantCulture) + " vertices).\n");
                         continue;
+                    }
+
+                    var ringBeforeSnap = new List<Point2d>(ring);
+
+                    // Snap vertices that are within the threshold of the floor boundary onto it.
+                    if (snapThresholdDu > 0)
+                    {
+                        ring = SnapRingToFloorBoundary(ring, floorRing, snapThresholdDu, out var snapSegEnd);
+                        ring = RefineZoneRingFollowFloorBoundary(ring, snapSegEnd, floorRing, snapThresholdDu);
+                    }
+
+                    if (ring == null || ring.Count < 3)
+                    {
+                        ed.WriteMessage(
+                            "\n[autocad-final] Zone " + (zi + 1).ToString(CultureInfo.InvariantCulture) +
+                            " snap collapsed the ring; using pre-snap geometry.\n");
+                        ring = ringBeforeSnap;
+                    }
 
                     var pl = new PolylineEntity();
                     pl.SetDatabaseDefaults(db);
@@ -229,6 +296,16 @@ namespace autocad_final.AreaWorkflow
 
                     ms.AppendEntity(mt);
                     tr.AddNewlyCreatedDBObject(mt, true);
+                    zonesDrawn++;
+                }
+
+                if (zonesDrawn != zoneRings.Count)
+                {
+                    ed.WriteMessage(
+                        "\n[autocad-final] Zone outline count mismatch: drew " +
+                        zonesDrawn.ToString(CultureInfo.InvariantCulture) + " of " +
+                        zoneRings.Count.ToString(CultureInfo.InvariantCulture) +
+                        " zone rings. Check command line for per-zone errors.\n");
                 }
 
                 tr.Commit();
@@ -384,6 +461,345 @@ namespace autocad_final.AreaWorkflow
             double projY = a.Y + t * vy;
             double px = p.X - projX, py = p.Y - projY;
             return Math.Sqrt(px * px + py * py);
+        }
+
+        private static Point2d NearestPointOnSegment(Point2d p, Point2d a, Point2d b)
+        {
+            double vx = b.X - a.X, vy = b.Y - a.Y;
+            double c2 = vx * vx + vy * vy;
+            if (c2 <= 0) return a;
+            double t = ((p.X - a.X) * vx + (p.Y - a.Y) * vy) / c2;
+            t = Math.Max(0.0, Math.Min(1.0, t));
+            return new Point2d(a.X + t * vx, a.Y + t * vy);
+        }
+
+        /// <summary>
+        /// Extracts the 2-D vertex ring from a closed AutoCAD polyline.
+        /// </summary>
+        private static List<Point2d> GetPolylineRing2d(Polyline poly)
+        {
+            var ring = new List<Point2d>();
+            if (poly == null) return ring;
+            int n = poly.NumberOfVertices;
+            for (int i = 0; i < n; i++)
+                ring.Add(poly.GetPoint2dAt(i));
+            return ring;
+        }
+
+        /// <summary>
+        /// Returns a copy of <paramref name="ring"/> where vertices that lie within
+        /// <paramref name="threshold"/> of the floor boundary are projected onto it.
+        /// When several floor edges are within tolerance (common near corners), picks the edge that best
+        /// aligns with the local zone wall direction (chord across the vertex) so one edge is not
+        /// mistaken for a shorter perpendicular distance to the wrong wall — which caused kinked/slanted zone lines.
+        /// </summary>
+        private static List<Point2d> SnapRingToFloorBoundary(
+            List<Point2d> ring,
+            List<Point2d> floorRing,
+            double threshold,
+            out List<int> floorSegEnd)
+        {
+            int fn = floorRing.Count;
+            var result = new List<Point2d>(ring.Count);
+            floorSegEnd = new List<int>(ring.Count);
+
+            for (int vi = 0; vi < ring.Count; vi++)
+            {
+                var pt = ring[vi];
+                var prev = ring[(vi - 1 + ring.Count) % ring.Count];
+                var next = ring[(vi + 1) % ring.Count];
+                double cdx = next.X - prev.X, cdy = next.Y - prev.Y;
+                double chordLen = Math.Sqrt(cdx * cdx + cdy * cdy);
+
+                Point2d outPt = pt;
+                int winSeg = -1;
+
+                const double chordEps = 1e-9;
+                if (chordLen > chordEps)
+                {
+                    bool have = false;
+                    double bestAlign = -2.0;
+                    double bestD = double.MaxValue;
+                    Point2d candSnap = pt;
+                    int candSeg = -1;
+                    for (int i = 0, j = fn - 1; i < fn; j = i++)
+                    {
+                        var a = floorRing[j];
+                        var b = floorRing[i];
+                        double d = DistancePointToSegment(pt, a, b);
+                        if (d > threshold)
+                            continue;
+
+                        double sdx = b.X - a.X, sdy = b.Y - a.Y;
+                        double segLen = Math.Sqrt(sdx * sdx + sdy * sdy);
+                        double align = 0;
+                        if (segLen > chordEps)
+                            align = Math.Abs((cdx * sdx + cdy * sdy) / (chordLen * segLen));
+
+                        Point2d snap = NearestPointOnSegment(pt, a, b);
+                        if (!have || align > bestAlign + 1e-9 ||
+                            (Math.Abs(align - bestAlign) <= 1e-9 && d < bestD))
+                        {
+                            have = true;
+                            bestAlign = align;
+                            bestD = d;
+                            candSnap = snap;
+                            candSeg = i;
+                        }
+                    }
+                    if (have)
+                    {
+                        outPt = candSnap;
+                        winSeg = candSeg;
+                    }
+                }
+                else
+                {
+                    double bestD = double.MaxValue;
+                    Point2d candSnap = pt;
+                    int candSeg = -1;
+                    for (int i = 0, j = fn - 1; i < fn; j = i++)
+                    {
+                        double d = DistancePointToSegment(pt, floorRing[j], floorRing[i]);
+                        if (d > threshold)
+                            continue;
+                        if (d < bestD)
+                        {
+                            bestD = d;
+                            candSnap = NearestPointOnSegment(pt, floorRing[j], floorRing[i]);
+                            candSeg = i;
+                        }
+                    }
+                    if (bestD < double.MaxValue)
+                    {
+                        outPt = candSnap;
+                        winSeg = candSeg;
+                    }
+                }
+
+                result.Add(outPt);
+                floorSegEnd.Add(winSeg);
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Uses segment indices from <see cref="SnapRingToFloorBoundary"/>, aligns mid-vertices with neighbors on the
+        /// same wall, inserts floor corners between different segments, then re-projects every vertex onto its wall.
+        /// </summary>
+        private static List<Point2d> RefineZoneRingFollowFloorBoundary(
+            List<Point2d> ring,
+            List<int> snapSegEnd,
+            List<Point2d> floorRing,
+            double threshold)
+        {
+            if (ring == null || ring.Count < 3 || floorRing == null || floorRing.Count < 2)
+                return ring;
+
+            int nIn = ring.Count;
+            int fn = floorRing.Count;
+            double voteTol = threshold * 2.5;
+            double dedupeEps = Math.Max(threshold * 1e-4, 1e-7);
+
+            var segIdx = new List<int>(ring.Count);
+            for (int i = 0; i < ring.Count; i++)
+            {
+                int s = (snapSegEnd != null && i < snapSegEnd.Count) ? snapSegEnd[i] : -1;
+                if (s < 0)
+                    s = PickFloorSegmentEndNearest(ring[i], floorRing, voteTol);
+                segIdx.Add(s);
+            }
+
+            for (int pass = 0; pass < 3; pass++)
+            {
+                for (int i = 0; i < ring.Count; i++)
+                {
+                    int sp = segIdx[(i - 1 + ring.Count) % ring.Count];
+                    int sn = segIdx[(i + 1) % ring.Count];
+                    if (sp < 0 || sn < 0 || sp != sn)
+                        continue;
+
+                    int s = sp;
+                    int j = (s - 1 + fn) % fn;
+                    double d = DistancePointToSegment(ring[i], floorRing[j], floorRing[s]);
+                    if (d > voteTol)
+                        continue;
+
+                    ring[i] = NearestPointOnSegment(ring[i], floorRing[j], floorRing[s]);
+                    segIdx[i] = s;
+                }
+            }
+
+            var merged = new List<Point2d>(ring.Count + floorRing.Count);
+            int n = ring.Count;
+            for (int i = 0; i < n; i++)
+            {
+                var a = ring[i];
+                var b = ring[(i + 1) % n];
+                int sa = segIdx[i];
+                int sb = segIdx[(i + 1) % n];
+
+                merged.Add(a);
+
+                if (sa < 0 || sb < 0 || sa == sb)
+                    continue;
+
+                var corners = FloorCornersAlongShorterFloorBoundary(floorRing, sa, sb);
+                foreach (var c in corners)
+                {
+                    if (c.GetDistanceTo(a) <= dedupeEps || c.GetDistanceTo(b) <= dedupeEps)
+                        continue;
+                    merged.Add(c);
+                }
+            }
+
+            DedupeConsecutivePoints(merged, dedupeEps);
+            if (merged.Count < 3)
+                return ring;
+
+            // Lock every vertex onto its assigned floor segment (exact boundary level).
+            var mergedSeg = new List<int>(merged.Count);
+            for (int i = 0; i < merged.Count; i++)
+            {
+                int s = PickFloorSegmentEndNearest(merged[i], floorRing, voteTol);
+                if (s >= 0)
+                {
+                    int j = (s - 1 + fn) % fn;
+                    merged[i] = NearestPointOnSegment(merged[i], floorRing[j], floorRing[s]);
+                }
+                mergedSeg.Add(s);
+            }
+
+            // Second corner pass after re-projection (segment assignment may have changed).
+            var finalRing = new List<Point2d>(merged.Count + floorRing.Count);
+            int mn = merged.Count;
+            for (int i = 0; i < mn; i++)
+            {
+                var a = merged[i];
+                var b = merged[(i + 1) % mn];
+                int sa = mergedSeg[i];
+                int sb = mergedSeg[(i + 1) % mn];
+
+                finalRing.Add(a);
+
+                if (sa < 0 || sb < 0 || sa == sb)
+                    continue;
+
+                foreach (var c in FloorCornersAlongShorterFloorBoundary(floorRing, sa, sb))
+                {
+                    if (c.GetDistanceTo(a) <= dedupeEps || c.GetDistanceTo(b) <= dedupeEps)
+                        continue;
+                    finalRing.Add(c);
+                }
+            }
+
+            DedupeConsecutivePoints(finalRing, dedupeEps);
+            if (finalRing.Count < 3)
+                return ring;
+
+            return finalRing;
+        }
+
+        /// <returns>Segment end index of the closest floor edge within tolerance, or -1.</returns>
+        private static int PickFloorSegmentEndNearest(Point2d pt, List<Point2d> floorRing, double tol)
+        {
+            int fn = floorRing.Count;
+            int bestI = -1;
+            double bestD = double.MaxValue;
+            for (int i = 0, j = fn - 1; i < fn; j = i++)
+            {
+                double d = DistancePointToSegment(pt, floorRing[j], floorRing[i]);
+                if (d > tol || !(d < bestD))
+                    continue;
+                bestD = d;
+                bestI = i;
+            }
+            return bestI;
+        }
+
+        /// <summary>Intermediate floor vertices when walking the shorter way from segment sa to sb.</summary>
+        private static List<Point2d> FloorCornersAlongShorterFloorBoundary(List<Point2d> fr, int sa, int sb)
+        {
+            int fn = fr.Count;
+            var empty = new List<Point2d>();
+            if (sa < 0 || sb < 0 || sa == sb)
+                return empty;
+
+            int df = ForwardSegHops(sa, sb, fn);
+            int db = BackwardSegHops(sa, sb, fn);
+            if (df >= fn + 2 || db >= fn + 2)
+                return empty;
+            bool useFwd = df <= db;
+
+            var r = new List<Point2d>(Math.Min(fn, useFwd ? df : db));
+            if (useFwd)
+            {
+                int c = sa;
+                while (c != sb)
+                {
+                    r.Add(fr[c]);
+                    c = (c + 1) % fn;
+                    if (r.Count > fn + 2)
+                        break;
+                }
+            }
+            else
+            {
+                int c = sa;
+                while (c != sb)
+                {
+                    c = (c - 1 + fn) % fn;
+                    r.Add(fr[c]);
+                    if (r.Count > fn + 2)
+                        break;
+                }
+            }
+            return r;
+        }
+
+        private static int ForwardSegHops(int sa, int sb, int fn)
+        {
+            int d = 0;
+            int c = sa;
+            while (c != sb)
+            {
+                c = (c + 1) % fn;
+                d++;
+                if (d > fn + 1)
+                    return int.MaxValue;
+            }
+            return d;
+        }
+
+        private static int BackwardSegHops(int sa, int sb, int fn)
+        {
+            int d = 0;
+            int c = sa;
+            while (c != sb)
+            {
+                c = (c - 1 + fn) % fn;
+                d++;
+                if (d > fn + 1)
+                    return int.MaxValue;
+            }
+            return d;
+        }
+
+        private static void DedupeConsecutivePoints(List<Point2d> pts, double eps)
+        {
+            if (pts == null || pts.Count < 2)
+                return;
+            for (int k = 1; k < pts.Count;)
+            {
+                if (pts[k].GetDistanceTo(pts[k - 1]) <= eps)
+                    pts.RemoveAt(k);
+                else
+                    k++;
+            }
+            if (pts.Count >= 2 &&
+                pts[0].GetDistanceTo(pts[pts.Count - 1]) <= eps)
+                pts.RemoveAt(pts.Count - 1);
         }
     }
 }

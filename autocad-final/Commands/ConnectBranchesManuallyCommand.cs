@@ -17,7 +17,9 @@ namespace autocad_final.Commands
     /// Lets users pick sprinkler heads and draws orthogonal (axis-aligned) branch polylines from the nearest feed.
     /// Routes use Manhattan geometry only — optional multi-corner paths and shaft detours — never diagonal pipe.
     /// Optionally restricts attachment to user-picked main or branch pipe polylines; otherwise prefers existing
-    /// branch polylines then mains. When feeds are explicitly picked, branch fallback is disabled.
+    /// branch polylines then mains. When feeds are explicitly picked, enters extension mode: each head attaches
+    /// only to the picked set (nearest among picks if several), orthogonal routing uses that head's feed only,
+    /// and row grouping uses a wider bucket so aligned heads chain together.
     /// </summary>
     public class ConnectBranchesManuallyCommand
     {
@@ -161,6 +163,18 @@ namespace autocad_final.Commands
                 if (!userRestrictedMains && branches != null && branches.Count > 0)
                     feedCandidatesForAttach.AddRange(branches);
 
+                // User picked one or more feeds: no automatic discovery; routing queue per head is only that head's feed.
+                bool explicitFeedExtensionMode = userRestrictedMains;
+                bool singlePickedFeed = explicitFeedExtensionMode && mains != null && mains.Count == 1;
+
+                if (explicitFeedExtensionMode)
+                {
+                    ed.WriteMessage(
+                        singlePickedFeed
+                            ? "\nPicked-feed extension mode: all sprinklers use only the selected polyline (no other mains/branches).\n"
+                            : "\nPicked-feed extension mode: each sprinkler uses the nearest of your selected polylines only (no automatic discovery).\n");
+                }
+
                 var work = new List<ResolvedHeadWork>();
 
                 foreach (SelectedObject so in psr.Value)
@@ -201,20 +215,34 @@ namespace autocad_final.Commands
 
                     PipeCandidate bestFeed = null;
                     Point3d bestAttach = default;
-                    double bestDist = double.MaxValue;
-                    foreach (var m in feedCandidatesForAttach)
+                    if (singlePickedFeed)
                     {
-                        if (m?.Polyline == null || m.Polyline.IsErased)
-                            continue;
-                        Point3d cp;
-                        try { cp = m.Polyline.GetClosestPointTo(headPt, extend: false); }
-                        catch { continue; }
-                        double d = headPt.DistanceTo(cp);
-                        if (d < bestDist)
+                        bestFeed = mains[0];
+                        if (bestFeed?.Polyline == null || bestFeed.Polyline.IsErased)
+                            bestFeed = null;
+                        else
                         {
-                            bestDist = d;
-                            bestFeed = m;
-                            bestAttach = cp;
+                            try { bestAttach = bestFeed.Polyline.GetClosestPointTo(headPt, extend: false); }
+                            catch { bestFeed = null; }
+                        }
+                    }
+                    else
+                    {
+                        double bestDist = double.MaxValue;
+                        foreach (var m in feedCandidatesForAttach)
+                        {
+                            if (m?.Polyline == null || m.Polyline.IsErased)
+                                continue;
+                            Point3d cp;
+                            try { cp = m.Polyline.GetClosestPointTo(headPt, extend: false); }
+                            catch { continue; }
+                            double d = headPt.DistanceTo(cp);
+                            if (d < bestDist)
+                            {
+                                bestDist = d;
+                                bestFeed = m;
+                                bestAttach = cp;
+                            }
                         }
                     }
 
@@ -241,7 +269,10 @@ namespace autocad_final.Commands
                     });
                 }
 
-                double groupTol = Math.Max(minTeeSpacingDu * 0.5, 1e-3);
+                // Wider row bucket in explicit extension mode so slight drafting misalignment still chains on one lateral.
+                double groupTol = explicitFeedExtensionMode
+                    ? GetManualConnectRowBucketSizeDu(db, minTeeSpacingDu)
+                    : Math.Max(minTeeSpacingDu * 0.5, 1e-3);
                 var groups = new Dictionary<(ObjectId feedId, long rowKey), List<int>>();
                 for (int i = 0; i < work.Count; i++)
                 {
@@ -249,7 +280,9 @@ namespace autocad_final.Commands
                     bool feedVertical = PolylineSpanIsVertical(h.BestFeed.Polyline);
                     double coord = feedVertical ? h.HeadPt.Y : h.HeadPt.X;
                     long rowKey = (long)Math.Round(coord / groupTol);
-                    var gk = (h.BestFeed.Polyline.ObjectId, rowKey);
+                    // Single explicit feed: grouping is alignment-only (same feed for all); keep feedId in key for multi-pick.
+                    ObjectId feedKey = singlePickedFeed ? ObjectId.Null : h.BestFeed.Polyline.ObjectId;
+                    var gk = (feedKey, rowKey);
                     if (!groups.TryGetValue(gk, out var bucket))
                     {
                         bucket = new List<int>();
@@ -281,7 +314,7 @@ namespace autocad_final.Commands
                             idx,
                             mains,
                             branches,
-                            userRestrictedMains,
+                            explicitFeedExtensionMode,
                             minTeeSpacingDu,
                             geometryMatchTolDu,
                             usedAttachDistanceAlong,
@@ -301,20 +334,25 @@ namespace autocad_final.Commands
                     var anchor = work[head0];
                     bool feedVertical = PolylineSpanIsVertical(anchor.BestFeed.Polyline);
 
-                    bucket.Sort((a, b) =>
-                    {
-                        var ha = work[a].HeadPt;
-                        var hb = work[b].HeadPt;
-                        double da = feedVertical
-                            ? Math.Abs(ha.Y - anchor.AttachOnFeedPreview.Y)
-                            : Math.Abs(ha.X - anchor.AttachOnFeedPreview.X);
-                        double distB = feedVertical
-                            ? Math.Abs(hb.Y - anchor.AttachOnFeedPreview.Y)
-                            : Math.Abs(hb.X - anchor.AttachOnFeedPreview.X);
-                        return da.CompareTo(distB);
-                    });
-
+                    // Tee location: closest point on feed to the head nearest to the polyline (stable for this bucket).
                     int closestIdx = bucket[0];
+                    double bestPerp = double.MaxValue;
+                    foreach (int bi in bucket)
+                    {
+                        Point3d hp = work[bi].HeadPt;
+                        try
+                        {
+                            Point3d cp = work[bi].BestFeed.Polyline.GetClosestPointTo(hp, extend: false);
+                            double d = hp.DistanceTo(cp);
+                            if (d < bestPerp - 1e-12)
+                            {
+                                bestPerp = d;
+                                closestIdx = bi;
+                            }
+                        }
+                        catch { /* skip */ }
+                    }
+
                     Point3d attachPt;
                     try
                     {
@@ -339,7 +377,7 @@ namespace autocad_final.Commands
                                 idx,
                                 mains,
                                 branches,
-                                userRestrictedMains,
+                                explicitFeedExtensionMode,
                                 minTeeSpacingDu,
                                 geometryMatchTolDu,
                                 usedAttachDistanceAlong,
@@ -356,6 +394,10 @@ namespace autocad_final.Commands
 
                         continue;
                     }
+
+                    // Order heads along the shared lateral from the tee so the polyline does not backtrack.
+                    // Wrong order + collinear merge was dropping the farthest head (middle vertex removed).
+                    OrderBucketAlongFeedLateral(bucket, work, feedVertical, attachPt);
 
                     double rowFixed = feedVertical ? attachPt.Y : attachPt.X;
                     var attach2d = new Point2d(attachPt.X, attachPt.Y);
@@ -376,10 +418,11 @@ namespace autocad_final.Commands
                     if (expandedChain != null && expandedChain.Count >= 2)
                         verts = expandedChain;
 
-                    verts = CollapseOrthogonalVertices(verts);
+                    verts = CollapseOrthogonalVertices(verts, mergeCollinearInterior: false);
                     if (verts == null || verts.Count < 2)
                     {
-                        FallbackBucketToSingleHeads(tr, ms, db, work, bucket, mains, branches, userRestrictedMains,
+                        FallbackBucketToSingleHeads(tr, ms, db, work, bucket, mains, branches,
+                            explicitFeedExtensionMode,
                             minTeeSpacingDu, geometryMatchTolDu, usedAttachDistanceAlong, ref allowRedrawWhenDuplicateGeometry,
                             branchLayerId, ref created, ref skippedErased, ref skippedNoOrthogonalRoute,
                             ref skippedAlreadyOnSource, ref skippedDeclinedDuplicateBranch, ref skippedNoAttachToSelectedMain,
@@ -389,7 +432,8 @@ namespace autocad_final.Commands
 
                     if (verts[0].GetDistanceTo(verts[verts.Count - 1]) <= 1e-6)
                     {
-                        FallbackBucketToSingleHeads(tr, ms, db, work, bucket, mains, branches, userRestrictedMains,
+                        FallbackBucketToSingleHeads(tr, ms, db, work, bucket, mains, branches,
+                            explicitFeedExtensionMode,
                             minTeeSpacingDu, geometryMatchTolDu, usedAttachDistanceAlong, ref allowRedrawWhenDuplicateGeometry,
                             branchLayerId, ref created, ref skippedErased, ref skippedNoOrthogonalRoute,
                             ref skippedAlreadyOnSource, ref skippedDeclinedDuplicateBranch, ref skippedNoAttachToSelectedMain,
@@ -399,7 +443,8 @@ namespace autocad_final.Commands
 
                     if (!ValidateOrthogonalRoute(verts, chainZoneRing, chainShaft))
                     {
-                        FallbackBucketToSingleHeads(tr, ms, db, work, bucket, mains, branches, userRestrictedMains,
+                        FallbackBucketToSingleHeads(tr, ms, db, work, bucket, mains, branches,
+                            explicitFeedExtensionMode,
                             minTeeSpacingDu, geometryMatchTolDu, usedAttachDistanceAlong, ref allowRedrawWhenDuplicateGeometry,
                             branchLayerId, ref created, ref skippedErased, ref skippedNoOrthogonalRoute,
                             ref skippedAlreadyOnSource, ref skippedDeclinedDuplicateBranch, ref skippedNoAttachToSelectedMain,
@@ -447,7 +492,8 @@ namespace autocad_final.Commands
                     Polyline segChain = CreateOrthogonalBranchPolyline(db, verts, anchor.ElevZ, branchLayerId, branchWidthChain);
                     if (segChain.NumberOfVertices < 2)
                     {
-                        FallbackBucketToSingleHeads(tr, ms, db, work, bucket, mains, branches, userRestrictedMains,
+                        FallbackBucketToSingleHeads(tr, ms, db, work, bucket, mains, branches,
+                            explicitFeedExtensionMode,
                             minTeeSpacingDu, geometryMatchTolDu, usedAttachDistanceAlong, ref allowRedrawWhenDuplicateGeometry,
                             branchLayerId, ref created, ref skippedErased, ref skippedNoOrthogonalRoute,
                             ref skippedAlreadyOnSource, ref skippedDeclinedDuplicateBranch, ref skippedNoAttachToSelectedMain,
@@ -569,7 +615,7 @@ namespace autocad_final.Commands
             int idx,
             List<PipeCandidate> mains,
             List<PipeCandidate> branches,
-            bool userRestrictedMains,
+            bool explicitFeedExtensionMode,
             double minTeeSpacingDu,
             double geometryMatchTolDu,
             Dictionary<ObjectId, List<double>> usedAttachDistanceAlong,
@@ -586,18 +632,29 @@ namespace autocad_final.Commands
             var w = work[idx];
             Point3d headPt = w.HeadPt;
 
+            List<PipeCandidate> routeMains = mains;
+            List<PipeCandidate> routeBranches = branches;
+            bool routeUserRestricted = false;
+            if (explicitFeedExtensionMode && w.BestFeed != null && w.BestFeed.Polyline != null && !w.BestFeed.Polyline.IsErased)
+            {
+                routeMains = new List<PipeCandidate> { w.BestFeed };
+                routeBranches = null;
+                routeUserRestricted = true;
+            }
+
             if (!TryResolveOrthogonalRoute(
                     headPt,
-                    mains,
-                    branches,
-                    userRestrictedMains,
+                    routeMains,
+                    routeBranches,
+                    routeUserRestricted,
                     w.ZoneRing,
                     w.ShaftObs,
                     minTeeSpacingDu,
                     usedAttachDistanceAlong,
+                    db,
                     out OrthogonalRouteResult route))
             {
-                if (userRestrictedMains)
+                if (explicitFeedExtensionMode)
                     skippedNoAttachToSelectedMain++;
                 else
                     skippedNoOrthogonalRoute++;
@@ -661,7 +718,7 @@ namespace autocad_final.Commands
             List<int> bucket,
             List<PipeCandidate> mains,
             List<PipeCandidate> branches,
-            bool userRestrictedMains,
+            bool explicitFeedExtensionMode,
             double minTeeSpacingDu,
             double geometryMatchTolDu,
             Dictionary<ObjectId, List<double>> usedAttachDistanceAlong,
@@ -695,7 +752,7 @@ namespace autocad_final.Commands
                     idx,
                     mains,
                     branches,
-                    userRestrictedMains,
+                    explicitFeedExtensionMode,
                     minTeeSpacingDu,
                     geometryMatchTolDu,
                     usedAttachDistanceAlong,
@@ -709,6 +766,19 @@ namespace autocad_final.Commands
                     ref connectedFromMain,
                     ref connectedFromBranch);
             }
+        }
+
+        /// <summary>
+        /// Row/column bucket size when extending from a single picked feed so near-aligned heads share one chain.
+        /// </summary>
+        private static double GetManualConnectRowBucketSizeDu(Database db, double minTeeSpacingDu)
+        {
+            double fromM = 0;
+            if (db != null &&
+                DrawingUnitsHelper.TryMetersToDrawingLength(db.Insunits, 0.025, out double du) &&
+                du > 1e-12)
+                fromM = du;
+            return Math.Max(fromM, Math.Max(minTeeSpacingDu * 2.0, 0.05));
         }
 
         /// <summary>
@@ -745,7 +815,7 @@ namespace autocad_final.Commands
             if (tr == null || ms == null || route?.Vertices2d == null || route.Vertices2d.Count < 2)
                 return false;
 
-            List<Point2d> target = CollapseOrthogonalVertices(new List<Point2d>(route.Vertices2d));
+            List<Point2d> target = FullyCollapseOrthogonalPolyline(route.Vertices2d);
             if (target == null || target.Count < 2)
                 return false;
 
@@ -766,14 +836,11 @@ namespace autocad_final.Commands
                 if (!TryReadCollapsedPolylineVertices2d(pl, out List<Point2d> existingVerts))
                     continue;
 
-                if (!OrthogonalVertexListsMatch(target, existingVerts, vertexTolDu))
+                if (!OrthogonalPathListsDuplicateSameGeometry(target, existingVerts, vertexTolDu))
                     continue;
 
-                int last = existingVerts.Count - 1;
-                double dHead = Math.Min(
-                    head2d.GetDistanceTo(existingVerts[0]),
-                    head2d.GetDistanceTo(existingVerts[last]));
                 double headTol = Math.Max(vertexTolDu * 10.0, 0.001);
+                double dHead = MinDistanceToAnyVertex2d(head2d, existingVerts);
                 if (dHead > headTol)
                     continue;
 
@@ -781,6 +848,99 @@ namespace autocad_final.Commands
             }
 
             return false;
+        }
+
+        private static double MinDistanceToAnyVertex2d(Point2d p, IList<Point2d> verts)
+        {
+            if (verts == null || verts.Count == 0)
+                return double.MaxValue;
+            double m = double.MaxValue;
+            for (int i = 0; i < verts.Count; i++)
+                m = Math.Min(m, p.GetDistanceTo(verts[i]));
+            return m;
+        }
+
+        /// <summary>
+        /// Repeatedly merges collinear runs so two drawings with different CAD vertex counts can still compare equal.
+        /// </summary>
+        private static List<Point2d> FullyCollapseOrthogonalPolyline(IList<Point2d> verts)
+        {
+            if (verts == null || verts.Count == 0)
+                return null;
+            var cur = CollapseOrthogonalVertices(new List<Point2d>(verts), mergeCollinearInterior: true);
+            if (cur == null)
+                return null;
+            for (int g = 0; g < 64; g++)
+            {
+                var next = CollapseOrthogonalVertices(cur, mergeCollinearInterior: true);
+                if (next == null || next.Count == cur.Count)
+                    return cur;
+                cur = next;
+            }
+            return cur;
+        }
+
+        /// <summary>
+        /// True when two orthogonal vertex lists describe the same pipe path (exact match, or same prefix/suffix after collapse).
+        /// Branch-fed routes often have extra corners vs main-fed L’s; strict equal vertex counts missed duplicates before.
+        /// </summary>
+        private static bool OrthogonalPathListsDuplicateSameGeometry(
+            IList<Point2d> aIn,
+            IList<Point2d> bIn,
+            double tol)
+        {
+            var a = FullyCollapseOrthogonalPolyline(aIn);
+            var b = FullyCollapseOrthogonalPolyline(bIn);
+            if (a == null || b == null || a.Count < 2 || b.Count < 2)
+                return false;
+            if (OrthogonalVertexListsMatch(a, b, tol))
+                return true;
+            if (OrthogonalPolylinesDuplicateByPrefixSuffix(a, b, tol))
+                return true;
+            var bRev = ReverseVertexList(b);
+            if (OrthogonalVertexListsMatch(a, bRev, tol))
+                return true;
+            return OrthogonalPolylinesDuplicateByPrefixSuffix(a, bRev, tol);
+        }
+
+        private static bool OrthogonalPolylinesDuplicateByPrefixSuffix(IList<Point2d> a, IList<Point2d> b, double tol)
+        {
+            if (a.Count <= b.Count)
+            {
+                if (IsOrthogonalPrefixAligned(a, b, tol)) return true;
+                if (IsOrthogonalSuffixAligned(a, b, tol)) return true;
+            }
+            else
+            {
+                if (IsOrthogonalPrefixAligned(b, a, tol)) return true;
+                if (IsOrthogonalSuffixAligned(b, a, tol)) return true;
+            }
+            return false;
+        }
+
+        private static bool IsOrthogonalPrefixAligned(IList<Point2d> shorter, IList<Point2d> longer, double tol)
+        {
+            if (shorter == null || longer == null || shorter.Count > longer.Count || shorter.Count < 2)
+                return false;
+            for (int i = 0; i < shorter.Count; i++)
+            {
+                if (shorter[i].GetDistanceTo(longer[i]) > tol)
+                    return false;
+            }
+            return true;
+        }
+
+        private static bool IsOrthogonalSuffixAligned(IList<Point2d> shorter, IList<Point2d> longer, double tol)
+        {
+            if (shorter == null || longer == null || shorter.Count > longer.Count || shorter.Count < 2)
+                return false;
+            int off = longer.Count - shorter.Count;
+            for (int i = 0; i < shorter.Count; i++)
+            {
+                if (shorter[i].GetDistanceTo(longer[i + off]) > tol)
+                    return false;
+            }
+            return true;
         }
 
         private static bool TryReadCollapsedPolylineVertices2d(Polyline pl, out List<Point2d> verts)
@@ -796,7 +956,7 @@ namespace autocad_final.Commands
                 var raw = new List<Point2d>(n);
                 for (int i = 0; i < n; i++)
                     raw.Add(pl.GetPoint2dAt(i));
-                verts = CollapseOrthogonalVertices(raw);
+                verts = FullyCollapseOrthogonalPolyline(raw);
                 return verts != null && verts.Count >= 2;
             }
             catch
@@ -1112,6 +1272,7 @@ namespace autocad_final.Commands
             IList<(Point2d min, Point2d max)> shaftObstacles,
             double minTeeSpacingDu,
             Dictionary<ObjectId, List<double>> usedAttachDistanceAlong,
+            Database db,
             out OrthogonalRouteResult route)
         {
             route = null;
@@ -1149,7 +1310,7 @@ namespace autocad_final.Commands
                     {
                         if (TryOrthogonalRouteFromPipeAtDistance(
                                 pl, entry, distAlongRaw, head2, zoneRing, shaftObstacles,
-                                minTeeSpacingDu, usedOnThisPoly, out route))
+                                minTeeSpacingDu, usedOnThisPoly, db, out route))
                             placed = true;
                     }
                     else
@@ -1157,14 +1318,14 @@ namespace autocad_final.Commands
                         double up = distAlongRaw + ring * minTeeSpacingDu;
                         if (TryOrthogonalRouteFromPipeAtDistance(
                                 pl, entry, up, head2, zoneRing, shaftObstacles,
-                                minTeeSpacingDu, usedOnThisPoly, out route))
+                                minTeeSpacingDu, usedOnThisPoly, db, out route))
                             placed = true;
                         else
                         {
                             double dn = distAlongRaw - ring * minTeeSpacingDu;
                             if (TryOrthogonalRouteFromPipeAtDistance(
                                     pl, entry, dn, head2, zoneRing, shaftObstacles,
-                                    minTeeSpacingDu, usedOnThisPoly, out route))
+                                    minTeeSpacingDu, usedOnThisPoly, db, out route))
                                 placed = true;
                         }
                     }
@@ -1186,6 +1347,7 @@ namespace autocad_final.Commands
             IList<(Point2d min, Point2d max)> shaftObstacles,
             double minTeeSpacingDu,
             IList<double> usedOnThisPoly,
+            Database db,
             out OrthogonalRouteResult route)
         {
             route = null;
@@ -1210,7 +1372,7 @@ namespace autocad_final.Commands
             if (!TryPointAtDistanceAlongPolyline(pl, distanceAlong, out Point3d attachPt))
                 return false;
 
-            if (!TryGetPolylineSegmentDirection(pl, attachPt, out SegmentAxisKind axisKind))
+            if (!TryGetPolylineSegmentDirection(pl, attachPt, db, out SegmentAxisKind axisKind))
                 return false;
 
             if (!TryBuildOrthogonalCandidates(attachPt, head2, axisKind, out List<List<Point2d>> baseCandidates))
@@ -1322,7 +1484,7 @@ namespace autocad_final.Commands
             Ambiguous
         }
 
-        private static bool TryGetPolylineSegmentDirection(Polyline pl, Point3d onCurve, out SegmentAxisKind axisKind)
+        private static bool TryGetPolylineSegmentDirection(Polyline pl, Point3d onCurve, Database db, out SegmentAxisKind axisKind)
         {
             axisKind = SegmentAxisKind.Ambiguous;
             if (pl == null) return false;
@@ -1363,7 +1525,9 @@ namespace autocad_final.Commands
                 }
             }
 
-            const double onCurveTol = 0.05;
+            double onCurveTol = 0.05;
+            if (db != null && DrawingUnitsHelper.TryMetersToDrawingLength(db.Insunits, 0.05, out double tDu) && tDu > 0)
+                onCurveTol = tDu;
             if (bestDist > onCurveTol)
                 return false;
 
@@ -1554,7 +1718,31 @@ namespace autocad_final.Commands
             return merged.Count >= 2 ? merged : null;
         }
 
-        private static List<Point2d> CollapseOrthogonalVertices(IList<Point2d> verts)
+        /// <summary>
+        /// Reorders bucket indices so head taps follow the shared lateral from the tee without reversing
+        /// (avoids collinear-collapse removing the farthest sprinkler when it lands in the middle of the list).
+        /// </summary>
+        private static void OrderBucketAlongFeedLateral(
+            List<int> bucket,
+            List<ResolvedHeadWork> work,
+            bool feedVertical,
+            Point3d attachPt)
+        {
+            if (bucket == null || bucket.Count <= 1 || work == null)
+                return;
+
+            // Sort all heads by their lateral coordinate in one monotonic sweep (left → right or bottom → top).
+            // This avoids the backtracking that occurred when concatenating near→far left with near→far right:
+            // the chain crossed back past the tee after reaching the far-left end.
+            bucket.Sort((a, b) =>
+            {
+                double la = feedVertical ? work[a].HeadPt.X : work[a].HeadPt.Y;
+                double lb = feedVertical ? work[b].HeadPt.X : work[b].HeadPt.Y;
+                return la.CompareTo(lb);
+            });
+        }
+
+        private static List<Point2d> CollapseOrthogonalVertices(IList<Point2d> verts, bool mergeCollinearInterior = true)
         {
             if (verts == null || verts.Count == 0)
                 return null;
@@ -1572,7 +1760,7 @@ namespace autocad_final.Commands
                     continue;
                 r.Add(p);
             }
-            while (r.Count >= 3)
+            while (mergeCollinearInterior && r.Count >= 3)
             {
                 var a = r[r.Count - 3];
                 var b = r[r.Count - 2];

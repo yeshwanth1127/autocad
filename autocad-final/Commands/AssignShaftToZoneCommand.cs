@@ -128,6 +128,9 @@ namespace autocad_final.Commands
                     // Write xdata on both ends.
                     SprinklerXData.ApplyShaftAssignmentTag(zoneEnt, shaftHandle);
                     SprinklerXData.ApplyZoneAssignmentTag(shaftEnt, zoneBoundaryHandle);
+                    // Self-tag the zone boundary so spatial zone-detection can confirm it is a real zone
+                    // (not a floor outline that shares the "sprinkler - zone" layer).
+                    SprinklerXData.ApplyZoneBoundaryTag(zoneEnt, zoneBoundaryHandle);
 
                     if (!SprinklerXData.TryGetShaftUid(shaftEnt, out int shaftUid))
                     {
@@ -270,6 +273,7 @@ namespace autocad_final.Commands
                     RXClass polylineClass = RXClass.GetClass(typeof(Polyline));
                     foreach (ObjectId id in ms)
                     {
+                        if (id.IsErased) continue;
                         if (!id.ObjectClass.IsDerivedFrom(polylineClass)) continue;
                         Polyline pl;
                         try { pl = tr.GetObject(id, OpenMode.ForRead, false) as Polyline; }
@@ -399,6 +403,7 @@ namespace autocad_final.Commands
 
                     foreach (ObjectId id in ms)
                     {
+                        if (id.IsErased) continue;
                         if (!id.ObjectClass.IsDerivedFrom(mtextClass)) continue;
                         MText mt;
                         try { mt = tr.GetObject(id, OpenMode.ForRead, false) as MText; }
@@ -414,6 +419,7 @@ namespace autocad_final.Commands
 
                     foreach (ObjectId id in ms)
                     {
+                        if (id.IsErased) continue;
                         if (!id.ObjectClass.IsDerivedFrom(polylineClass)) continue;
                         Polyline pl;
                         try { pl = tr.GetObject(id, OpenMode.ForRead, false) as Polyline; }
@@ -481,6 +487,7 @@ namespace autocad_final.Commands
 
                     foreach (ObjectId id in ms)
                     {
+                        if (id.IsErased) continue;
                         if (!id.ObjectClass.IsDerivedFrom(polylineClass)) continue;
                         Polyline pl;
                         try { pl = tr.GetObject(id, OpenMode.ForRead, false) as Polyline; }

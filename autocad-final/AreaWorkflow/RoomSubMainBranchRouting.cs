@@ -177,15 +177,11 @@ namespace autocad_final.AreaWorkflow
                 if (!string.Equals(h.Trim(), zh, StringComparison.OrdinalIgnoreCase))
                     continue;
 
-                Point2d p = default;
+                Point2d p;
                 if (ent is Circle c)
                     p = new Point2d(c.Center.X, c.Center.Y);
                 else if (ent is BlockReference br)
-                {
-                    if (!SprinklerLayers.IsPendentSprinklerBlock(tr, br))
-                        continue;
                     p = new Point2d(br.Position.X, br.Position.Y);
-                }
                 else
                     continue;
 

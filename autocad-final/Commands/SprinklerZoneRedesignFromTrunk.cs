@@ -18,6 +18,9 @@ namespace autocad_final.Commands
     /// </summary>
     public static class SprinklerZoneRedesignFromTrunk
     {
+        private const string MainPipeDisconnectProceedMessage =
+            "There is a gap or disconnect found in the main pipe network. Do you want to proceed placing branch pipes?";
+
         /// <summary>
         /// <paramref name="regenerateSprinklerGrid"/>: true = same as legacy rebuild (re-grid from trunk); false = keep existing sprinkler inserts, only redraw branches + connector/caps.
         /// </summary>
@@ -112,7 +115,7 @@ namespace autocad_final.Commands
                     zone != null ? zone.ObjectId : ObjectId.Null);
                 int capsErased = EraseTrunkCapsInZone(tr, ms, zoneRing);
                 int erased = EraseEntitiesInZone(tr, ms, zoneRing, preserveSprinklerHeads, trunkId);
-                int outsideSprinklersErased = EraseSprinklerMarkersOutsideZone(tr, ms, zoneRing, boundaryHandleHex);
+                int outsideSprinklersErased = EraseSprinklerMarkersOutsideZone(tr, db, ms, zoneRing, boundaryHandleHex);
                 int outsideBranchErased = EraseBranchPipingMostlyOutsideZone(tr, ms, zoneRing, db, boundaryHandleHex);
 
                 TryTrimTrunkIfTouchingBoundary(tr, db, trunkId, zoneRing);
@@ -151,6 +154,8 @@ namespace autocad_final.Commands
                         }
                     }
                 }
+
+                TryDrawTrunkEndCaps(tr, db, ms, trunkId, zone.Elevation, zone.Normal, boundaryHandleHex);
 
                 tr.Commit();
                 if (zoneTaggedErased > 0 || capsErased > 0 || erased > 0 || outsideSprinklersErased > 0 || outsideBranchErased > 0)
@@ -192,6 +197,7 @@ namespace autocad_final.Commands
                     SprinklerXData.EnsureRegApp(tr, db);
                     foreach (ObjectId id in ms)
                     {
+                        if (id.IsErased) continue;
                         Entity ent = null;
                         try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
                         catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
@@ -241,12 +247,20 @@ namespace autocad_final.Commands
                     ed.WriteMessage("\nBoundary snap adjusted " + movedExisting.ToString() + " existing sprinkler heads inward.\n");
             }
 
-            if (!AttachBranchesCommand.TryAttachBranchesForZone(doc, db, zone, zoneRing, boundaryHandleHex, out string branchMsg))
+            if (!AttachBranchesCommand.TryAttachBranchesForZone(
+                    doc,
+                    db,
+                    zone,
+                    zoneRing,
+                    boundaryHandleHex,
+                    routeBranchPipesFromConnectorFirst: false,
+                    explicitMainPipePolylineId: trunkId,
+                    out string branchMsg))
             {
                 errorMessage = branchMsg ?? "Branch attach failed.";
                 return false;
             }
-            if (!AttachBranchesCommand.TryPlaceReducersForZone(doc, db, zone, zoneRing, boundaryHandleHex, routeBranchPipesFromConnectorFirst: false, ObjectId.Null, out string redMsg))
+            if (!AttachBranchesCommand.TryPlaceReducersForZone(doc, db, zone, zoneRing, boundaryHandleHex, routeBranchPipesFromConnectorFirst: false, trunkId, out string redMsg))
             {
                 errorMessage = redMsg ?? "Place reducers failed.";
                 return false;
@@ -332,6 +346,7 @@ namespace autocad_final.Commands
                 var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
                 foreach (ObjectId id in ms)
                 {
+                    if (id.IsErased) continue;
                     Entity ent = null;
                     try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
                     catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
@@ -386,12 +401,8 @@ namespace autocad_final.Commands
 
                 if (queue.Count == 0)
                 {
-                    string msg =
-                        "Shaft cannot serve the moved main pipe.\n" +
-                        "No main pipe segment is within connection range of the shaft location.\n\n" +
-                        "Do you want to proceed placing branch pipes?";
                     tr.Commit();
-                    if (AskUserProceedDespiteDisconnection(ed, msg, "Shaft connectivity"))
+                    if (AskUserProceedDespiteDisconnection(ed, MainPipeDisconnectProceedMessage))
                         return true;
                     errorMessage = null;
                     return false;
@@ -418,9 +429,7 @@ namespace autocad_final.Commands
                 tr.Commit();
             }
 
-            string gapMsg =
-                "There is a gap or disconnect found in the main pipe network. Do you want to proceed placing branch pipes?";
-            if (AskUserProceedDespiteDisconnection(ed, gapMsg))
+            if (AskUserProceedDespiteDisconnection(ed, MainPipeDisconnectProceedMessage))
                 return true;
             errorMessage = null;
             return false;
@@ -445,13 +454,39 @@ namespace autocad_final.Commands
             if (a == null || b == null || a.Count < 2 || b.Count < 2)
                 return false;
 
-            // If any endpoint of one polyline is sufficiently close to the other polyline, treat as connected.
+            // Endpoint-to-polyline proximity.
             if (DistancePointToPolyline(a[0], b) <= tol) return true;
             if (DistancePointToPolyline(a[a.Count - 1], b) <= tol) return true;
             if (DistancePointToPolyline(b[0], a) <= tol) return true;
             if (DistancePointToPolyline(b[b.Count - 1], a) <= tol) return true;
 
+            // Interior segment-to-segment proximity (catches mid-segment crossings and T-junctions).
+            double tol2 = tol * tol;
+            for (int i = 0; i + 1 < a.Count; i++)
+            {
+                for (int j = 0; j + 1 < b.Count; j++)
+                {
+                    if (SegmentsProximity2(a[i], a[i + 1], b[j], b[j + 1]) <= tol2)
+                        return true;
+                }
+            }
+
             return false;
+        }
+
+        private static double SegmentsProximity2(Point2d a0, Point2d a1, Point2d b0, Point2d b1)
+        {
+            // Min squared distance between two line segments via parametric approach.
+            double best = Math.Min(
+                Math.Min(DistSquaredPointToSegment(a0, b0, b1), DistSquaredPointToSegment(a1, b0, b1)),
+                Math.Min(DistSquaredPointToSegment(b0, a0, a1), DistSquaredPointToSegment(b1, a0, a1)));
+            // Also sample midpoints in case the closest approach is interior-to-interior.
+            var am = new Point2d((a0.X + a1.X) * 0.5, (a0.Y + a1.Y) * 0.5);
+            var bm = new Point2d((b0.X + b1.X) * 0.5, (b0.Y + b1.Y) * 0.5);
+            double dx = am.X - bm.X, dy = am.Y - bm.Y;
+            double d2m = dx * dx + dy * dy;
+            if (d2m < best) best = d2m;
+            return best;
         }
 
         private static double DistancePointToPolyline(Point2d p, List<Point2d> poly)
@@ -484,6 +519,7 @@ namespace autocad_final.Commands
 
             foreach (ObjectId id in ms)
             {
+                if (id.IsErased) continue;
                 if (!preserveTrunkId.IsNull && id == preserveTrunkId)
                     continue;
                 if (!preserveZoneBoundaryId.IsNull && id == preserveZoneBoundaryId)
@@ -542,6 +578,7 @@ namespace autocad_final.Commands
 
             foreach (ObjectId id in ms)
             {
+                if (id.IsErased) continue;
                 Entity ent = null;
                 try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
                 catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
@@ -549,25 +586,19 @@ namespace autocad_final.Commands
                 if (!SprinklerLayers.IsSprinklerHeadEntity(tr, ent))
                     continue;
 
-                bool inThisZone =
-                    (SprinklerXData.TryGetZoneBoundaryHandle(ent, out var h) &&
-                     string.Equals(h, boundaryHandleHex, StringComparison.OrdinalIgnoreCase));
-
                 Point2d p;
                 if (ent is BlockReference br)
                 {
                     p = new Point2d(br.Position.X, br.Position.Y);
-                    if (!inThisZone)
-                        inThisZone = PointInPolygon(zoneRing, p);
                 }
                 else if (ent is Circle c)
                 {
                     p = new Point2d(c.Center.X, c.Center.Y);
-                    if (!inThisZone)
-                        inThisZone = PointInPolygon(zoneRing, p);
                 }
                 else
                     continue;
+
+                bool inThisZone = SprinklerHeadReader2d.IsPointOwnedByZoneForRouting(db, zoneRing, boundaryHandleHex, p);
 
                 if (!inThisZone)
                     continue;
@@ -626,6 +657,7 @@ namespace autocad_final.Commands
 
             foreach (ObjectId id in ms)
             {
+                if (id.IsErased) continue;
                 if (!preserveTrunkId.IsNull && id == preserveTrunkId)
                     continue;
                 Entity ent = null;
@@ -680,14 +712,15 @@ namespace autocad_final.Commands
             return erased;
         }
 
-        private static int EraseSprinklerMarkersOutsideZone(Transaction tr, BlockTableRecord ms, List<Point2d> zoneRing, string boundaryHandleHex)
+        private static int EraseSprinklerMarkersOutsideZone(Transaction tr, Database db, BlockTableRecord ms, List<Point2d> zoneRing, string boundaryHandleHex)
         {
             int erased = 0;
-            if (tr == null || ms == null || zoneRing == null || zoneRing.Count < 3 || string.IsNullOrEmpty(boundaryHandleHex))
+            if (tr == null || db == null || ms == null || zoneRing == null || zoneRing.Count < 3 || string.IsNullOrEmpty(boundaryHandleHex))
                 return 0;
 
             foreach (ObjectId id in ms)
             {
+                if (id.IsErased) continue;
                 Entity ent = null;
                 try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
                 catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
@@ -721,6 +754,11 @@ namespace autocad_final.Commands
                 if (PointInPolygon(zoneRing, p2))
                     continue;
 
+                // Match TryReadSprinklerHeadPointsForZoneRouting: keep heads in floor rooms parented to this zone
+                // even when outside the zone polygon (straddling rooms).
+                if (SprinklerHeadReader2d.IsPointInsideFloorRoomParentedToZone(db, zoneRing, boundaryHandleHex, p2))
+                    continue;
+
                 ent.UpgradeOpen();
                 try { ent.Erase(); erased++; } catch { /* ignore */ }
             }
@@ -746,6 +784,7 @@ namespace autocad_final.Commands
 
             foreach (ObjectId id in ms)
             {
+                if (id.IsErased) continue;
                 Entity ent = null;
                 try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
                 catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
@@ -765,9 +804,9 @@ namespace autocad_final.Commands
 
                 bool wipe = false;
                 if (ent is Polyline pl)
-                    wipe = BranchPolylineMostlyOutsideZone(pl, zoneRing, sampleStepDu, minInsideFractionToKeep);
+                    wipe = BranchPolylineMostlyOutsideZone(pl, zoneRing, db, boundaryHandleHex, sampleStepDu, minInsideFractionToKeep);
                 else if (ent is Line ln)
-                    wipe = BranchLineMostlyOutsideZone(ln, zoneRing, minInsideFractionToKeep);
+                    wipe = BranchLineMostlyOutsideZone(ln, zoneRing, db, boundaryHandleHex, minInsideFractionToKeep);
                 else
                     continue;
 
@@ -781,7 +820,7 @@ namespace autocad_final.Commands
             return erased;
         }
 
-        private static bool BranchPolylineMostlyOutsideZone(Polyline pl, List<Point2d> zoneRing, double sampleStepDu, double minInsideFractionToKeep)
+        private static bool BranchPolylineMostlyOutsideZone(Polyline pl, List<Point2d> zoneRing, Database db, string boundaryHandleHex, double sampleStepDu, double minInsideFractionToKeep)
         {
             if (pl == null || zoneRing == null || zoneRing.Count < 3)
                 return false;
@@ -794,7 +833,8 @@ namespace autocad_final.Commands
                     if (pl.NumberOfVertices < 1)
                         return false;
                     var v = pl.GetPoint3dAt(0);
-                    return !PointInPolygon(zoneRing, new Point2d(v.X, v.Y));
+                    var p = new Point2d(v.X, v.Y);
+                    return !SprinklerHeadReader2d.IsPointInZoneOrParentedFloorRoomForRouting(db, zoneRing, boundaryHandleHex, p);
                 }
 
                 int n = Math.Max(8, (int)Math.Ceiling(len / Math.Max(sampleStepDu, 1e-9)));
@@ -803,7 +843,7 @@ namespace autocad_final.Commands
                 {
                     double d = len * i / n;
                     var p3 = pl.GetPointAtDist(d);
-                    if (PointInPolygon(zoneRing, new Point2d(p3.X, p3.Y)))
+                    if (SprinklerHeadReader2d.IsPointInZoneOrParentedFloorRoomForRouting(db, zoneRing, boundaryHandleHex, new Point2d(p3.X, p3.Y)))
                         inside++;
                 }
 
@@ -816,7 +856,7 @@ namespace autocad_final.Commands
             }
         }
 
-        private static bool BranchLineMostlyOutsideZone(Line ln, List<Point2d> zoneRing, double minInsideFractionToKeep)
+        private static bool BranchLineMostlyOutsideZone(Line ln, List<Point2d> zoneRing, Database db, string boundaryHandleHex, double minInsideFractionToKeep)
         {
             if (ln == null || zoneRing == null || zoneRing.Count < 3)
                 return false;
@@ -832,7 +872,7 @@ namespace autocad_final.Commands
                     double t = i / (double)steps;
                     double x = a.X + t * (b.X - a.X);
                     double y = a.Y + t * (b.Y - a.Y);
-                    if (PointInPolygon(zoneRing, new Point2d(x, y)))
+                    if (SprinklerHeadReader2d.IsPointInZoneOrParentedFloorRoomForRouting(db, zoneRing, boundaryHandleHex, new Point2d(x, y)))
                         inside++;
                 }
 
@@ -852,6 +892,7 @@ namespace autocad_final.Commands
 
             foreach (ObjectId id in ms)
             {
+                if (id.IsErased) continue;
                 Entity ent = null;
                 try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
                 catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
@@ -880,6 +921,7 @@ namespace autocad_final.Commands
 
             foreach (ObjectId id in ms)
             {
+                if (id.IsErased) continue;
                 if (id == trunkId) continue;
                 Entity ent = null;
                 try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
@@ -1043,12 +1085,17 @@ namespace autocad_final.Commands
                 var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
                 foreach (ObjectId id in ms)
                 {
+                    if (id.IsErased) continue;
                     Entity ent = null;
                     try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
                     catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
                     if (!(ent is BlockReference br)) continue;
                     string blockName = GetBlockName(br, tr);
-                    if (!string.Equals(blockName, "shaft", StringComparison.OrdinalIgnoreCase))
+                    bool isShaftByName = !string.IsNullOrWhiteSpace(blockName) &&
+                        blockName.IndexOf("shaft", StringComparison.OrdinalIgnoreCase) >= 0;
+                    bool isShaftByLayer = !string.IsNullOrWhiteSpace(br.Layer) &&
+                        br.Layer.IndexOf("shaft", StringComparison.OrdinalIgnoreCase) >= 0;
+                    if (!isShaftByName && !isShaftByLayer)
                         continue;
                     double d = br.Position.DistanceTo(c3);
                     if (d < best)
@@ -1063,7 +1110,7 @@ namespace autocad_final.Commands
 
             if (!found)
             {
-                errorMessage = "No shaft blocks found (block name \"shaft\").";
+                errorMessage = "No shaft blocks found (block name or layer must contain \"shaft\").";
                 return false;
             }
             return true;
@@ -1099,19 +1146,16 @@ namespace autocad_final.Commands
             if (trunk == null)
                 return;
 
-            double tol = BoundaryEntityToClosedLwPolyline.CoincidentTolerance(db);
-            if (tol <= 0) tol = 1e-6;
-
-            double minX = double.MaxValue, maxX = double.MinValue, minY = double.MaxValue, maxY = double.MinValue;
             int nv = trunk.NumberOfVertices;
+            if (nv < 2)
+                return;
+
+            var trunkPath = new List<Point2d>(nv);
             for (int i = 0; i < nv; i++)
             {
                 var p = trunk.GetPoint3dAt(i);
-                minX = Math.Min(minX, p.X); maxX = Math.Max(maxX, p.X);
-                minY = Math.Min(minY, p.Y); maxY = Math.Max(maxY, p.Y);
+                trunkPath.Add(new Point2d(p.X, p.Y));
             }
-
-            bool trunkHorizontal = (maxY - minY) <= tol * 10.0 && (maxX - minX) > tol * 10.0;
 
             double w = 0;
             try { w = trunk.ConstantWidth; } catch { w = 0; }
@@ -1128,16 +1172,33 @@ namespace autocad_final.Commands
             catch { /* ignore */ }
             double h = 0.5 * capLen;
 
-            var a = trunk.StartPoint;
-            var b = trunk.EndPoint;
-
             SprinklerXData.EnsureRegApp(tr, db);
             ObjectId mainPipeLayerId = SprinklerLayers.EnsureMainPipeLayer(tr, db);
-            DrawCapAt(new Point2d(a.X, a.Y));
-            DrawCapAt(new Point2d(b.X, b.Y));
 
-            void DrawCapAt(Point2d p)
+            int last = trunkPath.Count - 1;
+            var a = trunkPath[0];
+            var b = trunkPath[last];
+            var aNext = trunkPath[1];
+            var bPrev = trunkPath[last - 1];
+
+            DrawCapAt(a, new Vector2d(aNext.X - a.X, aNext.Y - a.Y));
+            DrawCapAt(b, new Vector2d(b.X - bPrev.X, b.Y - bPrev.Y));
+
+            void DrawCapAt(Point2d p, Vector2d along)
             {
+                double aLen = Math.Sqrt(along.X * along.X + along.Y * along.Y);
+                double nx, ny;
+                if (aLen < 1e-9)
+                {
+                    nx = 0;
+                    ny = 1;
+                }
+                else
+                {
+                    nx = -along.Y / aLen;
+                    ny =  along.X / aLen;
+                }
+
                 var cap = new Polyline();
                 cap.SetDatabaseDefaults(db);
                 cap.LayerId = mainPipeLayerId;
@@ -1145,18 +1206,8 @@ namespace autocad_final.Commands
                 cap.ConstantWidth = w;
                 cap.Elevation = elevation;
                 cap.Normal = normal;
-
-                if (trunkHorizontal)
-                {
-                    cap.AddVertexAt(0, new Point2d(p.X, p.Y - h), 0, 0, 0);
-                    cap.AddVertexAt(1, new Point2d(p.X, p.Y + h), 0, 0, 0);
-                }
-                else
-                {
-                    cap.AddVertexAt(0, new Point2d(p.X - h, p.Y), 0, 0, 0);
-                    cap.AddVertexAt(1, new Point2d(p.X + h, p.Y), 0, 0, 0);
-                }
-
+                cap.AddVertexAt(0, new Point2d(p.X - nx * h, p.Y - ny * h), 0, 0, 0);
+                cap.AddVertexAt(1, new Point2d(p.X + nx * h, p.Y + ny * h), 0, 0, 0);
                 cap.Closed = false;
                 SprinklerXData.TagAsTrunkCap(cap);
                 if (!string.IsNullOrEmpty(zoneBoundaryHandleHex))
@@ -1218,7 +1269,9 @@ namespace autocad_final.Commands
             }
             bool trunkHorizontal = (maxY - minY) <= tol * 10.0 && (maxX - minX) > tol * 10.0;
 
-            double len = trunkHorizontal ? Math.Abs(b.X - a.X) : Math.Abs(b.Y - a.Y);
+            double len;
+            try { len = trunk.Length; }
+            catch { len = trunkHorizontal ? Math.Abs(b.X - a.X) : Math.Abs(b.Y - a.Y); }
             if (len <= trimDu * 2.2)
                 return;
 

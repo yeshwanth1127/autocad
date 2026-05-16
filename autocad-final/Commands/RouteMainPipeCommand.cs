@@ -224,10 +224,19 @@ namespace autocad_final.Commands
             double tol = BoundaryEntityToClosedLwPolyline.CoincidentTolerance(db);
             double clusterTol = Math.Max(tol * 10.0, spacingDu * 0.35);
 
-            if (!SprinklerHeadReader2d.TryReadSprinklerHeadPoints(db, zoneRing, clusterTol, out var sprinklers, out string sprErr))
+            if (!SprinklerHeadReader2d.TryReadSprinklerHeadPointsForZoneRouting(db, zoneRing, boundaryHandleHex, clusterTol, out var sprinklers, out string sprErr))
             {
                 errorMessage = sprErr ?? "Could not read sprinklers inside zone.";
                 return false;
+            }
+            if (sprinklers.Count == 0)
+            {
+                // Auto-apply: no main pipe yet at this point, so use basic centered grid.
+                ApplySprinklersCommand.TryApplySprinklersForZone(
+                    doc, zone, boundaryHandleHex, out _,
+                    useTrunkAnchoredGrid: false,
+                    requireMainPipeForCenteredGrid: false);
+                SprinklerHeadReader2d.TryReadSprinklerHeadPointsForZoneRouting(db, zoneRing, boundaryHandleHex, clusterTol, out sprinklers, out _);
             }
             if (sprinklers.Count == 0)
             {
@@ -267,7 +276,11 @@ namespace autocad_final.Commands
                     // Erase only connector entities (not trunk or caps).
                     foreach (ObjectId id in ms)
                     {
-                        if (!(tr.GetObject(id, OpenMode.ForRead, false) is Entity ent)) continue;
+                        if (id.IsErased) continue;
+                        Entity ent = null;
+                        try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
+                        catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                        if (ent == null) continue;
                         if (!SprinklerXData.TryGetZoneBoundaryHandle(ent, out var h) ||
                             !string.Equals(h, boundaryHandleHex, StringComparison.OrdinalIgnoreCase)) continue;
                         if (!SprinklerXData.IsTaggedConnector(ent)) continue;
@@ -391,6 +404,10 @@ namespace autocad_final.Commands
                 ms.AppendEntity(conn);
                 tr.AddNewlyCreatedDBObject(conn, true);
 
+                TryDrawTrunkEndCaps(
+                    tr, db, pipeLayerId, w, zone.Elevation, zone.Normal,
+                    route.TrunkIsHorizontal, trimmedTrunkPath, ms, boundaryHandleHex);
+
                 tr.Commit();
             }
 
@@ -453,8 +470,11 @@ namespace autocad_final.Commands
 
             foreach (ObjectId id in ms)
             {
-                if (!(tr.GetObject(id, OpenMode.ForRead, false) is Entity ent))
-                    continue;
+                if (id.IsErased) continue;
+                Entity ent = null;
+                try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
+                catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                if (ent == null) continue;
 
                 if (!SprinklerXData.TryGetZoneBoundaryHandle(ent, out var h) ||
                     !string.Equals(h, boundaryHandleHex, StringComparison.OrdinalIgnoreCase))
@@ -558,6 +578,21 @@ namespace autocad_final.Commands
                     var zEnt = tr.GetObject(zId, OpenMode.ForRead, false) as Polyline;
                     if (zEnt == null || zEnt.IsErased || !zEnt.Closed) continue;
 
+                    // Reject entities that are not actual zone boundaries (e.g. floor boundary accidentally tagged).
+                    bool isMcdZoneLayer = SprinklerLayers.IsMcdZoneOutlineLayerName(zEnt.Layer);
+                    bool isUnifiedZoneLayer = SprinklerLayers.IsUnifiedZoneDesignLayerName(zEnt.Layer);
+                    bool selfTagged =
+                        SprinklerXData.TryGetZoneBoundaryHandle(zEnt, out var ztag) &&
+                        !string.IsNullOrWhiteSpace(ztag) &&
+                        string.Equals(ztag, zEnt.Handle.ToString(), System.StringComparison.OrdinalIgnoreCase);
+                    // "MCD-zone boundary" layer is exclusive to zones — accept without self-tag.
+                    // "sprinkler - zone" layer is shared — require self-tag to avoid picking up floor boundaries.
+                    // For any other layer (e.g. manually placed), require self-tag as the only confirmation.
+                    if (isMcdZoneLayer) { /* accept */ }
+                    else if (isUnifiedZoneLayer && selfTagged) { /* accept */ }
+                    else if (!isMcdZoneLayer && !isUnifiedZoneLayer && selfTagged) { /* accept — self-tag is sufficient */ }
+                    else continue;
+
                     try
                     {
                         zoneClone = (Polyline)zEnt.Clone();
@@ -603,20 +638,27 @@ namespace autocad_final.Commands
 
                 foreach (ObjectId id in ms)
                 {
-                    if (!(tr.GetObject(id, OpenMode.ForRead, false) is Polyline pl))
-                        continue;
+                    if (id.IsErased) continue;
+                    Polyline pl = null;
+                    try { pl = tr.GetObject(id, OpenMode.ForRead, false) as Polyline; }
+                    catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                    if (pl == null) continue;
                     if (!pl.Closed)
                         continue;
-                    if (!SprinklerLayers.IsUnifiedZoneDesignLayerName(pl.Layer))
+                    bool isMcdZone = SprinklerLayers.IsMcdZoneOutlineLayerName(pl.Layer);
+                    bool isUnifiedZone = SprinklerLayers.IsUnifiedZoneDesignLayerName(pl.Layer);
+                    if (!isMcdZone && !isUnifiedZone)
                         continue;
 
-                    bool taggedSelf = false;
-                    if (SprinklerXData.TryGetZoneBoundaryHandle(pl, out var h)
+                    bool taggedSelf =
+                        SprinklerXData.TryGetZoneBoundaryHandle(pl, out var h)
                         && !string.IsNullOrWhiteSpace(h)
-                        && string.Equals(h, pl.Handle.ToString(), System.StringComparison.OrdinalIgnoreCase))
-                    {
-                        taggedSelf = true;
-                    }
+                        && string.Equals(h, pl.Handle.ToString(), System.StringComparison.OrdinalIgnoreCase);
+
+                    // "sprinkler - zone" is a shared layer — require self-tag to confirm it is a zone boundary.
+                    // "MCD-zone boundary" is exclusive to zone boundaries — no self-tag required.
+                    if (isUnifiedZone && !taggedSelf)
+                        continue;
 
                     var ring = PolylineClosedBoundaryRingSampler2d.ConvertPolylineToRingPoints(pl);
                     if (ring == null || ring.Count < 3)
@@ -831,10 +873,18 @@ namespace autocad_final.Commands
                 var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
                 foreach (ObjectId id in ms)
                 {
-                    var ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
+                    if (id.IsErased) continue;
+                    Entity ent = null;
+                    try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
+                    catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                    if (ent == null) continue;
                     if (!(ent is BlockReference br)) continue;
                     string blockName = GetBlockName(br, tr);
-                    if (!string.Equals(blockName, "shaft", StringComparison.OrdinalIgnoreCase))
+                    bool isShaftByName = !string.IsNullOrWhiteSpace(blockName) &&
+                        blockName.IndexOf("shaft", StringComparison.OrdinalIgnoreCase) >= 0;
+                    bool isShaftByLayer = !string.IsNullOrWhiteSpace(br.Layer) &&
+                        br.Layer.IndexOf("shaft", StringComparison.OrdinalIgnoreCase) >= 0;
+                    if (!isShaftByName && !isShaftByLayer)
                         continue;
 
                     double d = br.Position.DistanceTo(c3);
@@ -850,7 +900,7 @@ namespace autocad_final.Commands
 
             if (!found)
             {
-                errorMessage = "No shaft blocks found in the drawing (block name \"shaft\").";
+                errorMessage = "No shaft blocks found in the drawing (block name or layer must contain \"shaft\").";
                 return false;
             }
 
