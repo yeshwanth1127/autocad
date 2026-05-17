@@ -12,6 +12,18 @@ namespace autocad_final.Agent.Planning.Validators
     /// </summary>
     internal static class RingGeometry
     {
+        /// <summary>
+        /// Point-in-polygon, or within <paramref name="boundaryTol"/> of the ring boundary (in drawing units).
+        /// Used so sprinklers/pipes on or just outside the mathematical boundary still clip and route normally.
+        /// </summary>
+        public static bool PointInPolygonOrNearBoundary(IList<Point2d> ring, Point2d p, double boundaryTol)
+        {
+            if (ring == null || ring.Count < 3) return false;
+            if (PointInPolygon(ring, p)) return true;
+            if (boundaryTol > 0 && DistanceToRing(ring, p) <= boundaryTol) return true;
+            return false;
+        }
+
         public static bool PointInPolygon(IList<Point2d> ring, Point2d p)
         {
             if (ring == null || ring.Count < 3) return false;
@@ -74,7 +86,7 @@ namespace autocad_final.Agent.Planning.Validators
         /// portions as a list of (t0,t1) parameter intervals in [0,1] along a→b.
         /// Concave rings may produce multiple intervals.
         /// </summary>
-        public static List<(double t0, double t1)> ClipSegmentToRing(Point2d a, Point2d b, IList<Point2d> ring, double eps = 1e-7)
+        public static List<(double t0, double t1)> ClipSegmentToRing(Point2d a, Point2d b, IList<Point2d> ring, double eps = 1e-7, double boundaryTol = 0)
         {
             var result = new List<(double t0, double t1)>();
             if (ring == null || ring.Count < 3) return result;
@@ -84,7 +96,7 @@ namespace autocad_final.Agent.Planning.Validators
             double len2 = dx * dx + dy * dy;
             if (len2 < eps)
             {
-                if (PointInPolygon(ring, a)) result.Add((0, 1));
+                if (PointInPolygonOrNearBoundary(ring, a, boundaryTol)) result.Add((0, 1));
                 return result;
             }
 
@@ -116,7 +128,7 @@ namespace autocad_final.Agent.Planning.Validators
                 if (t1 - t0 < eps) continue;
                 double tm = 0.5 * (t0 + t1);
                 var mid = new Point2d(a.X + tm * dx, a.Y + tm * dy);
-                if (PointInPolygon(ring, mid))
+                if (PointInPolygonOrNearBoundary(ring, mid, boundaryTol))
                     result.Add((t0, t1));
             }
             return result;
@@ -136,10 +148,30 @@ namespace autocad_final.Agent.Planning.Validators
             return false;
         }
 
+        /// <summary>Inside any ring, or within <paramref name="boundaryTol"/> of any ring edge.</summary>
+        internal static bool PointInAnyOfRingsOrNearBoundary(IList<IList<Point2d>> rings, Point2d p, double boundaryTol)
+        {
+            if (rings == null) return false;
+            if (boundaryTol <= 0) return PointInAnyOfRings(rings, p);
+            for (int i = 0; i < rings.Count; i++)
+            {
+                var r = rings[i];
+                if (r != null && r.Count >= 3 && PointInPolygonOrNearBoundary(r, p, boundaryTol))
+                    return true;
+            }
+
+            return false;
+        }
+
         /// <summary>
         /// Union of segment∩ring over all rings, expressed as merged (t0,t1) intervals along a→b.
         /// </summary>
-        internal static List<(double t0, double t1)> ClipSegmentToRingsUnion(Point2d a, Point2d b, IList<IList<Point2d>> rings, double eps = 1e-7)
+        internal static List<(double t0, double t1)> ClipSegmentToRingsUnion(
+            Point2d a,
+            Point2d b,
+            IList<IList<Point2d>> rings,
+            double eps = 1e-7,
+            double boundaryTol = 0)
         {
             var raw = new List<(double t0, double t1)>();
             if (rings == null || rings.Count == 0)
@@ -148,7 +180,7 @@ namespace autocad_final.Agent.Planning.Validators
             {
                 var r = rings[i];
                 if (r == null || r.Count < 3) continue;
-                raw.AddRange(ClipSegmentToRing(a, b, r, eps));
+                raw.AddRange(ClipSegmentToRing(a, b, r, eps, boundaryTol));
             }
 
             return MergeParamIntervals01(raw, eps);

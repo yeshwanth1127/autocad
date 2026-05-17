@@ -466,6 +466,7 @@ namespace autocad_final.Geometry
 
         /// <summary>
         /// Appends (or replaces) a zone boundary handle in the shaft block's zone-assignment list.
+        /// Used by automatic zoning batching when a shaft may map to more than one zone outline.
         /// </summary>
         public static void ApplyZoneAssignmentTag(Entity ent, string zoneHandleHex)
         {
@@ -485,6 +486,23 @@ namespace autocad_final.Geometry
             handles.Add(zoneHandleHex);
             MergeStringTag(ent, KeyZoneAssignments, string.Join(",", handles));
         }
+
+        /// <summary>
+        /// Replaces the shaft's entire zone-assignment list with a single zone (manual ASSIGNSHAFTOZONE override).
+        /// </summary>
+        public static void ApplyZoneAssignmentsExclusive(Entity ent, string zoneHandleHex)
+        {
+            if (ent == null || string.IsNullOrEmpty(zoneHandleHex)) return;
+            MergeStringTag(ent, KeyZoneAssignments, zoneHandleHex.Trim());
+        }
+
+        /// <summary>Removes <see cref="KeyShaftAssignment"/> from a zone outline (no-op if absent).</summary>
+        public static void RemoveShaftAssignmentTag(Entity ent)
+            => RemoveStringTag(ent, KeyShaftAssignment);
+
+        /// <summary>Removes <see cref="KeyShaftUid"/> from an entity (e.g. zone outline after clearing assignment).</summary>
+        public static void RemoveShaftUidTag(Entity ent)
+            => RemoveStringTag(ent, KeyShaftUid);
 
         /// <summary>
         /// Reads the list of zone boundary handles assigned to a shaft block.
@@ -596,6 +614,47 @@ namespace autocad_final.Geometry
             list.Add(new TypedValue((int)DxfCode.ExtendedDataAsciiString, key));
             list.Add(new TypedValue((int)DxfCode.ExtendedDataAsciiString, value));
             ent.XData = new ResultBuffer(list.ToArray());
+        }
+
+        /// <summary>Removes a key/string value pair from extended data for this app (drops key-only if value missing).</summary>
+        private static void RemoveStringTag(Entity ent, string key)
+        {
+            if (ent == null || string.IsNullOrEmpty(key)) return;
+            ResultBuffer rb;
+            try { rb = ent.GetXDataForApplication(RegAppName); }
+            catch { return; }
+            if (rb == null) return;
+
+            var list = new System.Collections.Generic.List<TypedValue>();
+            try
+            {
+                var arr = rb.AsArray();
+                for (int i = 0; i < arr.Length; i++)
+                {
+                    if (i < arr.Length - 1
+                        && arr[i].TypeCode == (int)DxfCode.ExtendedDataAsciiString
+                        && string.Equals(arr[i].Value as string, key, System.StringComparison.Ordinal)
+                        && arr[i + 1].TypeCode == (int)DxfCode.ExtendedDataAsciiString)
+                    {
+                        i++;
+                        continue;
+                    }
+                    list.Add(arr[i]);
+                }
+            }
+            catch
+            {
+                return;
+            }
+
+            if (list.Count <= 1)
+            {
+                try { ent.XData = null; } catch { /* ignore */ }
+                return;
+            }
+
+            try { ent.XData = new ResultBuffer(list.ToArray()); }
+            catch { /* ignore */ }
         }
     }
 }

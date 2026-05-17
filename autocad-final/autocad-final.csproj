@@ -156,6 +156,7 @@
     <Compile Include="AreaWorkflow\FindRoomNameInsideBoundary.cs" />
     <Compile Include="AreaWorkflow\FindShaftsInsideBoundary.cs" />
     <Compile Include="AreaWorkflow\SprinklerShaftFootprintExclusion.cs" />
+    <Compile Include="AreaWorkflow\BranchNetworkConnectivity.cs" />
     <Compile Include="AreaWorkflow\BranchPipeShaftDetour2d.cs" />
     <Compile Include="AreaWorkflow\SprinklerRoomFootprintExclusion.cs" />
     <Compile Include="AreaWorkflow\RoomParentZoneResolver.cs" />

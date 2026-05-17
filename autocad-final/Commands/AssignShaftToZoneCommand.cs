@@ -81,12 +81,18 @@ namespace autocad_final.Commands
         /// Returns the shaft handle string on success, null on failure.
         /// </summary>
         /// <param name="refreshPalette">When false, skips <see cref="ZoneAssignmentsUpdated"/> (batch callers refresh once).</param>
+        /// <param name="mergeShaftZoneAssignments">
+        /// When false (default), the shaft's zone list is replaced with this zone only and other zone outlines that
+        /// referenced this shaft are cleared—manual ASSIGNSHAFTOZONE override. When true (automatic zoning batch),
+        /// zone handles are appended so one shaft can remain linked to multiple zone outlines.
+        /// </param>
         public static string AssignShaft(
             Database db,
             string zoneBoundaryHandle,
             string shaftHandle,
             out string errorMessage,
-            bool refreshPalette = true)
+            bool refreshPalette = true,
+            bool mergeShaftZoneAssignments = false)
         {
             errorMessage = null;
             if (db == null) { errorMessage = "Database is null."; return null; }
@@ -100,6 +106,8 @@ namespace autocad_final.Commands
                 using (var tr = db.TransactionManager.StartTransaction())
                 {
                     SprinklerXData.EnsureRegApp(tr, db);
+                    var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                    var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
 
                     // Resolve zone boundary.
                     Handle zh;
@@ -127,7 +135,13 @@ namespace autocad_final.Commands
 
                     // Write xdata on both ends.
                     SprinklerXData.ApplyShaftAssignmentTag(zoneEnt, shaftHandle);
-                    SprinklerXData.ApplyZoneAssignmentTag(shaftEnt, zoneBoundaryHandle);
+                    if (mergeShaftZoneAssignments)
+                        SprinklerXData.ApplyZoneAssignmentTag(shaftEnt, zoneBoundaryHandle);
+                    else
+                    {
+                        SprinklerXData.ApplyZoneAssignmentsExclusive(shaftEnt, zoneBoundaryHandle);
+                        ClearShaftAssignmentFromOtherZoneOutlines(tr, ms, shaftHandle.Trim(), zoneBoundaryHandle.Trim());
+                    }
                     // Self-tag the zone boundary so spatial zone-detection can confirm it is a real zone
                     // (not a floor outline that shares the "sprinkler - zone" layer).
                     SprinklerXData.ApplyZoneBoundaryTag(zoneEnt, zoneBoundaryHandle);
@@ -164,6 +178,59 @@ namespace autocad_final.Commands
         }
 
         /// <summary>
+        /// After a manual assign, removes explicit shaft/UID tags from other zone outlines that still pointed at this shaft.
+        /// </summary>
+        private static void ClearShaftAssignmentFromOtherZoneOutlines(
+            Transaction tr,
+            BlockTableRecord ms,
+            string assignedShaftHandleHex,
+            string keepZoneBoundaryHandleHex)
+        {
+            if (tr == null || ms == null || string.IsNullOrEmpty(assignedShaftHandleHex) ||
+                string.IsNullOrEmpty(keepZoneBoundaryHandleHex))
+                return;
+
+            RXClass polylineClass = RXClass.GetClass(typeof(Polyline));
+            foreach (ObjectId id in ms)
+            {
+                if (id.IsErased) continue;
+                if (!id.ObjectClass.IsDerivedFrom(polylineClass)) continue;
+
+                Polyline plRead;
+                try { plRead = tr.GetObject(id, OpenMode.ForRead, false) as Polyline; }
+                catch { continue; }
+                if (plRead == null || plRead.IsErased || !plRead.Closed) continue;
+
+                string thisZoneHex = plRead.Handle.ToString();
+                if (string.Equals(thisZoneHex, keepZoneBoundaryHandleHex, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                bool isMcdZoneLayer = SprinklerLayers.IsMcdZoneOutlineLayerName(plRead.Layer);
+                bool selfTagged =
+                    SprinklerXData.TryGetZoneBoundaryHandle(plRead, out var ztag) &&
+                    !string.IsNullOrWhiteSpace(ztag) &&
+                    string.Equals(ztag, thisZoneHex, StringComparison.OrdinalIgnoreCase);
+                if (!isMcdZoneLayer && !selfTagged)
+                    continue;
+
+                if (!SprinklerXData.TryGetShaftAssignmentHandle(plRead, out string shHex) ||
+                    string.IsNullOrEmpty(shHex))
+                    continue;
+                if (!string.Equals(shHex.Trim(), assignedShaftHandleHex.Trim(), StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                try
+                {
+                    var entW = tr.GetObject(id, OpenMode.ForWrite, false) as Entity;
+                    if (entW == null) continue;
+                    SprinklerXData.RemoveShaftAssignmentTag(entW);
+                    SprinklerXData.RemoveShaftUidTag(entW);
+                }
+                catch { /* ignore */ }
+            }
+        }
+
+        /// <summary>
         /// After automatic zoning, assigns each new zone outline to the shaft that owns that cell (same index as
         /// Voronoi/equal-area owner). Skips rings with no resolvable shaft insert (e.g. virtual hints).
         /// Manual <c>ASSIGNSHAFTOZONE</c> overwrites by replacing xdata on the zone and updating the shaft tag list.
@@ -188,13 +255,17 @@ namespace autocad_final.Commands
             int n = Math.Min(createdZoneBoundaryHandles.Count, ownerIndexPerRing.Count);
             for (int i = 0; i < n; i++)
             {
+                string zoneHandle = createdZoneBoundaryHandles[i];
+                if (string.IsNullOrEmpty(zoneHandle))
+                    continue; // ring was skipped during drawing (null sentinel)
+
                 int o = ownerIndexPerRing[i];
                 if (o < 0 || o >= shaftHandleHexPerDedupedSite.Count)
                     continue;
                 string sh = shaftHandleHexPerDedupedSite[o];
                 if (string.IsNullOrEmpty(sh))
                     continue;
-                AssignShaft(db, createdZoneBoundaryHandles[i], sh, out _, refreshPalette: false);
+                AssignShaft(db, zoneHandle, sh, out _, refreshPalette: false, mergeShaftZoneAssignments: true);
             }
             // Caller merges display names into <see cref="PolygonMetrics.ZoneTable"/> and fires palette events (e.g. ZoneAreaCompleted).
         }

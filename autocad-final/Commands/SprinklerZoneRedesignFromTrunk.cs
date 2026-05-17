@@ -64,6 +64,10 @@ namespace autocad_final.Commands
                 return false;
             }
 
+            List<SprinklerHeadReader2d.FloorRoomOwnership> floorRoomOwnerships = null;
+            if (!string.IsNullOrWhiteSpace(boundaryHandleHex))
+                floorRoomOwnerships = SprinklerHeadReader2d.BuildFloorRoomOwnerships(db);
+
             bool trunkHorizontal = true;
             double trunkAxis = 0;
             if (regenerateSprinklerGrid)
@@ -114,9 +118,9 @@ namespace autocad_final.Commands
                     trunkId,
                     zone != null ? zone.ObjectId : ObjectId.Null);
                 int capsErased = EraseTrunkCapsInZone(tr, ms, zoneRing);
-                int erased = EraseEntitiesInZone(tr, ms, zoneRing, preserveSprinklerHeads, trunkId);
-                int outsideSprinklersErased = EraseSprinklerMarkersOutsideZone(tr, db, ms, zoneRing, boundaryHandleHex);
-                int outsideBranchErased = EraseBranchPipingMostlyOutsideZone(tr, ms, zoneRing, db, boundaryHandleHex);
+                int erased = EraseEntitiesInZone(tr, ms, zoneRing, preserveSprinklerHeads, trunkId, boundaryHandleHex);
+                int outsideSprinklersErased = EraseSprinklerMarkersOutsideZone(tr, db, ms, zoneRing, boundaryHandleHex, floorRoomOwnerships);
+                int outsideBranchErased = EraseBranchPipingMostlyOutsideZone(tr, ms, zoneRing, db, boundaryHandleHex, floorRoomOwnerships);
 
                 TryTrimTrunkIfTouchingBoundary(tr, db, trunkId, zoneRing);
 
@@ -238,7 +242,7 @@ namespace autocad_final.Commands
                 {
                     var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
                     var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
-                    movedExisting = SnapExistingSprinklerHeadsInsideZone(tr, db, ms, zone, zoneRing, boundaryHandleHex);
+                    movedExisting = SnapExistingSprinklerHeadsInsideZone(tr, db, ms, zone, zoneRing, boundaryHandleHex, floorRoomOwnerships, srCfg.SprinklerSpacingM);
                     tr.Commit();
                 }
 
@@ -356,6 +360,11 @@ namespace autocad_final.Commands
                     if (!(ent is Polyline pl))
                         continue;
                     if (SprinklerXData.IsTaggedTrunkCap(pl))
+                        continue;
+                    if (!string.IsNullOrWhiteSpace(boundaryHandleHex) &&
+                        SprinklerXData.TryGetZoneBoundaryHandle(pl, out string mainZh) &&
+                        !string.IsNullOrWhiteSpace(mainZh) &&
+                        !string.Equals(mainZh.Trim(), boundaryHandleHex.Trim(), StringComparison.OrdinalIgnoreCase))
                         continue;
                     if (!PolylineHasSampleInsideZone(pl, zoneRing))
                         continue;
@@ -568,7 +577,9 @@ namespace autocad_final.Commands
             BlockTableRecord ms,
             Polyline zone,
             List<Point2d> zoneRing,
-            string boundaryHandleHex)
+            string boundaryHandleHex,
+            List<SprinklerHeadReader2d.FloorRoomOwnership> floorRoomOwnerships,
+            double sprinklerSpacingMeters)
         {
             if (tr == null || db == null || ms == null || zone == null || zoneRing == null || zoneRing.Count < 3)
                 return 0;
@@ -586,6 +597,11 @@ namespace autocad_final.Commands
                 if (!SprinklerLayers.IsSprinklerHeadEntity(tr, ent))
                     continue;
 
+                if (!SprinklerXData.TryGetZoneBoundaryHandle(ent, out string headZh) ||
+                    string.IsNullOrWhiteSpace(headZh) ||
+                    !string.Equals(headZh.Trim(), boundaryHandleHex, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
                 Point2d p;
                 if (ent is BlockReference br)
                 {
@@ -598,7 +614,8 @@ namespace autocad_final.Commands
                 else
                     continue;
 
-                bool inThisZone = SprinklerHeadReader2d.IsPointOwnedByZoneForRouting(db, zoneRing, boundaryHandleHex, p);
+                bool inThisZone = SprinklerHeadReader2d.IsPointOwnedByZoneForRouting(
+                    db, zoneRing, boundaryHandleHex, p, ent, floorRoomOwnerships);
 
                 if (!inThisZone)
                     continue;
@@ -614,7 +631,7 @@ namespace autocad_final.Commands
                     zoneRing,
                     db,
                     points,
-                    spacingMeters: RuntimeSettings.Load().SprinklerSpacingM,
+                    spacingMeters: sprinklerSpacingMeters,
                     out var snapped,
                     out int moved,
                     out _))
@@ -649,11 +666,20 @@ namespace autocad_final.Commands
             return applied;
         }
 
-        private static int EraseEntitiesInZone(Transaction tr, BlockTableRecord ms, List<Point2d> zoneRing, bool preserveSprinklerHeads, ObjectId preserveTrunkId)
+        private static int EraseEntitiesInZone(
+            Transaction tr,
+            BlockTableRecord ms,
+            List<Point2d> zoneRing,
+            bool preserveSprinklerHeads,
+            ObjectId preserveTrunkId,
+            string zoneBoundaryHandleHex)
         {
             int erased = 0;
             if (tr == null || ms == null || zoneRing == null || zoneRing.Count < 3)
                 return 0;
+
+            bool scopeTags = !string.IsNullOrWhiteSpace(zoneBoundaryHandleHex);
+            string zoneHex = scopeTags ? zoneBoundaryHandleHex.Trim() : null;
 
             foreach (ObjectId id in ms)
             {
@@ -664,6 +690,12 @@ namespace autocad_final.Commands
                 try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
                 catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
                 if (ent == null) continue;
+
+                if (scopeTags &&
+                    SprinklerXData.TryGetZoneBoundaryHandle(ent, out string entZh) &&
+                    !string.IsNullOrWhiteSpace(entZh) &&
+                    !string.Equals(entZh.Trim(), zoneHex, StringComparison.OrdinalIgnoreCase))
+                    continue;
 
                 string layer = ent.Layer ?? string.Empty;
                 bool isSprinkler = SprinklerLayers.IsSprinklerHeadEntity(tr, ent);
@@ -712,7 +744,7 @@ namespace autocad_final.Commands
             return erased;
         }
 
-        private static int EraseSprinklerMarkersOutsideZone(Transaction tr, Database db, BlockTableRecord ms, List<Point2d> zoneRing, string boundaryHandleHex)
+        private static int EraseSprinklerMarkersOutsideZone(Transaction tr, Database db, BlockTableRecord ms, List<Point2d> zoneRing, string boundaryHandleHex, List<SprinklerHeadReader2d.FloorRoomOwnership> floorRoomOwnerships)
         {
             int erased = 0;
             if (tr == null || db == null || ms == null || zoneRing == null || zoneRing.Count < 3 || string.IsNullOrEmpty(boundaryHandleHex))
@@ -756,7 +788,7 @@ namespace autocad_final.Commands
 
                 // Match TryReadSprinklerHeadPointsForZoneRouting: keep heads in floor rooms parented to this zone
                 // even when outside the zone polygon (straddling rooms).
-                if (SprinklerHeadReader2d.IsPointInsideFloorRoomParentedToZone(db, zoneRing, boundaryHandleHex, p2))
+                if (SprinklerHeadReader2d.IsPointInsideFloorRoomParentedToZone(db, zoneRing, boundaryHandleHex, p2, floorRoomOwnerships))
                     continue;
 
                 ent.UpgradeOpen();
@@ -766,7 +798,7 @@ namespace autocad_final.Commands
             return erased;
         }
 
-        private static int EraseBranchPipingMostlyOutsideZone(Transaction tr, BlockTableRecord ms, List<Point2d> zoneRing, Database db, string boundaryHandleHex)
+        private static int EraseBranchPipingMostlyOutsideZone(Transaction tr, BlockTableRecord ms, List<Point2d> zoneRing, Database db, string boundaryHandleHex, List<SprinklerHeadReader2d.FloorRoomOwnership> floorRoomOwnerships)
         {
             int erased = 0;
             if (tr == null || ms == null || zoneRing == null || zoneRing.Count < 3 || db == null || string.IsNullOrEmpty(boundaryHandleHex))
@@ -804,9 +836,9 @@ namespace autocad_final.Commands
 
                 bool wipe = false;
                 if (ent is Polyline pl)
-                    wipe = BranchPolylineMostlyOutsideZone(pl, zoneRing, db, boundaryHandleHex, sampleStepDu, minInsideFractionToKeep);
+                    wipe = BranchPolylineMostlyOutsideZone(pl, zoneRing, db, boundaryHandleHex, sampleStepDu, minInsideFractionToKeep, floorRoomOwnerships);
                 else if (ent is Line ln)
-                    wipe = BranchLineMostlyOutsideZone(ln, zoneRing, db, boundaryHandleHex, minInsideFractionToKeep);
+                    wipe = BranchLineMostlyOutsideZone(ln, zoneRing, db, boundaryHandleHex, minInsideFractionToKeep, floorRoomOwnerships);
                 else
                     continue;
 
@@ -820,7 +852,7 @@ namespace autocad_final.Commands
             return erased;
         }
 
-        private static bool BranchPolylineMostlyOutsideZone(Polyline pl, List<Point2d> zoneRing, Database db, string boundaryHandleHex, double sampleStepDu, double minInsideFractionToKeep)
+        private static bool BranchPolylineMostlyOutsideZone(Polyline pl, List<Point2d> zoneRing, Database db, string boundaryHandleHex, double sampleStepDu, double minInsideFractionToKeep, List<SprinklerHeadReader2d.FloorRoomOwnership> floorRoomOwnerships)
         {
             if (pl == null || zoneRing == null || zoneRing.Count < 3)
                 return false;
@@ -834,7 +866,7 @@ namespace autocad_final.Commands
                         return false;
                     var v = pl.GetPoint3dAt(0);
                     var p = new Point2d(v.X, v.Y);
-                    return !SprinklerHeadReader2d.IsPointInZoneOrParentedFloorRoomForRouting(db, zoneRing, boundaryHandleHex, p);
+                    return !SprinklerHeadReader2d.IsPointInZoneOrParentedFloorRoomForRouting(db, zoneRing, boundaryHandleHex, p, floorRoomOwnerships);
                 }
 
                 int n = Math.Max(8, (int)Math.Ceiling(len / Math.Max(sampleStepDu, 1e-9)));
@@ -843,7 +875,7 @@ namespace autocad_final.Commands
                 {
                     double d = len * i / n;
                     var p3 = pl.GetPointAtDist(d);
-                    if (SprinklerHeadReader2d.IsPointInZoneOrParentedFloorRoomForRouting(db, zoneRing, boundaryHandleHex, new Point2d(p3.X, p3.Y)))
+                    if (SprinklerHeadReader2d.IsPointInZoneOrParentedFloorRoomForRouting(db, zoneRing, boundaryHandleHex, new Point2d(p3.X, p3.Y), floorRoomOwnerships))
                         inside++;
                 }
 
@@ -856,7 +888,7 @@ namespace autocad_final.Commands
             }
         }
 
-        private static bool BranchLineMostlyOutsideZone(Line ln, List<Point2d> zoneRing, Database db, string boundaryHandleHex, double minInsideFractionToKeep)
+        private static bool BranchLineMostlyOutsideZone(Line ln, List<Point2d> zoneRing, Database db, string boundaryHandleHex, double minInsideFractionToKeep, List<SprinklerHeadReader2d.FloorRoomOwnership> floorRoomOwnerships)
         {
             if (ln == null || zoneRing == null || zoneRing.Count < 3)
                 return false;
@@ -872,7 +904,7 @@ namespace autocad_final.Commands
                     double t = i / (double)steps;
                     double x = a.X + t * (b.X - a.X);
                     double y = a.Y + t * (b.Y - a.Y);
-                    if (SprinklerHeadReader2d.IsPointInZoneOrParentedFloorRoomForRouting(db, zoneRing, boundaryHandleHex, new Point2d(x, y)))
+                    if (SprinklerHeadReader2d.IsPointInZoneOrParentedFloorRoomForRouting(db, zoneRing, boundaryHandleHex, new Point2d(x, y), floorRoomOwnerships))
                         inside++;
                 }
 

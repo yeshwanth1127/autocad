@@ -247,6 +247,24 @@ namespace autocad_final.Commands
             return true;
         }
 
+        /// <summary>
+        /// Used when routing/attach detects no heads: tries trunk-anchored placement first, then centered grid.
+        /// </summary>
+        internal static void RunApplySprinklersFallbackSequence(Document doc, Polyline zone, string boundaryHandleHex)
+        {
+            if (doc == null || zone == null || string.IsNullOrWhiteSpace(boundaryHandleHex))
+                return;
+            if (TryApplySprinklersForZone(
+                    doc, zone, boundaryHandleHex, out _,
+                    useTrunkAnchoredGrid: true,
+                    requireMainPipeForCenteredGrid: false))
+                return;
+            TryApplySprinklersForZone(
+                doc, zone, boundaryHandleHex, out _,
+                useTrunkAnchoredGrid: false,
+                requireMainPipeForCenteredGrid: false);
+        }
+
         private static bool TryCheckMainPipeRoutedInZone(
             Database db,
             Polyline zone,

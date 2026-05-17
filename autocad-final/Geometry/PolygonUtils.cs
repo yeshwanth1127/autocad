@@ -126,6 +126,21 @@ namespace autocad_final.Geometry
             return false;
         }
 
+        /// <summary>Shortest perpendicular distance from <paramref name="p"/> to the closed ring segments.</summary>
+        public static double MinDistancePointToPolygonBoundary(List<Point2d> ring, Point2d p)
+        {
+            if (ring == null || ring.Count < 2)
+                return double.PositiveInfinity;
+            double best = double.MaxValue;
+            for (int i = 0, j = ring.Count - 1; i < ring.Count; j = i++)
+            {
+                double d = DistancePointToSegment(p, ring[j], ring[i]);
+                if (d < best)
+                    best = d;
+            }
+            return best == double.MaxValue ? double.PositiveInfinity : best;
+        }
+
         public static bool ContainsPoint(List<Point2d> points, Point2d p, double eps)
         {
             if (points == null) return false;

@@ -1003,22 +1003,14 @@ namespace autocad_final.Commands
 
             if (sprinklers.Count == 0 && doc != null)
             {
-                // Auto-apply: try trunk-anchored grid first (main pipe likely already exists), then basic grid.
-                bool applied = ApplySprinklersCommand.TryApplySprinklersForZone(
-                    doc, zone, zoneBoundaryHandleHex, out _,
-                    useTrunkAnchoredGrid: true,
-                    requireMainPipeForCenteredGrid: false);
-                if (!applied)
-                    ApplySprinklersCommand.TryApplySprinklersForZone(
-                        doc, zone, zoneBoundaryHandleHex, out _,
-                        useTrunkAnchoredGrid: false,
-                        requireMainPipeForCenteredGrid: false);
+                ApplySprinklersCommand.RunApplySprinklersFallbackSequence(doc, zone, zoneBoundaryHandleHex);
                 TryReadSprinklersInZone(db, zoneRing, zoneBoundaryHandleHex, clusterTol, out sprinklers, out _);
             }
 
             if (sprinklers.Count == 0)
             {
-                errorMessage = "No sprinklers found inside this zone. Run Apply sprinklers first.";
+                errorMessage = "No sprinklers detected for this zone after automatically running Apply sprinklers. " +
+                    "Check the zone boundary or run Apply sprinklers manually.";
                 return false;
             }
 
@@ -2924,7 +2916,12 @@ namespace autocad_final.Commands
                     out errorMessage))
                 return false;
 
-            SprinklerHeadReader2d.TryEnumerateSprinklerHeadEntitiesInZoneForRouting(db, zoneRing, zoneBoundaryHandleHex, out var allHeadEntities, out _);
+            List<SprinklerHeadReader2d.FloorRoomOwnership> floorRoomOwnerships = null;
+            if (!string.IsNullOrWhiteSpace(zoneBoundaryHandleHex))
+                floorRoomOwnerships = SprinklerHeadReader2d.BuildFloorRoomOwnerships(db);
+
+            SprinklerHeadReader2d.TryEnumerateSprinklerHeadEntitiesInZoneForRouting(
+                db, zoneRing, zoneBoundaryHandleHex, floorRoomOwnerships, out var allHeadEntities, out _);
             MergeFallbackStubLateralsForUnservedHeads(db, zoneRing, laterals, allHeadEntities, clusterTol);
             ApplyShaftBypassSpines(db, zone, zoneRing, laterals, clusterTol);
 
@@ -3002,7 +2999,13 @@ namespace autocad_final.Commands
                         shaftClearDu = sc;
                 }
                 catch { /* ignore */ }
+                // Expanded boxes: pathfinding detours around shafts with clearance so branches do not hug shaft walls.
                 var shaftObstacles = BranchPipeShaftDetour2d.BuildShaftObstacles(db, zone, shaftClearDu);
+                // Tight footprint (no clearance inflate): only forbid drawing segments that pass through the shaft itself.
+                var shaftFootprintBoxes = BranchPipeShaftDetour2d.BuildShaftObstacles(db, zone, clearanceDu: 0);
+                double ringBoundaryTol = Math.Max(
+                    clusterTol * 0.35,
+                    BoundaryEntityToClosedLwPolyline.CoincidentTolerance(db) * 4.0);
 
                 foreach (var lat in laterals)
                 {
@@ -3036,7 +3039,8 @@ namespace autocad_final.Commands
                         {
                             int drew = DrawClippedBranchSegment(
                                 ms, tr, db, branchClipRings, zone, tagZone, zoneBoundaryHandleHex,
-                                stepWpts[wi], stepWpts[wi + 1], mainPipeLayerId, mainW, tagAsConnector: true, shaftObstacles: shaftObstacles);
+                                stepWpts[wi], stepWpts[wi + 1], mainPipeLayerId, mainW, tagAsConnector: true,
+                                shaftFootprintBoxes: shaftFootprintBoxes, ringBoundaryTol: ringBoundaryTol);
                             segmentsDrawn += drew;
                             stepSegmentsDrawn += drew;
                         }
@@ -3075,7 +3079,8 @@ namespace autocad_final.Commands
                         {
                             int drew = DrawClippedBranchSegment(
                                 ms, tr, db, branchClipRings, zone, tagZone, zoneBoundaryHandleHex,
-                                legWpts[wi], legWpts[wi + 1], pipeLayerId, w, tagAsConnector: false, shaftObstacles: shaftObstacles);
+                                legWpts[wi], legWpts[wi + 1], pipeLayerId, w, tagAsConnector: false,
+                                shaftFootprintBoxes: shaftFootprintBoxes, ringBoundaryTol: ringBoundaryTol);
                             segmentsDrawn += drew;
                             legSegmentsDrawn += drew;
                         }
@@ -3165,7 +3170,8 @@ namespace autocad_final.Commands
                             {
                                 int drew = DrawClippedBranchSegment(
                                     ms, tr, db, branchClipRings, zone, tagZone, zoneBoundaryHandleHex,
-                                    subWpts[wi], subWpts[wi + 1], pipeLayerId, wSub, tagAsConnector: false, shaftObstacles: shaftObstacles);
+                                    subWpts[wi], subWpts[wi + 1], pipeLayerId, wSub, tagAsConnector: false,
+                                    shaftFootprintBoxes: shaftFootprintBoxes, ringBoundaryTol: ringBoundaryTol);
                                 segmentsDrawn += drew;
                                 subSegsDrawn += drew;
                             }
@@ -3247,26 +3253,59 @@ namespace autocad_final.Commands
                 int lastResortRecovered = TryDrawLastResortBranchesForStranded(
                     tr, db, ms, zone, zoneRing, zoneBoundaryHandleHex,
                     allHeadEntities, drawnSprinklerPositions, laterals,
-                    mainW, trunkHorizontal, trunkAxis, shaftObstacles, branchClipRings, clusterTol,
+                    mainW, trunkHorizontal, trunkAxis, shaftObstacles, shaftFootprintBoxes, ringBoundaryTol, branchClipRings, clusterTol,
                     tagZone, branchMainLayerId, branchLabelLayerId,
                     labelOffsetDu, labelTextHeight, totalZoneHeadCount,
                     ref segmentsDrawn, ref labelsDrawn);
 
+                // Remove branch polylines that are not hydraulically connected to the main pipe network
+                // (directly or through other branch segments). Keeps redesign-from-trunk and all attach paths consistent.
+                var pruneSeeds = new List<ObjectId>();
+                if (!explicitMainPipePolylineId.IsNull)
+                    pruneSeeds.Add(explicitMainPipePolylineId);
+                else if (TryFindMainPipePolylinesInZone(db, zoneRing, out List<ObjectId> trunkIdsForPrune, out _) &&
+                         trunkIdsForPrune != null &&
+                         trunkIdsForPrune.Count > 0)
+                    pruneSeeds.AddRange(trunkIdsForPrune);
+
+                HashSet<ObjectId> reachableHydraulicCurveIds = null;
+                int prunedDisconnectedBranchSegs = 0;
+                int orphanBranchLabelsRemoved = 0;
+                if (pruneSeeds.Count > 0)
+                {
+                    prunedDisconnectedBranchSegs = BranchNetworkConnectivity.PruneDisconnectedBranchGeometry(
+                        tr, ms, zoneRing, zoneBoundaryHandleHex, pruneSeeds, clusterTol, out reachableHydraulicCurveIds);
+                    segmentsDrawn = Math.Max(0, segmentsDrawn - prunedDisconnectedBranchSegs);
+                    if (reachableHydraulicCurveIds != null)
+                    {
+                        orphanBranchLabelsRemoved = BranchNetworkConnectivity.EraseOrphanBranchDiameterLabels(
+                            tr, ms, zoneRing, zoneBoundaryHandleHex, reachableHydraulicCurveIds, clusterTol);
+                        labelsDrawn = Math.Max(0, labelsDrawn - orphanBranchLabelsRemoved);
+                    }
+                }
+
                 foreach (var oid in skippedNoBranchIds)
                 {
-                    if (headsRecoveredByRoomSubMain.Contains(oid))
-                        continue;
                     if (oid.IsErased) continue;
-                    // Check if last-resort drawing covered this head
+                    // Check if last-resort / room routing left the head with pipe tied to the trunk-fed network
                     Entity he = null;
                     try { he = tr.GetObject(oid, OpenMode.ForRead, false) as Entity; }
                     catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
                     if (he == null) continue;
                     Point2d hPt = GetEntityPoint2d(he);
-                    bool coveredByLastResort = false;
-                    foreach (var dp in drawnSprinklerPositions)
-                        if ((dp - hPt).Length <= clusterTol * 2.0) { coveredByLastResort = true; break; }
-                    if (coveredByLastResort) continue;
+                    bool servedAfterPrune = false;
+                    if (reachableHydraulicCurveIds != null && reachableHydraulicCurveIds.Count > 0)
+                    {
+                        double headTol = Math.Max(clusterTol * 3.0, 1e-6);
+                        servedAfterPrune = BranchNetworkConnectivity.PointNearAnyCurve(tr, hPt, reachableHydraulicCurveIds, headTol);
+                    }
+                    else
+                    {
+                        foreach (var dp in drawnSprinklerPositions)
+                            if ((dp - hPt).Length <= clusterTol * 2.0) { servedAfterPrune = true; break; }
+                    }
+
+                    if (servedAfterPrune) continue;
 
                     try { he.UpgradeOpen(); } catch { continue; }
                     he.LayerId = highlightNoBranchLayerId;
@@ -3287,6 +3326,12 @@ namespace autocad_final.Commands
                         : string.Empty) +
                     (lastResortRecovered > 0
                         ? " Last-resort routing connected " + lastResortRecovered + " stranded head(s)."
+                        : string.Empty) +
+                    (prunedDisconnectedBranchSegs > 0
+                        ? " Removed " + prunedDisconnectedBranchSegs + " branch segment(s) with no hydraulic path to main."
+                        : string.Empty) +
+                    (orphanBranchLabelsRemoved > 0
+                        ? " Removed " + orphanBranchLabelsRemoved + " orphan branch Ø label(s)."
                         : string.Empty) +
                     (skippedNoBranchIds.Count > 0
                         ? " " + Math.Max(0, skippedNoBranchIds.Count - headsRecoveredByRoomSubMain.Count - lastResortRecovered) +
@@ -3315,6 +3360,8 @@ namespace autocad_final.Commands
             bool trunkHorizontal,
             double trunkAxis,
             IList<(Point2d min, Point2d max)> shaftObstacles,
+            IList<(Point2d min, Point2d max)> shaftFootprintBoxes,
+            double ringBoundaryTol,
             IList<IList<Point2d>> branchClipRings,
             double clusterTol,
             bool tagZone,
@@ -3379,7 +3426,7 @@ namespace autocad_final.Commands
                     drawn += DrawClippedBranchSegment(
                         ms, tr, db, branchClipRings, zone, tagZone, zoneBoundaryHandleHex,
                         wpts[wi], wpts[wi + 1], branchLayerId, w, tagAsConnector: false,
-                        shaftObstacles: shaftObstacles);
+                        shaftFootprintBoxes: shaftFootprintBoxes, ringBoundaryTol: ringBoundaryTol, forceConnection: false);
 
                 segmentsDrawn += drawn;
                 if (drawn <= 0) continue;
@@ -3810,12 +3857,25 @@ namespace autocad_final.Commands
             ObjectId layerId,
             double widthDu,
             bool tagAsConnector,
-            IList<(Point2d min, Point2d max)> shaftObstacles = null)
+            IList<(Point2d min, Point2d max)> shaftFootprintBoxes = null,
+            double ringBoundaryTol = 0,
+            bool forceConnection = false)
         {
             int created = 0;
-            var clipIntervals = RingGeometry.ClipSegmentToRingsUnion(a, b, clipRings);
+            var clipIntervals = RingGeometry.ClipSegmentToRingsUnion(a, b, clipRings, boundaryTol: ringBoundaryTol);
+            // If clipping returns empty, check if we should use fallback.
             if (clipIntervals == null || clipIntervals.Count == 0)
-                return 0; // Segment is entirely outside all zone rings — skip it
+            {
+                if (!forceConnection)
+                {
+                    bool aInside = RingGeometry.PointInAnyOfRingsOrNearBoundary(clipRings, a, ringBoundaryTol);
+                    bool bInside = RingGeometry.PointInAnyOfRingsOrNearBoundary(clipRings, b, ringBoundaryTol);
+                    if (!aInside && !bInside)
+                        return 0; // Both endpoints outside all rings — skip segment
+                }
+                // At least one endpoint is inside, or forceConnection is true: use fallback
+                clipIntervals = new List<(double, double)> { (0.0, 1.0) };
+            }
 
             double segDx = b.X - a.X;
             double segDy = b.Y - a.Y;
@@ -3824,7 +3884,8 @@ namespace autocad_final.Commands
             {
                 var p0 = new Point2d(a.X + t0 * segDx, a.Y + t0 * segDy);
                 var p1 = new Point2d(a.X + t1 * segDx, a.Y + t1 * segDy);
-                if (SegmentIntersectsAnyBox(p0, p1, shaftObstacles))
+                // Reject only when the drawn segment passes through the actual shaft footprint (no clearance buffer).
+                if (SegmentIntersectsAnyBox(p0, p1, shaftFootprintBoxes))
                     continue;
 
                 var seg = new Polyline();

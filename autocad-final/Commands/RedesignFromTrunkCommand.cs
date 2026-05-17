@@ -62,7 +62,7 @@ namespace autocad_final.Commands
                     return;
                 }
 
-                if (!SprinklerTrunkLocator.TryFindTaggedTrunkInZone(db, zoneRing, out ObjectId trunkId, out string trunkErr))
+                if (!SprinklerTrunkLocator.TryFindTaggedTrunkInZone(db, zoneRing, out ObjectId trunkId, out string trunkErr, boundaryHandleHex))
                 {
                     PaletteCommandErrorUi.ShowDialogThenCommandLine(ed,
                         trunkErr ?? "No main pipe found in zone. Run 'Route main pipe' first.",

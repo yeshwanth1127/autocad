@@ -229,18 +229,15 @@ namespace autocad_final.Commands
                 errorMessage = sprErr ?? "Could not read sprinklers inside zone.";
                 return false;
             }
-            if (sprinklers.Count == 0)
+            if (sprinklers.Count == 0 && doc != null)
             {
-                // Auto-apply: no main pipe yet at this point, so use basic centered grid.
-                ApplySprinklersCommand.TryApplySprinklersForZone(
-                    doc, zone, boundaryHandleHex, out _,
-                    useTrunkAnchoredGrid: false,
-                    requireMainPipeForCenteredGrid: false);
+                ApplySprinklersCommand.RunApplySprinklersFallbackSequence(doc, zone, boundaryHandleHex);
                 SprinklerHeadReader2d.TryReadSprinklerHeadPointsForZoneRouting(db, zoneRing, boundaryHandleHex, clusterTol, out sprinklers, out _);
             }
             if (sprinklers.Count == 0)
             {
-                errorMessage = "No sprinklers found inside this zone. Run Apply sprinklers first.";
+                errorMessage = "No sprinklers detected for this zone after automatically running Apply sprinklers. " +
+                    "Check the zone boundary or run Apply sprinklers manually.";
                 return false;
             }
 
@@ -567,15 +564,19 @@ namespace autocad_final.Commands
                     return false;
                 }
 
-                foreach (string zh in assignedHandles)
+                // Prefer the most recently linked zone (manual ASSIGNSHAFTOZONE appends; exclusive manual assigns a single entry).
+                for (int hi = assignedHandles.Count - 1; hi >= 0; hi--)
                 {
+                    string zh = assignedHandles[hi];
                     Handle h;
                     try { h = new Handle(Convert.ToInt64(zh, 16)); } catch { continue; }
                     ObjectId zId = ObjectId.Null;
                     try { zId = db.GetObjectId(false, h, 0); } catch { continue; }
                     if (zId.IsNull) continue;
 
-                    var zEnt = tr.GetObject(zId, OpenMode.ForRead, false) as Polyline;
+                    Polyline zEnt;
+                    try { zEnt = tr.GetObject(zId, OpenMode.ForRead, false) as Polyline; }
+                    catch { continue; } // catches eWasErased for old (deleted) zone handles
                     if (zEnt == null || zEnt.IsErased || !zEnt.Closed) continue;
 
                     // Reject entities that are not actual zone boundaries (e.g. floor boundary accidentally tagged).

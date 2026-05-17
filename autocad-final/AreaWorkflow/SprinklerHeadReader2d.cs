@@ -8,7 +8,8 @@ namespace autocad_final.AreaWorkflow
 {
     public static class SprinklerHeadReader2d
     {
-        private sealed class FloorRoomOwnership
+        /// <summary>Cached result of <see cref="BuildFloorRoomOwnerships"/>; pass through hot paths to avoid repeated DB scans.</summary>
+        public sealed class FloorRoomOwnership
         {
             public List<Point2d> Ring;
             public string ParentZoneHex;
@@ -37,6 +38,18 @@ namespace autocad_final.AreaWorkflow
             double dedupeTol,
             out List<Point2d> sprinklers,
             out string errorMessage)
+            => TryReadSprinklerHeadPointsForZoneRouting(
+                db, zoneRing, zoneBoundaryHandleHex, dedupeTol, floorRoomOwnerships: null, out sprinklers, out errorMessage);
+
+        /// <param name="floorRoomOwnerships">When non-null, skips rebuilding floor-room ownership (saves a full DB scan).</param>
+        public static bool TryReadSprinklerHeadPointsForZoneRouting(
+            Database db,
+            List<Point2d> zoneRing,
+            string zoneBoundaryHandleHex,
+            double dedupeTol,
+            List<FloorRoomOwnership> floorRoomOwnerships,
+            out List<Point2d> sprinklers,
+            out string errorMessage)
         {
             sprinklers = new List<Point2d>();
             errorMessage = null;
@@ -54,7 +67,7 @@ namespace autocad_final.AreaWorkflow
 
             string zoneHex = string.IsNullOrWhiteSpace(zoneBoundaryHandleHex) ? null : zoneBoundaryHandleHex.Trim();
             var roomOwnerships = !string.IsNullOrWhiteSpace(zoneHex)
-                ? BuildFloorRoomOwnerships(db)
+                ? (floorRoomOwnerships ?? BuildFloorRoomOwnerships(db))
                 : null;
 
             using (var tr = db.TransactionManager.StartTransaction())
@@ -80,7 +93,9 @@ namespace autocad_final.AreaWorkflow
                     else
                         continue;
 
-                    if (!PointBelongsToZoneForRouting(zoneRing, zoneHex, roomOwnerships, p))
+                    if (!PointBelongsToZoneForRouting(
+                            zoneRing, zoneHex, roomOwnerships, p,
+                            Math.Max(dedupeTol, BoundaryProximityTolRouting(db)), ent))
                         continue;
                     AddDedupe(sprinklers, p, dedupeTol);
                 }
@@ -114,6 +129,17 @@ namespace autocad_final.AreaWorkflow
             string zoneBoundaryHandleHex,
             out List<(Point2d pt, ObjectId id)> heads,
             out string errorMessage)
+            => TryEnumerateSprinklerHeadEntitiesInZoneForRouting(
+                db, zoneRing, zoneBoundaryHandleHex, floorRoomOwnerships: null, out heads, out errorMessage);
+
+        /// <param name="floorRoomOwnerships">When non-null, skips rebuilding floor-room ownership (saves a full DB scan).</param>
+        public static bool TryEnumerateSprinklerHeadEntitiesInZoneForRouting(
+            Database db,
+            List<Point2d> zoneRing,
+            string zoneBoundaryHandleHex,
+            List<FloorRoomOwnership> floorRoomOwnerships,
+            out List<(Point2d pt, ObjectId id)> heads,
+            out string errorMessage)
         {
             heads = new List<(Point2d, ObjectId)>();
             errorMessage = null;
@@ -131,7 +157,7 @@ namespace autocad_final.AreaWorkflow
 
             string zoneHex = string.IsNullOrWhiteSpace(zoneBoundaryHandleHex) ? null : zoneBoundaryHandleHex.Trim();
             var roomOwnerships = !string.IsNullOrWhiteSpace(zoneHex)
-                ? BuildFloorRoomOwnerships(db)
+                ? (floorRoomOwnerships ?? BuildFloorRoomOwnerships(db))
                 : null;
 
             using (var tr = db.TransactionManager.StartTransaction())
@@ -157,7 +183,8 @@ namespace autocad_final.AreaWorkflow
                     else
                         continue;
 
-                    if (!PointBelongsToZoneForRouting(zoneRing, zoneHex, roomOwnerships, p))
+                    if (!PointBelongsToZoneForRouting(
+                            zoneRing, zoneHex, roomOwnerships, p, BoundaryProximityTolRouting(db), ent))
                         continue;
                     heads.Add((p, id));
                 }
@@ -217,11 +244,16 @@ namespace autocad_final.AreaWorkflow
         /// whose majority parent zone matches <paramref name="zoneHex"/> (same rings as
         /// <see cref="TryGetFloorRoomRingsParentedToZone"/>). Used so redesign cleanup matches routing inclusion.
         /// </summary>
-        public static bool IsPointInsideFloorRoomParentedToZone(Database db, List<Point2d> zoneRing, string zoneHex, Point2d p)
+        public static bool IsPointInsideFloorRoomParentedToZone(
+            Database db,
+            List<Point2d> zoneRing,
+            string zoneHex,
+            Point2d p,
+            List<FloorRoomOwnership> floorRoomOwnerships = null)
         {
             if (db == null || zoneRing == null || zoneRing.Count < 3 || string.IsNullOrWhiteSpace(zoneHex))
                 return false;
-            var rooms = BuildFloorRoomOwnerships(db);
+            var rooms = floorRoomOwnerships ?? BuildFloorRoomOwnerships(db);
             if (!TryFindContainingRoomOwner(rooms, p, out string ownerHex))
                 return false;
             return string.Equals(ownerHex, zoneHex.Trim(), StringComparison.OrdinalIgnoreCase);
@@ -231,40 +263,91 @@ namespace autocad_final.AreaWorkflow
         /// Union of the zone polygon and floor-boundary rooms parented to <paramref name="zoneHex"/> (same footprint
         /// notion as branch clip rings in attach-branches). Used for redesign cleanup so branches to straddling-room heads are not wiped.
         /// </summary>
-        public static bool IsPointInZoneOrParentedFloorRoomForRouting(Database db, List<Point2d> zoneRing, string zoneHex, Point2d p)
+        public static bool IsPointInZoneOrParentedFloorRoomForRouting(
+            Database db,
+            List<Point2d> zoneRing,
+            string zoneHex,
+            Point2d p,
+            List<FloorRoomOwnership> floorRoomOwnerships = null)
         {
             if (zoneRing == null || zoneRing.Count < 3)
                 return false;
             if (db == null || string.IsNullOrWhiteSpace(zoneHex))
-                return PointInPolygon(zoneRing, p);
-            return IsPointOwnedByZoneForRouting(db, zoneRing, zoneHex, p);
+                return ZoneContainsPointTolerant(zoneRing, p, BoundaryProximityTolRouting(db));
+            return IsPointOwnedByZoneForRouting(db, zoneRing, zoneHex, p, null, floorRoomOwnerships);
         }
 
         /// <summary>
         /// A point inside a room outline belongs only to that room's majority parent zone. Points outside rooms
         /// still use normal zone polygon containment.
         /// </summary>
-        public static bool IsPointOwnedByZoneForRouting(Database db, List<Point2d> zoneRing, string zoneHex, Point2d p)
+        /// <param name="associatedHeadEntity">When set, honors sprinkler XData zone tag before geometric checks.</param>
+        /// <param name="floorRoomOwnerships">When non-null, avoids rebuilding floor-room ownership for every call.</param>
+        public static bool IsPointOwnedByZoneForRouting(
+            Database db,
+            List<Point2d> zoneRing,
+            string zoneHex,
+            Point2d p,
+            Entity associatedHeadEntity = null,
+            List<FloorRoomOwnership> floorRoomOwnerships = null)
         {
             if (zoneRing == null || zoneRing.Count < 3)
                 return false;
             if (db == null || string.IsNullOrWhiteSpace(zoneHex))
-                return PointInPolygon(zoneRing, p);
-            return PointBelongsToZoneForRouting(zoneRing, zoneHex.Trim(), BuildFloorRoomOwnerships(db), p);
+                return ZoneContainsPointTolerant(zoneRing, p, BoundaryProximityTolRouting(db));
+            var rooms = floorRoomOwnerships ?? BuildFloorRoomOwnerships(db);
+            return PointBelongsToZoneForRouting(
+                zoneRing,
+                zoneHex.Trim(),
+                rooms,
+                p,
+                BoundaryProximityTolRouting(db),
+                associatedHeadEntity);
+        }
+
+        private static double BoundaryProximityTolRouting(Database db)
+        {
+            if (db == null) return 1e-6;
+            try
+            {
+                double t = BoundaryEntityToClosedLwPolyline.CoincidentTolerance(db);
+                return Math.Max(t * 50.0, 1e-5);
+            }
+            catch
+            {
+                return 1e-6;
+            }
+        }
+
+        private static bool ZoneContainsPointTolerant(List<Point2d> zoneRing, Point2d p, double boundaryTolDu)
+        {
+            if (zoneRing == null || zoneRing.Count < 3)
+                return false;
+            double tol = boundaryTolDu > 0 ? boundaryTolDu : 1e-6;
+            if (PolygonUtils.PointInPolygon(zoneRing, p))
+                return true;
+            double d = PolygonUtils.MinDistancePointToPolygonBoundary(zoneRing, p);
+            return !double.IsPositiveInfinity(d) && d <= tol;
         }
 
         private static bool PointBelongsToZoneForRouting(
             List<Point2d> zoneRing,
             string zoneHex,
             List<FloorRoomOwnership> roomOwnerships,
-            Point2d p)
+            Point2d p,
+            double boundaryTolDu,
+            Entity ent)
         {
-            // Zone polygon containment always qualifies — never let room ownership override this.
-            if (PointInPolygon(zoneRing, p))
+            if (!string.IsNullOrWhiteSpace(zoneHex) && ent != null &&
+                SprinklerXData.TryGetZoneBoundaryHandle(ent, out string hx) &&
+                !string.IsNullOrWhiteSpace(hx) &&
+                string.Equals(hx.Trim(), zoneHex.Trim(), StringComparison.OrdinalIgnoreCase))
                 return true;
 
-            // Outside the zone polygon: also include heads in floor rooms parented to this zone
-            // (straddling rooms whose geometric centroid falls in a neighbouring zone).
+            // Zone polygon containment (interior, boundary strip, or slight numerical offset) qualifies first.
+            if (ZoneContainsPointTolerant(zoneRing, p, boundaryTolDu))
+                return true;
+
             if (!string.IsNullOrWhiteSpace(zoneHex) &&
                 TryFindContainingRoomOwner(roomOwnerships, p, out string ownerHex))
                 return string.Equals(ownerHex, zoneHex.Trim(), StringComparison.OrdinalIgnoreCase);
@@ -301,7 +384,10 @@ namespace autocad_final.AreaWorkflow
             return !string.IsNullOrWhiteSpace(ownerHex);
         }
 
-        private static List<FloorRoomOwnership> BuildFloorRoomOwnerships(Database db)
+        /// <summary>
+        /// Scans floor-boundary room outlines and resolves majority parent zones (expensive — cache per command when possible).
+        /// </summary>
+        public static List<FloorRoomOwnership> BuildFloorRoomOwnerships(Database db)
         {
             var result = new List<FloorRoomOwnership>();
             if (db == null)
@@ -449,20 +535,5 @@ namespace autocad_final.AreaWorkflow
             pts.Add(p);
         }
 
-        private static bool PointInPolygon(IList<Point2d> ring, Point2d p)
-        {
-            bool inside = false;
-            int n = ring.Count;
-            for (int i = 0, j = n - 1; i < n; j = i++)
-            {
-                var a = ring[i];
-                var b = ring[j];
-                bool intersect =
-                    ((a.Y > p.Y) != (b.Y > p.Y)) &&
-                    (p.X < (b.X - a.X) * (p.Y - a.Y) / ((b.Y - a.Y) == 0 ? 1e-12 : (b.Y - a.Y)) + a.X);
-                if (intersect) inside = !inside;
-            }
-            return inside;
-        }
     }
 }

@@ -225,6 +225,8 @@ namespace autocad_final.AreaWorkflow
 
         /// <summary>
         /// Axis-aligned bounding boxes for shaft blocks expanded by <paramref name="clearanceDu"/>.
+        /// Pass <paramref name="clearanceDu"/> = 0 for the true shaft footprint only (used to detect pipe passing *through* the shaft).
+        /// Pass a positive clearance for pathfinding so routes stay outside a buffer around the shaft.
         /// </summary>
         public static List<(Point2d min, Point2d max)> BuildShaftObstacles(
             Database db, Polyline zone, double clearanceDu)

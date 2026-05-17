@@ -12,10 +12,32 @@ namespace autocad_final.AreaWorkflow
     /// </summary>
     public static class SprinklerTrunkLocator
     {
-        public static bool TryFindTaggedTrunkInZone(Database db, List<Point2d> zoneRing, out ObjectId trunkId, out string errorMessage)
+        /// <param name="zoneBoundaryHandleHex">
+        /// When set, ignores main polylines tagged to a different zone (redesign / route must stay scoped to one zone).
+        /// Legacy untagged mains that sample inside the ring are still considered.
+        /// </param>
+        public static bool TryFindTaggedTrunkInZone(
+            Database db,
+            List<Point2d> zoneRing,
+            out ObjectId trunkId,
+            out string errorMessage,
+            string zoneBoundaryHandleHex = null)
         {
             trunkId = ObjectId.Null;
             errorMessage = null;
+
+            bool scopeByZone =
+                !string.IsNullOrWhiteSpace(zoneBoundaryHandleHex);
+            string zoneHex = scopeByZone ? zoneBoundaryHandleHex.Trim() : null;
+
+            bool IncludePolyForZoneScope(Polyline pl)
+            {
+                if (!scopeByZone)
+                    return true;
+                if (!SprinklerXData.TryGetZoneBoundaryHandle(pl, out string zh) || string.IsNullOrWhiteSpace(zh))
+                    return true; // legacy untagged main in drawing
+                return string.Equals(zh.Trim(), zoneHex, StringComparison.OrdinalIgnoreCase);
+            }
 
             var trunks = new List<ObjectId>();
             var candidates = new List<ObjectId>();
@@ -34,6 +56,8 @@ namespace autocad_final.AreaWorkflow
                     if (!(ent is Polyline pl))
                         continue;
                     if (!PolylineHasSampleInsideZone(pl, zoneRing))
+                        continue;
+                    if (!IncludePolyForZoneScope(pl))
                         continue;
 
                     candidates.Add(id);
@@ -58,6 +82,8 @@ namespace autocad_final.AreaWorkflow
                         try { pl = tr.GetObject(id, OpenMode.ForRead, false) as Polyline; }
                         catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == ErrorStatus.WasErased) { continue; }
                         if (pl == null) continue;
+                        if (!IncludePolyForZoneScope(pl))
+                            continue;
 
                         double len = 0;
                         try { len = pl.Length; } catch { len = 0; }
