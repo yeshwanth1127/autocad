@@ -305,6 +305,32 @@ namespace autocad_final.AreaWorkflow
                 associatedHeadEntity);
         }
 
+        /// <summary>
+        /// CRITICAL ZONE VALIDATION: Check if a point belongs to a specific zone without requiring database.
+        /// Used to validate that branch routing only happens to sprinklers in the target zone.
+        /// </summary>
+        public static bool PointBelongsToZoneForRoutingPublic(
+            List<Point2d> zoneRing,
+            string zoneHex,
+            List<FloorRoomOwnership> floorRoomOwnerships,
+            Point2d p,
+            double boundaryTolDu)
+        {
+            if (zoneRing == null || zoneRing.Count < 3)
+                return false;
+
+            // Direct zone containment check (no entity tag needed for routing validation)
+            if (ZoneContainsPointTolerant(zoneRing, p, boundaryTolDu))
+                return true;
+
+            // Room ownership check if zone hex is provided
+            if (!string.IsNullOrWhiteSpace(zoneHex) &&
+                TryFindContainingRoomOwner(floorRoomOwnerships, p, out string ownerHex))
+                return string.Equals(ownerHex, zoneHex.Trim(), StringComparison.OrdinalIgnoreCase);
+
+            return false;
+        }
+
         private static double BoundaryProximityTolRouting(Database db)
         {
             if (db == null) return 1e-6;

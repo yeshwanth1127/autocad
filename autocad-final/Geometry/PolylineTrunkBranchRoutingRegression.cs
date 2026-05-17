@@ -157,6 +157,60 @@ namespace autocad_final.Geometry
             return true;
         }
 
+        /// <summary>Reducer clamp — exterior point should land inside the closed ring.</summary>
+        public static bool ClampPointToClosedRing_OutsideMovesInside()
+        {
+            var ring = new List<Point2d>
+            {
+                new Point2d(0, 0),
+                new Point2d(50, 0),
+                new Point2d(50, 50),
+                new Point2d(0, 50),
+            };
+            var pOut = new Point2d(60, 25);
+            var c = PolygonUtils.ClampPointToClosedRing(ring, pOut, 0.5);
+            return PolygonUtils.PointInPolygon(ring, c);
+        }
+
+        /// <summary>Interior point should be unchanged by clamp.</summary>
+        public static bool ClampPointToClosedRing_InsideUnchanged()
+        {
+            var ring = new List<Point2d>
+            {
+                new Point2d(0, 0),
+                new Point2d(50, 0),
+                new Point2d(50, 50),
+                new Point2d(0, 50),
+            };
+            var pIn = new Point2d(25, 25);
+            var c = PolygonUtils.ClampPointToClosedRing(ring, pIn, 0.5);
+            return c.GetDistanceTo(pIn) < 1e-6;
+        }
+
+        /// <summary>
+        /// Concave C-shaped ring: centroid can lie outside the polygon; clamp from an exterior point must still land inside.
+        /// </summary>
+        public static bool ClampPointToClosedRing_ConcaveCentroidOutsideStillInside()
+        {
+            var ring = new List<Point2d>
+            {
+                new Point2d(0, 0),
+                new Point2d(100, 0),
+                new Point2d(100, 100),
+                new Point2d(80, 100),
+                new Point2d(80, 20),
+                new Point2d(20, 20),
+                new Point2d(20, 100),
+                new Point2d(0, 100),
+            };
+            var c = PolygonUtils.ApproxCentroidAreaWeighted(ring);
+            bool centroidOutside = !PolygonUtils.PointInPolygon(ring, c);
+            var pOut = new Point2d(50, 50);
+            bool startOutside = !PolygonUtils.PointInPolygon(ring, pOut);
+            var clamped = PolygonUtils.ClampPointToClosedRing(ring, pOut, 0.5);
+            return (centroidOutside || startOutside) && PolygonUtils.PointInPolygon(ring, clamped);
+        }
+
         public static bool RunAll() =>
             DiagonalTrunk_AwkwardHeadNeedsAlternateOrientation()
             && OrthogonalWaypoints_VerticalFirstBreaksDiagonal()
@@ -166,6 +220,9 @@ namespace autocad_final.Geometry
             && OrthogonalWaypoints_ShallowSlopeTerminates()
             && OrthogonalWaypoints_DegeneratePointReturns2()
             && AxisAligned_MicroSegmentHandledSafely()
-            && OrthogonalWaypoints_NoMicroSegmentsInOutput();
+            && OrthogonalWaypoints_NoMicroSegmentsInOutput()
+            && ClampPointToClosedRing_OutsideMovesInside()
+            && ClampPointToClosedRing_InsideUnchanged()
+            && ClampPointToClosedRing_ConcaveCentroidOutsideStillInside();
     }
 }
