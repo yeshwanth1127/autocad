@@ -168691,3 +168691,272 @@ SESSION START  2026-05-18 10:11:48.725  pid=32272
 [10:11:57.528] #0081 T001 [TryRoute] TryOrthogonalConnectInside done
 [10:11:57.529] #0082 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
 [10:11:57.537] #0083 T001 [TryRouteMainPipeForZone] entities committed, done
+
+══════════════════════════════════════════════════════
+SESSION START  2026-05-18 10:19:13.288  pid=29640
+══════════════════════════════════════════════════════
+[10:19:13.290] #0001 T001 [PlaceSprinklers] command start log=C:\Users\admin\source\repos\autocad-final\autocad-final\bin\Debug\AgentDebug.log
+[10:19:14.796] #0002 T001 [PlaceSprinklers] boundary picked id=(2756488700624)
+[10:19:14.797] #0003 T001 [PlaceSprinklers] GetShaftBlocksInsideBoundary start
+[10:19:14.812] #0004 T001 [PlaceSprinklers] GetShaftBlocksInsideBoundary done count=5
+[10:19:14.816] #0005 T001 [PlaceSprinklers] pre-check floorM2=12516.62 impliedZoneM2=2503.32 maxServedM2=15000.00 (assume 1DU=1m)
+[10:19:14.817] #0006 T001 [PlaceSprinklers] PlaceSprinklersWorkflow.TryRun start
+[10:19:14.818] #0007 T001 [PlaceSprinklersWorkflow] TryRun enter boundaryId=(2756488700624)
+[10:19:14.820] #0008 T001 [PlaceSprinklersWorkflow] extentDu=149.5 duPerM=1 offsetDu=1.5 spacingDu=3
+[10:19:14.821] #0009 T001 [SprinklerGridInPolygonWorkflow] TryBuildInwardOffsetRing start
+[10:19:14.823] #0010 T001 [OffsetService] TryAtOffset primary=1.5
+[10:19:14.826] #0011 T001 [OffsetService] success verts=6
+[10:19:14.828] #0012 T001 [GridPlacement] bbox cols 0..49 rows 0..31 cellCount=1600
+[10:19:14.828] #0013 T001 [GridPlacement] candidates built count=1550
+[10:19:14.860] #0014 T001 [BoundaryCoverage] enter ringN=6 gridN=1346 spacing=3 maxDist=1.5
+[10:19:14.864] #0015 T001 [BoundaryCoverage] after boundaryCandidates resultN=1346
+[10:19:14.864] #0016 T001 [BoundaryCoverage] edge 0/6 len=83.095 samples=56
+[10:19:14.865] #0017 T001 [BoundaryCoverage] edge 1/6 len=113.36 samples=76
+[10:19:14.865] #0018 T001 [BoundaryCoverage] edge 2/6 len=47.9126 samples=32
+[10:19:14.866] #0019 T001 [BoundaryCoverage] edge 3/6 len=32.1166 samples=22
+[10:19:14.874] #0020 T001 [BoundaryCoverage] edge 4/6 len=41.4146 samples=28
+[10:19:14.877] #0021 T001 [BoundaryCoverage] edge 5/6 len=112.813 samples=76
+[10:19:14.886] #0022 T001 [BoundaryCoverage] exit resultN=1346
+[10:19:14.918] #0023 T001 [GridPlacement] bbox cols 0..49 rows -1..30 cellCount=1600
+[10:19:14.918] #0024 T001 [GridPlacement] candidates built count=1500
+[10:19:14.948] #0025 T001 [BoundaryCoverage] enter ringN=6 gridN=1330 spacing=3 maxDist=1.5
+[10:19:14.951] #0026 T001 [BoundaryCoverage] after boundaryCandidates resultN=1330
+[10:19:14.951] #0027 T001 [BoundaryCoverage] edge 0/6 len=83.095 samples=56
+[10:19:14.952] #0028 T001 [BoundaryCoverage] edge 1/6 len=113.36 samples=76
+[10:19:14.952] #0029 T001 [BoundaryCoverage] edge 2/6 len=47.9126 samples=32
+[10:19:14.952] #0030 T001 [BoundaryCoverage] edge 3/6 len=32.1166 samples=22
+[10:19:14.960] #0031 T001 [BoundaryCoverage] edge 4/6 len=41.4146 samples=28
+[10:19:14.963] #0032 T001 [BoundaryCoverage] edge 5/6 len=112.813 samples=76
+[10:19:14.972] #0033 T001 [BoundaryCoverage] exit resultN=1330
+[10:19:15.002] #0034 T001 [GridPlacement] bbox cols -1..49 rows 0..31 cellCount=1632
+[10:19:15.003] #0035 T001 [GridPlacement] candidates built count=1519
+[10:19:15.034] #0036 T001 [BoundaryCoverage] enter ringN=6 gridN=1338 spacing=3 maxDist=1.5
+[10:19:15.037] #0037 T001 [BoundaryCoverage] after boundaryCandidates resultN=1338
+[10:19:15.037] #0038 T001 [BoundaryCoverage] edge 0/6 len=83.095 samples=56
+[10:19:15.038] #0039 T001 [BoundaryCoverage] edge 1/6 len=113.36 samples=76
+[10:19:15.038] #0040 T001 [BoundaryCoverage] edge 2/6 len=47.9126 samples=32
+[10:19:15.039] #0041 T001 [BoundaryCoverage] edge 3/6 len=32.1166 samples=22
+[10:19:15.040] #0042 T001 [BoundaryCoverage] edge 4/6 len=41.4146 samples=28
+[10:19:15.043] #0043 T001 [BoundaryCoverage] edge 5/6 len=112.813 samples=76
+[10:19:15.052] #0044 T001 [BoundaryCoverage] exit resultN=1338
+[10:19:15.083] #0045 T001 [GridPlacement] bbox cols -1..49 rows -1..30 cellCount=1632
+[10:19:15.084] #0046 T001 [GridPlacement] candidates built count=1470
+[10:19:15.113] #0047 T001 [BoundaryCoverage] enter ringN=6 gridN=1320 spacing=3 maxDist=1.5
+[10:19:15.117] #0048 T001 [BoundaryCoverage] after boundaryCandidates resultN=1320
+[10:19:15.117] #0049 T001 [BoundaryCoverage] edge 0/6 len=83.095 samples=56
+[10:19:15.118] #0050 T001 [BoundaryCoverage] edge 1/6 len=113.36 samples=76
+[10:19:15.118] #0051 T001 [BoundaryCoverage] edge 2/6 len=47.9126 samples=32
+[10:19:15.119] #0052 T001 [BoundaryCoverage] edge 3/6 len=32.1166 samples=22
+[10:19:15.120] #0053 T001 [BoundaryCoverage] edge 4/6 len=41.4146 samples=28
+[10:19:15.123] #0054 T001 [BoundaryCoverage] edge 5/6 len=112.813 samples=76
+[10:19:15.132] #0055 T001 [BoundaryCoverage] exit resultN=1320
+[10:19:15.176] #0056 T001 [PlaceSprinklersWorkflow] chosen points=1338 after shaft exclusion=1300 removedByShafts=38 after room exclusion=1300 excludedRooms=0 removedByRooms=0 TryInsert start
+[10:19:15.178] #0057 T001 [SprinklerBlockService] TryInsert enter pts=1300
+[10:19:15.178] #0058 T001 [SprinklerBlockService] LockDocument+StartTransaction
+[10:19:15.180] #0059 T001 [SprinklerBlockService] AppendBlocksAtPoints start
+[10:19:15.210] #0060 T001 [SprinklerBlockService] Commit ok
+[10:19:15.210] #0061 T001 [PlaceSprinklersWorkflow] TryInsert ok
+[10:19:15.211] #0062 T001 [PlaceSprinklers] PlaceSprinklersWorkflow.TryRun ok: Internal grid sprinklers placed. Excluded 38 inside shafts, 0 inside 0 labeled room footprint(s).
+[10:19:15.243] #0063 T001 [PlaceSprinklers] command end
+[10:19:22.442] #0064 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[10:19:22.445] #0065 T001 [TryRoute] GetRingForPlanarClipping
+[10:19:22.446] #0066 T001 [TryRoute] extent=72 duPerMeter=1 spacingDu=3 offsetDu=2
+[10:19:22.447] #0067 T001 [TryRoute] sprinklersOverride count=257
+[10:19:22.449] #0068 T001 [TryRoute] strategy=sprinkler_driven initial horiz=True
+[10:19:22.449] #0069 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=True
+[10:19:22.456] #0070 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806495.0,552817.7) H=2133.1 V=4541.9 pick=H
+[10:19:22.456] #0071 T001 [TryRoute] TryPickBestTrunkSegment done
+[10:19:22.457] #0072 T001 [TryRoute] TryOrthogonalConnectInside start
+[10:19:22.458] #0073 T001 [TryRoute] TryOrthogonalConnectInside done
+[10:19:22.459] #0074 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[10:19:22.471] #0075 T001 [TryRouteMainPipeForZone] entities committed, done
+[10:20:12.079] #0076 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[10:20:12.079] #0077 T001 [TryRoute] GetRingForPlanarClipping
+[10:20:12.080] #0078 T001 [TryRoute] extent=77 duPerMeter=1 spacingDu=3 offsetDu=2
+[10:20:12.080] #0079 T001 [TryRoute] sprinklersOverride count=270
+[10:20:12.081] #0080 T001 [TryRoute] strategy=sprinkler_driven initial horiz=True
+[10:20:12.081] #0081 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=True
+[10:20:12.081] #0082 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806565.0,552817.9) H=x V=4903.0 pick=V
+[10:20:12.082] #0083 T001 [TryRoute] TryPickBestTrunkSegment done
+[10:20:12.082] #0084 T001 [TryRoute] TryOrthogonalConnectInside start
+[10:20:12.083] #0085 T001 [TryRoute] TryOrthogonalConnectInside done
+[10:20:12.083] #0086 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[10:20:12.092] #0087 T001 [TryRouteMainPipeForZone] entities committed, done
+[10:21:32.946] #0088 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[10:21:32.947] #0089 T001 [TryRoute] GetRingForPlanarClipping
+[10:21:32.947] #0090 T001 [TryRoute] extent=54 duPerMeter=1 spacingDu=3 offsetDu=2
+[10:21:32.948] #0091 T001 [TryRoute] sprinklersOverride count=261
+[10:21:32.948] #0092 T001 [TryRoute] strategy=sprinkler_driven initial horiz=False
+[10:21:32.948] #0093 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=False
+[10:21:32.949] #0094 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806481.4,552773.5) H=3473.9 V=2884.7 pick=V
+[10:21:32.949] #0095 T001 [TryRoute] TryPickBestTrunkSegment done
+[10:21:32.950] #0096 T001 [TryRoute] TryOrthogonalConnectInside start
+[10:21:32.950] #0097 T001 [TryRoute] TryOrthogonalConnectInside done
+[10:21:32.950] #0098 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[10:21:32.961] #0099 T001 [TryRouteMainPipeForZone] entities committed, done
+[10:21:46.758] #0100 T001 [PlaceSprinklers] command start log=C:\Users\admin\source\repos\autocad-final\autocad-final\bin\Debug\AgentDebug.log
+[10:21:48.481] #0101 T001 [PlaceSprinklers] boundary picked id=(2756488700656)
+[10:21:48.481] #0102 T001 [PlaceSprinklers] GetShaftBlocksInsideBoundary start
+[10:21:48.494] #0103 T001 [PlaceSprinklers] GetShaftBlocksInsideBoundary done count=4
+[10:21:48.495] #0104 T001 [PlaceSprinklers] pre-check floorM2=10802.75 impliedZoneM2=2700.69 maxServedM2=12000.00 (assume 1DU=1m)
+[10:21:48.495] #0105 T001 [PlaceSprinklers] PlaceSprinklersWorkflow.TryRun start
+[10:21:48.496] #0106 T001 [PlaceSprinklersWorkflow] TryRun enter boundaryId=(2756488700656)
+[10:21:48.496] #0107 T001 [PlaceSprinklersWorkflow] extentDu=128.5 duPerM=1 offsetDu=1.5 spacingDu=3
+[10:21:48.497] #0108 T001 [SprinklerGridInPolygonWorkflow] TryBuildInwardOffsetRing start
+[10:21:48.497] #0109 T001 [OffsetService] TryAtOffset primary=1.5
+[10:21:48.498] #0110 T001 [OffsetService] success verts=6
+[10:21:48.498] #0111 T001 [GridPlacement] bbox cols 0..42 rows 0..29 cellCount=1290
+[10:21:48.499] #0112 T001 [GridPlacement] candidates built count=1247
+[10:21:48.516] #0113 T001 [BoundaryCoverage] enter ringN=6 gridN=1159 spacing=3 maxDist=1.5
+[10:21:48.519] #0114 T001 [BoundaryCoverage] after boundaryCandidates resultN=1159
+[10:21:48.519] #0115 T001 [BoundaryCoverage] edge 0/6 len=88.529 samples=60
+[10:21:48.524] #0116 T001 [BoundaryCoverage] edge 1/6 len=37.1807 samples=25
+[10:21:48.530] #0117 T001 [BoundaryCoverage] edge 2/6 len=53.2839 samples=36
+[10:21:48.530] #0118 T001 [BoundaryCoverage] edge 3/6 len=103.043 samples=69
+[10:21:48.531] #0119 T001 [BoundaryCoverage] edge 4/6 len=85.9801 samples=58
+[10:21:48.531] #0120 T001 [BoundaryCoverage] edge 5/6 len=36.4933 samples=25
+[10:21:48.537] #0121 T001 [BoundaryCoverage] exit resultN=1159
+[10:21:48.555] #0122 T001 [GridPlacement] bbox cols 0..42 rows -1..29 cellCount=1333
+[10:21:48.555] #0123 T001 [GridPlacement] candidates built count=1247
+[10:21:48.573] #0124 T001 [BoundaryCoverage] enter ringN=6 gridN=1163 spacing=3 maxDist=1.5
+[10:21:48.576] #0125 T001 [BoundaryCoverage] after boundaryCandidates resultN=1163
+[10:21:48.576] #0126 T001 [BoundaryCoverage] edge 0/6 len=88.529 samples=60
+[10:21:48.581] #0127 T001 [BoundaryCoverage] edge 1/6 len=37.1807 samples=25
+[10:21:48.587] #0128 T001 [BoundaryCoverage] edge 2/6 len=53.2839 samples=36
+[10:21:48.588] #0129 T001 [BoundaryCoverage] edge 3/6 len=103.043 samples=69
+[10:21:48.588] #0130 T001 [BoundaryCoverage] edge 4/6 len=85.9801 samples=58
+[10:21:48.588] #0131 T001 [BoundaryCoverage] edge 5/6 len=36.4933 samples=25
+[10:21:48.591] #0132 T001 [BoundaryCoverage] exit resultN=1163
+[10:21:48.609] #0133 T001 [GridPlacement] bbox cols -1..42 rows 0..29 cellCount=1320
+[10:21:48.609] #0134 T001 [GridPlacement] candidates built count=1218
+[10:21:48.627] #0135 T001 [BoundaryCoverage] enter ringN=6 gridN=1151 spacing=3 maxDist=1.5
+[10:21:48.629] #0136 T001 [BoundaryCoverage] after boundaryCandidates resultN=1151
+[10:21:48.630] #0137 T001 [BoundaryCoverage] edge 0/6 len=88.529 samples=60
+[10:21:48.634] #0138 T001 [BoundaryCoverage] edge 1/6 len=37.1807 samples=25
+[10:21:48.636] #0139 T001 [BoundaryCoverage] edge 2/6 len=53.2839 samples=36
+[10:21:48.636] #0140 T001 [BoundaryCoverage] edge 3/6 len=103.043 samples=69
+[10:21:48.637] #0141 T001 [BoundaryCoverage] edge 4/6 len=85.9801 samples=58
+[10:21:48.637] #0142 T001 [BoundaryCoverage] edge 5/6 len=36.4933 samples=25
+[10:21:48.643] #0143 T001 [BoundaryCoverage] exit resultN=1151
+[10:21:48.661] #0144 T001 [GridPlacement] bbox cols -1..42 rows -1..29 cellCount=1364
+[10:21:48.661] #0145 T001 [GridPlacement] candidates built count=1218
+[10:21:48.680] #0146 T001 [BoundaryCoverage] enter ringN=6 gridN=1156 spacing=3 maxDist=1.5
+[10:21:48.683] #0147 T001 [BoundaryCoverage] after boundaryCandidates resultN=1156
+[10:21:48.683] #0148 T001 [BoundaryCoverage] edge 0/6 len=88.529 samples=60
+[10:21:48.688] #0149 T001 [BoundaryCoverage] edge 1/6 len=37.1807 samples=25
+[10:21:48.689] #0150 T001 [BoundaryCoverage] edge 2/6 len=53.2839 samples=36
+[10:21:48.690] #0151 T001 [BoundaryCoverage] edge 3/6 len=103.043 samples=69
+[10:21:48.690] #0152 T001 [BoundaryCoverage] edge 4/6 len=85.9801 samples=58
+[10:21:48.691] #0153 T001 [BoundaryCoverage] edge 5/6 len=36.4933 samples=25
+[10:21:48.693] #0154 T001 [BoundaryCoverage] exit resultN=1156
+[10:21:48.727] #0155 T001 [PlaceSprinklersWorkflow] chosen points=1156 after shaft exclusion=1123 removedByShafts=33 after room exclusion=1123 excludedRooms=0 removedByRooms=0 TryInsert start
+[10:21:48.728] #0156 T001 [SprinklerBlockService] TryInsert enter pts=1123
+[10:21:48.728] #0157 T001 [SprinklerBlockService] LockDocument+StartTransaction
+[10:21:48.729] #0158 T001 [SprinklerBlockService] AppendBlocksAtPoints start
+[10:21:48.751] #0159 T001 [SprinklerBlockService] Commit ok
+[10:21:48.751] #0160 T001 [PlaceSprinklersWorkflow] TryInsert ok
+[10:21:48.752] #0161 T001 [PlaceSprinklers] PlaceSprinklersWorkflow.TryRun ok: Internal grid sprinklers placed. Excluded 33 inside shafts, 0 inside 0 labeled room footprint(s).
+[10:21:48.781] #0162 T001 [PlaceSprinklers] command end
+[10:21:56.828] #0163 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[10:21:56.829] #0164 T001 [TryRoute] GetRingForPlanarClipping
+[10:21:56.830] #0165 T001 [TryRoute] extent=60 duPerMeter=1 spacingDu=3 offsetDu=2
+[10:21:56.830] #0166 T001 [TryRoute] sprinklersOverride count=291
+[10:21:56.831] #0167 T001 [TryRoute] strategy=sprinkler_driven initial horiz=True
+[10:21:56.831] #0168 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=True
+[10:21:56.832] #0169 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806500.6,552660.3) H=3254.8 V=4287.4 pick=H
+[10:21:56.832] #0170 T001 [TryRoute] TryPickBestTrunkSegment done
+[10:21:56.833] #0171 T001 [TryRoute] TryOrthogonalConnectInside start
+[10:21:56.833] #0172 T001 [TryRoute] TryOrthogonalConnectInside done
+[10:21:56.833] #0173 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[10:21:56.846] #0174 T001 [TryRouteMainPipeForZone] entities committed, done
+
+══════════════════════════════════════════════════════
+SESSION START  2026-05-18 11:02:50.670  pid=31536
+══════════════════════════════════════════════════════
+[11:02:50.672] #0001 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[11:02:50.676] #0002 T001 [TryRoute] GetRingForPlanarClipping
+[11:02:50.678] #0003 T001 [TryRoute] extent=54 duPerMeter=1 spacingDu=3 offsetDu=2
+[11:02:50.679] #0004 T001 [TryRoute] sprinklersOverride count=261
+[11:02:50.681] #0005 T001 [TryRoute] strategy=sprinkler_driven initial horiz=False
+[11:02:50.681] #0006 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=False
+[11:02:50.688] #0007 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806481.4,552773.5) H=3473.9 V=2884.7 pick=V
+[11:02:50.688] #0008 T001 [TryRoute] TryPickBestTrunkSegment done
+[11:02:50.689] #0009 T001 [TryRoute] TryOrthogonalConnectInside start
+[11:02:50.690] #0010 T001 [TryRoute] TryOrthogonalConnectInside done
+[11:02:50.691] #0011 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[11:02:50.715] #0012 T001 [TryRouteMainPipeForZone] entities committed, done
+[11:03:05.193] #0013 T001 [PlaceSprinklers] command start log=C:\Users\admin\source\repos\autocad-final\autocad-final\bin\Debug\AgentDebug.log
+[11:03:07.839] #0014 T001 [PlaceSprinklers] boundary picked id=(2411473597168)
+[11:03:07.840] #0015 T001 [PlaceSprinklers] GetShaftBlocksInsideBoundary start
+[11:03:07.859] #0016 T001 [PlaceSprinklers] GetShaftBlocksInsideBoundary done count=4
+[11:03:07.860] #0017 T001 [PlaceSprinklers] pre-check floorM2=10802.75 impliedZoneM2=2700.69 maxServedM2=12000.00 (assume 1DU=1m)
+[11:03:07.861] #0018 T001 [PlaceSprinklers] PlaceSprinklersWorkflow.TryRun start
+[11:03:07.863] #0019 T001 [PlaceSprinklersWorkflow] TryRun enter boundaryId=(2411473597168)
+[11:03:07.864] #0020 T001 [PlaceSprinklersWorkflow] extentDu=128.5 duPerM=1 offsetDu=1.5 spacingDu=3
+[11:03:07.865] #0021 T001 [SprinklerGridInPolygonWorkflow] TryBuildInwardOffsetRing start
+[11:03:07.867] #0022 T001 [OffsetService] TryAtOffset primary=1.5
+[11:03:07.870] #0023 T001 [OffsetService] success verts=6
+[11:03:07.871] #0024 T001 [GridPlacement] bbox cols 0..42 rows 0..29 cellCount=1290
+[11:03:07.872] #0025 T001 [GridPlacement] candidates built count=1247
+[11:03:07.895] #0026 T001 [BoundaryCoverage] enter ringN=6 gridN=1159 spacing=3 maxDist=1.5
+[11:03:07.899] #0027 T001 [BoundaryCoverage] after boundaryCandidates resultN=1159
+[11:03:07.899] #0028 T001 [BoundaryCoverage] edge 0/6 len=88.529 samples=60
+[11:03:07.906] #0029 T001 [BoundaryCoverage] edge 1/6 len=37.1807 samples=25
+[11:03:07.915] #0030 T001 [BoundaryCoverage] edge 2/6 len=53.2839 samples=36
+[11:03:07.916] #0031 T001 [BoundaryCoverage] edge 3/6 len=103.043 samples=69
+[11:03:07.916] #0032 T001 [BoundaryCoverage] edge 4/6 len=85.9801 samples=58
+[11:03:07.917] #0033 T001 [BoundaryCoverage] edge 5/6 len=36.4933 samples=25
+[11:03:07.924] #0034 T001 [BoundaryCoverage] exit resultN=1159
+[11:03:07.948] #0035 T001 [GridPlacement] bbox cols 0..42 rows -1..29 cellCount=1333
+[11:03:07.948] #0036 T001 [GridPlacement] candidates built count=1247
+[11:03:07.971] #0037 T001 [BoundaryCoverage] enter ringN=6 gridN=1163 spacing=3 maxDist=1.5
+[11:03:07.975] #0038 T001 [BoundaryCoverage] after boundaryCandidates resultN=1163
+[11:03:07.975] #0039 T001 [BoundaryCoverage] edge 0/6 len=88.529 samples=60
+[11:03:07.982] #0040 T001 [BoundaryCoverage] edge 1/6 len=37.1807 samples=25
+[11:03:07.990] #0041 T001 [BoundaryCoverage] edge 2/6 len=53.2839 samples=36
+[11:03:07.990] #0042 T001 [BoundaryCoverage] edge 3/6 len=103.043 samples=69
+[11:03:07.991] #0043 T001 [BoundaryCoverage] edge 4/6 len=85.9801 samples=58
+[11:03:07.991] #0044 T001 [BoundaryCoverage] edge 5/6 len=36.4933 samples=25
+[11:03:07.995] #0045 T001 [BoundaryCoverage] exit resultN=1163
+[11:03:08.019] #0046 T001 [GridPlacement] bbox cols -1..42 rows 0..29 cellCount=1320
+[11:03:08.019] #0047 T001 [GridPlacement] candidates built count=1218
+[11:03:08.042] #0048 T001 [BoundaryCoverage] enter ringN=6 gridN=1151 spacing=3 maxDist=1.5
+[11:03:08.045] #0049 T001 [BoundaryCoverage] after boundaryCandidates resultN=1151
+[11:03:08.045] #0050 T001 [BoundaryCoverage] edge 0/6 len=88.529 samples=60
+[11:03:08.052] #0051 T001 [BoundaryCoverage] edge 1/6 len=37.1807 samples=25
+[11:03:08.054] #0052 T001 [BoundaryCoverage] edge 2/6 len=53.2839 samples=36
+[11:03:08.055] #0053 T001 [BoundaryCoverage] edge 3/6 len=103.043 samples=69
+[11:03:08.055] #0054 T001 [BoundaryCoverage] edge 4/6 len=85.9801 samples=58
+[11:03:08.056] #0055 T001 [BoundaryCoverage] edge 5/6 len=36.4933 samples=25
+[11:03:08.064] #0056 T001 [BoundaryCoverage] exit resultN=1151
+[11:03:08.087] #0057 T001 [GridPlacement] bbox cols -1..42 rows -1..29 cellCount=1364
+[11:03:08.088] #0058 T001 [GridPlacement] candidates built count=1218
+[11:03:08.110] #0059 T001 [BoundaryCoverage] enter ringN=6 gridN=1156 spacing=3 maxDist=1.5
+[11:03:08.114] #0060 T001 [BoundaryCoverage] after boundaryCandidates resultN=1156
+[11:03:08.114] #0061 T001 [BoundaryCoverage] edge 0/6 len=88.529 samples=60
+[11:03:08.121] #0062 T001 [BoundaryCoverage] edge 1/6 len=37.1807 samples=25
+[11:03:08.123] #0063 T001 [BoundaryCoverage] edge 2/6 len=53.2839 samples=36
+[11:03:08.124] #0064 T001 [BoundaryCoverage] edge 3/6 len=103.043 samples=69
+[11:03:08.124] #0065 T001 [BoundaryCoverage] edge 4/6 len=85.9801 samples=58
+[11:03:08.125] #0066 T001 [BoundaryCoverage] edge 5/6 len=36.4933 samples=25
+[11:03:08.128] #0067 T001 [BoundaryCoverage] exit resultN=1156
+[11:03:08.178] #0068 T001 [PlaceSprinklersWorkflow] chosen points=1156 after shaft exclusion=1123 removedByShafts=33 after room exclusion=1123 excludedRooms=0 removedByRooms=0 TryInsert start
+[11:03:08.180] #0069 T001 [SprinklerBlockService] TryInsert enter pts=1123
+[11:03:08.180] #0070 T001 [SprinklerBlockService] LockDocument+StartTransaction
+[11:03:08.182] #0071 T001 [SprinklerBlockService] AppendBlocksAtPoints start
+[11:03:08.206] #0072 T001 [SprinklerBlockService] Commit ok
+[11:03:08.207] #0073 T001 [PlaceSprinklersWorkflow] TryInsert ok
+[11:03:08.207] #0074 T001 [PlaceSprinklers] PlaceSprinklersWorkflow.TryRun ok: Internal grid sprinklers placed. Excluded 33 inside shafts, 0 inside 0 labeled room footprint(s).
+[11:03:08.235] #0075 T001 [PlaceSprinklers] command end
+[11:03:15.759] #0076 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[11:03:15.760] #0077 T001 [TryRoute] GetRingForPlanarClipping
+[11:03:15.760] #0078 T001 [TryRoute] extent=60 duPerMeter=1 spacingDu=3 offsetDu=2
+[11:03:15.760] #0079 T001 [TryRoute] sprinklersOverride count=291
+[11:03:15.761] #0080 T001 [TryRoute] strategy=sprinkler_driven initial horiz=True
+[11:03:15.761] #0081 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=True
+[11:03:15.762] #0082 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806500.6,552660.3) H=3254.8 V=4287.4 pick=H
+[11:03:15.762] #0083 T001 [TryRoute] TryPickBestTrunkSegment done
+[11:03:15.763] #0084 T001 [TryRoute] TryOrthogonalConnectInside start
+[11:03:15.763] #0085 T001 [TryRoute] TryOrthogonalConnectInside done
+[11:03:15.763] #0086 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[11:03:15.778] #0087 T001 [TryRouteMainPipeForZone] entities committed, done

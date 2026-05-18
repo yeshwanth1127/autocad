@@ -251,27 +251,13 @@ namespace autocad_final.Commands
                     ed.WriteMessage("\nBoundary snap adjusted " + movedExisting.ToString() + " existing sprinkler heads inward.\n");
             }
 
-            if (!AttachBranchesCommand.TryAttachBranchesForZone(
-                    doc,
-                    db,
-                    zone,
-                    zoneRing,
-                    boundaryHandleHex,
-                    routeBranchPipesFromConnectorFirst: false,
-                    explicitMainPipePolylineId: trunkId,
-                    out string branchMsg))
+            if (!TryCombRouteBranchesForZone(db, zone, zoneRing, boundaryHandleHex, trunkId, out string branchMsg))
             {
-                errorMessage = branchMsg ?? "Branch attach failed.";
-                return false;
-            }
-            if (!AttachBranchesCommand.TryPlaceReducersForZone(doc, db, zone, zoneRing, boundaryHandleHex, routeBranchPipesFromConnectorFirst: false, trunkId, out string redMsg))
-            {
-                errorMessage = redMsg ?? "Place reducers failed.";
+                errorMessage = branchMsg ?? "Branch routing failed.";
                 return false;
             }
 
             ed.WriteMessage("\n" + branchMsg + "\n");
-            ed.WriteMessage("\n" + redMsg + "\n");
             try { ed.Regen(); } catch { /* ignore */ }
             return true;
         }
@@ -1402,6 +1388,558 @@ namespace autocad_final.Commands
                 if (intersect) inside = !inside;
             }
             return inside;
+        }
+
+        private class RoutingPlan
+        {
+            public string Name;
+            public List<(Point2d tapPt, List<Point2d> sprinklersInGroup)> TapGroups;
+            public int TapCount => TapGroups?.Count ?? 0;
+            public double TotalBranchLength;
+            public int ComplexityScore;
+
+            public double ComputeCost(double tapWeight = 1.0, double lengthWeight = 0.1, double complexityWeight = 0.05)
+            {
+                return tapWeight * TapCount + lengthWeight * TotalBranchLength + complexityWeight * ComplexityScore;
+            }
+        }
+
+        private static bool TryCombRouteBranchesForZone(Database db, Polyline zone, List<Point2d> zoneRing, string zoneBoundaryHex, ObjectId trunkId, out string errorMessage)
+        {
+            errorMessage = null;
+            var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.GetDocument(db);
+            if (doc == null)
+            {
+                errorMessage = "Cannot get document from database.";
+                return false;
+            }
+
+            using (var docLock = doc.LockDocument())
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                try
+                {
+                    SprinklerXData.EnsureRegApp(tr, db);
+                    var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                    var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+
+                    Polyline trunk = null;
+                    try { trunk = tr.GetObject(trunkId, OpenMode.ForRead, false) as Polyline; }
+                    catch { }
+                    if (trunk == null)
+                    {
+                        errorMessage = "Trunk polyline not found.";
+                        return false;
+                    }
+
+                    var mainPipePts = new List<Point2d>();
+                    for (int i = 0; i < trunk.NumberOfVertices; i++)
+                    {
+                        var pt3 = trunk.GetPoint3dAt(i);
+                        mainPipePts.Add(new Point2d(pt3.X, pt3.Y));
+                    }
+
+                    var sprinklers = new List<Point2d>();
+                    foreach (ObjectId id in ms)
+                    {
+                        if (id.IsErased) continue;
+                        Entity ent = null;
+                        try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
+                        catch { continue; }
+                        if (ent == null) continue;
+
+                        if (!SprinklerLayers.IsSprinklerHeadEntity(tr, ent)) continue;
+
+                        Point2d p = default;
+                        if (ent is Circle c)
+                            p = new Point2d(c.Center.X, c.Center.Y);
+                        else if (ent is BlockReference br)
+                            p = new Point2d(br.Position.X, br.Position.Y);
+                        else
+                            continue;
+
+                        if (!PointInPolygon(zoneRing, p)) continue;
+                        sprinklers.Add(p);
+                    }
+
+                    if (sprinklers.Count == 0)
+                    {
+                        errorMessage = "No sprinklers found in zone.";
+                        return false;
+                    }
+
+                    bool trunkHorizontal = DetermineTrunkOrientation(mainPipePts);
+
+                    // Generate candidate plans
+                    var candidates = new List<RoutingPlan>();
+
+                    var singleTapPlan = ComputeSingleTapPlan(mainPipePts, sprinklers, zoneRing, trunkHorizontal);
+                    if (singleTapPlan != null && !IsBoxGridPattern(singleTapPlan))
+                        candidates.Add(singleTapPlan);
+
+                    var twoEndpointPlan = ComputeTwoEndpointPlan(mainPipePts, sprinklers, zoneRing, trunkHorizontal);
+                    if (twoEndpointPlan != null && !IsBoxGridPattern(twoEndpointPlan))
+                        candidates.Add(twoEndpointPlan);
+
+                    for (int k = 1; k <= 4; k++)
+                    {
+                        var multiTapPlan = ComputeMultiTapPlan(mainPipePts, sprinklers, zoneRing, trunkHorizontal, k);
+                        if (multiTapPlan != null && !IsBoxGridPattern(multiTapPlan))
+                            candidates.Add(multiTapPlan);
+                    }
+
+                    if (IsGridPattern(sprinklers, trunkHorizontal))
+                    {
+                        var gridPlan = ComputeGridPlan(mainPipePts, sprinklers, zoneRing, trunkHorizontal);
+                        if (gridPlan != null && !IsBoxGridPattern(gridPlan))
+                            candidates.Add(gridPlan);
+                    }
+
+                    if (candidates.Count == 0)
+                    {
+                        errorMessage = "Could not generate any valid routing plans.";
+                        return false;
+                    }
+
+                    var bestPlan = candidates[0];
+                    double bestCost = bestPlan.ComputeCost();
+                    for (int i = 1; i < candidates.Count; i++)
+                    {
+                        double cost = candidates[i].ComputeCost();
+                        if (cost < bestCost)
+                        {
+                            bestCost = cost;
+                            bestPlan = candidates[i];
+                        }
+                    }
+
+                    // Execute best plan
+                    ObjectId branchLayerId = SprinklerLayers.EnsureMcdBranchPipeLayer(tr, db);
+                    double mainW = EstimatePipeWidth(db);
+                    double branchW = Math.Max(mainW * 0.66, 1.0);
+                    double elevation = zone.Elevation;
+
+                    int drawnCount = ExecuteRoutingPlan(tr, ms, branchLayerId, branchW, elevation, bestPlan, db, zoneRing, zoneBoundaryHex, mainPipePts);
+
+                    tr.Commit();
+                    errorMessage = $"Optimized routing ({bestPlan.Name}): {drawnCount} branch segments, cost={bestCost:F2}.";
+                    return drawnCount > 0;
+                }
+                catch (Exception ex)
+                {
+                    errorMessage = "Optimized routing error: " + ex.Message;
+                    return false;
+                }
+            }
+        }
+
+        private static RoutingPlan ComputeSingleTapPlan(List<Point2d> mainPipe, List<Point2d> sprinklers, List<Point2d> zoneRing, bool trunkHorizontal)
+        {
+            if (sprinklers.Count == 0) return null;
+
+            double centroidX = 0, centroidY = 0;
+            foreach (var s in sprinklers)
+            {
+                centroidX += s.X;
+                centroidY += s.Y;
+            }
+            centroidX /= sprinklers.Count;
+            centroidY /= sprinklers.Count;
+            var centroid = new Point2d(centroidX, centroidY);
+
+            Point2d tapPt = ClosestPointOnPolyline(mainPipe, centroid);
+            double totalLen = 0;
+
+            var group = new List<Point2d>();
+            foreach (var s in sprinklers)
+            {
+                group.Add(s);
+                totalLen += tapPt.GetDistanceTo(s) * 1.4;
+            }
+
+            var plan = new RoutingPlan
+            {
+                Name = "SingleTap",
+                TapGroups = new List<(Point2d, List<Point2d>)> { (tapPt, group) },
+                TotalBranchLength = totalLen,
+                ComplexityScore = sprinklers.Count
+            };
+            return plan;
+        }
+
+        private static RoutingPlan ComputeTwoEndpointPlan(List<Point2d> mainPipe, List<Point2d> sprinklers, List<Point2d> zoneRing, bool trunkHorizontal)
+        {
+            if (sprinklers.Count == 0 || mainPipe.Count < 2) return null;
+
+            Point2d tapA = mainPipe[0];
+            Point2d tapB = mainPipe[mainPipe.Count - 1];
+
+            var groupA = new List<Point2d>();
+            var groupB = new List<Point2d>();
+            double totalLen = 0;
+
+            foreach (var s in sprinklers)
+            {
+                double dA = tapA.GetDistanceTo(s);
+                double dB = tapB.GetDistanceTo(s);
+                if (dA <= dB)
+                {
+                    groupA.Add(s);
+                    totalLen += dA * 1.4;
+                }
+                else
+                {
+                    groupB.Add(s);
+                    totalLen += dB * 1.4;
+                }
+            }
+
+            var groups = new List<(Point2d, List<Point2d>)>();
+            if (groupA.Count > 0) groups.Add((tapA, groupA));
+            if (groupB.Count > 0) groups.Add((tapB, groupB));
+
+            if (groups.Count == 0) return null;
+
+            var plan = new RoutingPlan
+            {
+                Name = "TwoEndpoint",
+                TapGroups = groups,
+                TotalBranchLength = totalLen,
+                ComplexityScore = sprinklers.Count
+            };
+            return plan;
+        }
+
+        private static RoutingPlan ComputeMultiTapPlan(List<Point2d> mainPipe, List<Point2d> sprinklers, List<Point2d> zoneRing, bool trunkHorizontal, int k)
+        {
+            if (sprinklers.Count == 0 || k < 1 || mainPipe.Count < 2) return null;
+
+            var sortKey = new List<(double key, int idx)>();
+            for (int i = 0; i < sprinklers.Count; i++)
+            {
+                var s = sprinklers[i];
+                sortKey.Add((trunkHorizontal ? s.X : s.Y, i));
+            }
+            sortKey.Sort((a, b) => a.key.CompareTo(b.key));
+
+            var clusters = new List<List<int>>();
+            if (k >= sprinklers.Count)
+            {
+                for (int i = 0; i < sprinklers.Count; i++)
+                    clusters.Add(new List<int> { sortKey[i].idx });
+            }
+            else
+            {
+                int clusterSize = sprinklers.Count / k;
+                int remainder = sprinklers.Count % k;
+                int idx = 0;
+                for (int c = 0; c < k; c++)
+                {
+                    var cluster = new List<int>();
+                    int sz = clusterSize + (c < remainder ? 1 : 0);
+                    for (int i = 0; i < sz && idx < sortKey.Count; i++, idx++)
+                        cluster.Add(sortKey[idx].idx);
+                    if (cluster.Count > 0)
+                        clusters.Add(cluster);
+                }
+            }
+
+            var tapGroups = new List<(Point2d, List<Point2d>)>();
+            double totalLen = 0;
+
+            foreach (var cluster in clusters)
+            {
+                if (cluster.Count == 0) continue;
+
+                var clusterPts = new List<Point2d>();
+                double centroidX = 0, centroidY = 0;
+                foreach (int i in cluster)
+                {
+                    clusterPts.Add(sprinklers[i]);
+                    centroidX += sprinklers[i].X;
+                    centroidY += sprinklers[i].Y;
+                }
+                centroidX /= cluster.Count;
+                centroidY /= cluster.Count;
+
+                var centroid = new Point2d(centroidX, centroidY);
+                Point2d tapPt = ClosestPointOnPolyline(mainPipe, centroid);
+
+                tapGroups.Add((tapPt, clusterPts));
+                foreach (var pt in clusterPts)
+                    totalLen += tapPt.GetDistanceTo(pt) * 1.4;
+            }
+
+            if (tapGroups.Count == 0) return null;
+
+            var plan = new RoutingPlan
+            {
+                Name = $"MultiTap:k={k}",
+                TapGroups = tapGroups,
+                TotalBranchLength = totalLen,
+                ComplexityScore = sprinklers.Count
+            };
+            return plan;
+        }
+
+        private static bool IsBoxGridPattern(RoutingPlan plan)
+        {
+            if (plan == null || plan.TapGroups == null)
+                return false;
+
+            int tapCount = plan.TapGroups.Count;
+            if (tapCount >= 3)
+                return true;
+
+            if (tapCount == 2)
+            {
+                var tap1 = plan.TapGroups[0];
+                var tap2 = plan.TapGroups[1];
+                if (tap1.sprinklersInGroup.Count >= 2 && tap2.sprinklersInGroup.Count >= 2)
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static bool IsGridPattern(List<Point2d> sprinklers, bool trunkHorizontal)
+        {
+            if (sprinklers.Count < 4) return false;
+
+            var sortKey = new List<(double key, Point2d pt)>();
+            for (int i = 0; i < sprinklers.Count; i++)
+                sortKey.Add((trunkHorizontal ? sprinklers[i].X : sprinklers[i].Y, sprinklers[i]));
+            sortKey.Sort((a, b) => a.key.CompareTo(b.key));
+
+            double avgSpacing = 0;
+            for (int i = 0; i + 1 < sortKey.Count; i++)
+                avgSpacing += Math.Abs(sortKey[i + 1].key - sortKey[i].key);
+            avgSpacing /= Math.Max(sortKey.Count - 1, 1);
+
+            double tolerance = Math.Max(avgSpacing * 0.45, 1.0);
+
+            int columnCount = 0;
+            double lastKey = double.MinValue;
+            for (int i = 0; i < sortKey.Count; i++)
+            {
+                if (Math.Abs(sortKey[i].key - lastKey) > tolerance)
+                {
+                    columnCount++;
+                    lastKey = sortKey[i].key;
+                }
+            }
+
+            return columnCount >= 2 && columnCount <= 4;
+        }
+
+        private static RoutingPlan ComputeGridPlan(List<Point2d> mainPipe, List<Point2d> sprinklers, List<Point2d> zoneRing, bool trunkHorizontal)
+        {
+            if (sprinklers.Count == 0) return null;
+
+            var sortKey = new List<(double key, Point2d pt)>();
+            for (int i = 0; i < sprinklers.Count; i++)
+                sortKey.Add((trunkHorizontal ? sprinklers[i].X : sprinklers[i].Y, sprinklers[i]));
+            sortKey.Sort((a, b) => a.key.CompareTo(b.key));
+
+            double avgSpacing = 0;
+            for (int i = 0; i + 1 < sortKey.Count; i++)
+                avgSpacing += Math.Abs(sortKey[i + 1].key - sortKey[i].key);
+            avgSpacing /= Math.Max(sortKey.Count - 1, 1);
+            double tolerance = Math.Max(avgSpacing * 0.45, 1.0);
+
+            var columns = new List<List<Point2d>>();
+            var currentCol = new List<Point2d> { sortKey[0].pt };
+            for (int i = 1; i < sortKey.Count; i++)
+            {
+                if (Math.Abs(sortKey[i].key - sortKey[i - 1].key) <= tolerance)
+                    currentCol.Add(sortKey[i].pt);
+                else
+                {
+                    columns.Add(currentCol);
+                    currentCol = new List<Point2d> { sortKey[i].pt };
+                }
+            }
+            if (currentCol.Count > 0)
+                columns.Add(currentCol);
+
+            var tapGroups = new List<(Point2d, List<Point2d>)>();
+            double totalLen = 0;
+
+            foreach (var col in columns)
+            {
+                if (col.Count == 0) continue;
+                var sortedCol = new List<Point2d>(col);
+                sortedCol.Sort((a, b) => DistanceToPolyline(mainPipe, a).CompareTo(DistanceToPolyline(mainPipe, b)));
+                Point2d tapPt = ClosestPointOnPolyline(mainPipe, sortedCol[0]);
+                tapGroups.Add((tapPt, sortedCol));
+                foreach (var s in sortedCol)
+                    totalLen += tapPt.GetDistanceTo(s) * 1.4;
+            }
+
+            if (tapGroups.Count == 0) return null;
+
+            var plan = new RoutingPlan
+            {
+                Name = $"Grid:cols={columns.Count}",
+                TapGroups = tapGroups,
+                TotalBranchLength = totalLen,
+                ComplexityScore = sprinklers.Count
+            };
+            return plan;
+        }
+
+        private static int ExecuteRoutingPlan(Transaction tr, BlockTableRecord ms, ObjectId branchLayerId, double branchW, double elevation, RoutingPlan plan, Database db, List<Point2d> zoneRing, string zoneBoundaryHex, List<Point2d> mainPipe)
+        {
+            int drawnCount = 0;
+            bool trunkHorizontal = DetermineTrunkOrientation(mainPipe);
+
+            foreach (var (tapPt, group) in plan.TapGroups)
+            {
+                if (group.Count == 0) continue;
+
+                foreach (var sprinkler in group)
+                {
+                    if (!BuildOrthogonalPath(tapPt, sprinkler, zoneRing, !trunkHorizontal, out List<Point2d> path))
+                        continue;
+
+                    var branch = CreateBranchPolyline(db, path, elevation, branchLayerId, branchW);
+                    if (branch != null)
+                    {
+                        SprinklerXData.ApplyZoneBoundaryTag(branch, zoneBoundaryHex?.Trim() ?? "");
+                        ms.AppendEntity(branch);
+                        tr.AddNewlyCreatedDBObject(branch, true);
+                        drawnCount++;
+                    }
+                }
+            }
+
+            return drawnCount;
+        }
+
+        private static bool DetermineTrunkOrientation(List<Point2d> pts)
+        {
+            if (pts == null || pts.Count < 2) return true;
+            double minX = double.MaxValue, minY = double.MaxValue, maxX = double.MinValue, maxY = double.MinValue;
+            for (int i = 0; i < pts.Count; i++)
+            {
+                var p = pts[i];
+                if (p.X < minX) minX = p.X;
+                if (p.X > maxX) maxX = p.X;
+                if (p.Y < minY) minY = p.Y;
+                if (p.Y > maxY) maxY = p.Y;
+            }
+            return (maxY - minY) >= (maxX - minX);
+        }
+
+        private static Point2d ClosestPointOnPolyline(List<Point2d> pts, Point2d p)
+        {
+            double minDist = double.MaxValue;
+            Point2d best = p;
+            for (int i = 0; i + 1 < pts.Count; i++)
+            {
+                var closest = ClosestPointOnSegment(pts[i], pts[i + 1], p);
+                double d = closest.GetDistanceTo(p);
+                if (d < minDist)
+                {
+                    minDist = d;
+                    best = closest;
+                }
+            }
+            return best;
+        }
+
+        private static double DistanceToPolyline(List<Point2d> pts, Point2d p)
+        {
+            double minDist = double.MaxValue;
+            for (int i = 0; i + 1 < pts.Count; i++)
+            {
+                var closest = ClosestPointOnSegment(pts[i], pts[i + 1], p);
+                double d = closest.GetDistanceTo(p);
+                if (d < minDist)
+                    minDist = d;
+            }
+            return minDist;
+        }
+
+        private static Point2d ClosestPointOnSegment(Point2d a, Point2d b, Point2d p)
+        {
+            double dx = b.X - a.X;
+            double dy = b.Y - a.Y;
+            double lenSq = dx * dx + dy * dy;
+            if (lenSq < 1e-12) return a;
+            double t = Math.Max(0, Math.Min(1, ((p.X - a.X) * dx + (p.Y - a.Y) * dy) / lenSq));
+            return new Point2d(a.X + t * dx, a.Y + t * dy);
+        }
+
+        private static bool BuildOrthogonalPath(Point2d from, Point2d to, List<Point2d> ring, bool verticalFirst, out List<Point2d> path)
+        {
+            path = null;
+            if (from.GetDistanceTo(to) < 1e-7)
+            {
+                path = new List<Point2d> { from, to };
+                return true;
+            }
+
+            var c1 = verticalFirst ? new Point2d(from.X, to.Y) : new Point2d(to.X, from.Y);
+            if (SegmentInsideRing(ring, from, c1) && SegmentInsideRing(ring, c1, to))
+            {
+                path = CollapseCollinear(new List<Point2d> { from, c1, to });
+                return path.Count >= 2;
+            }
+
+            var c2 = verticalFirst ? new Point2d(to.X, from.Y) : new Point2d(from.X, to.Y);
+            if (SegmentInsideRing(ring, from, c2) && SegmentInsideRing(ring, c2, to))
+            {
+                path = CollapseCollinear(new List<Point2d> { from, c2, to });
+                return path.Count >= 2;
+            }
+
+            path = new List<Point2d> { from, to };
+            return true;
+        }
+
+        private static bool SegmentInsideRing(List<Point2d> ring, Point2d p0, Point2d p1)
+        {
+            const int samples = 14;
+            for (int i = 0; i <= samples; i++)
+            {
+                double t = i / (double)samples;
+                var p = new Point2d(p0.X + (p1.X - p0.X) * t, p0.Y + (p1.Y - p0.Y) * t);
+                if (!PointInPolygon(ring, p))
+                    return false;
+            }
+            return true;
+        }
+
+        private static List<Point2d> CollapseCollinear(List<Point2d> verts)
+        {
+            if (verts == null || verts.Count < 2)
+                return verts ?? new List<Point2d>();
+            var result = new List<Point2d> { verts[0] };
+            for (int i = 1; i < verts.Count; i++)
+                if (result[result.Count - 1].GetDistanceTo(verts[i]) > 1e-9)
+                    result.Add(verts[i]);
+            return result;
+        }
+
+        private static Polyline CreateBranchPolyline(Database db, List<Point2d> verts, double elevation, ObjectId layerId, double width)
+        {
+            if (verts == null || verts.Count < 2)
+                return null;
+            var pl = new Polyline();
+            pl.SetDatabaseDefaults(db);
+            pl.LayerId = layerId;
+            pl.ConstantWidth = width;
+            pl.Elevation = elevation;
+            pl.Closed = false;
+            for (int i = 0; i < verts.Count; i++)
+                pl.AddVertexAt(i, verts[i], 0, 0, 0);
+            return pl;
+        }
+
+        private static double EstimatePipeWidth(Database db)
+        {
+            return NfpaBranchPipeSizing.GetMainTrunkPolylineDisplayWidthDu(db);
         }
     }
 }

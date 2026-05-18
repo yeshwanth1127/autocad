@@ -231,29 +231,48 @@ namespace autocad_final.Commands
 
             int successCount = 0;
 
-            foreach (var sprinkler in sprinklers)
+            if (sprinklers.Count == 0)
+                return true;
+
+            // Find closest sprinkler to main pipe (first attachment point)
+            double minDistToMain = double.MaxValue;
+            int firstSprinklerIdx = 0;
+            for (int si = 0; si < sprinklers.Count; si++)
             {
-                // Find closest point on main pipe to this sprinkler
-                double minDist = double.MaxValue;
-                Point2d attachPt = sprinkler;
-                for (int i = 0; i + 1 < mainPipePts.Count; i++)
+                var spr = sprinklers[si];
+                for (int pi = 0; pi + 1 < mainPipePts.Count; pi++)
                 {
-                    var a = mainPipePts[i];
-                    var b = mainPipePts[i + 1];
-                    var closest = ClosestPointOnSegment(a, b, sprinkler);
-                    double d = closest.GetDistanceTo(sprinkler);
-                    if (d < minDist)
+                    var a = mainPipePts[pi];
+                    var b = mainPipePts[pi + 1];
+                    var closest = ClosestPointOnSegment(a, b, spr);
+                    double d = closest.GetDistanceTo(spr);
+                    if (d < minDistToMain)
                     {
-                        minDist = d;
-                        attachPt = closest;
+                        minDistToMain = d;
+                        firstSprinklerIdx = si;
                     }
                 }
+            }
 
-                // Build orthogonal L-path from attachment to sprinkler
-                if (!BuildOrthogonalPath(attachPt, sprinkler, zoneRing, verticalFirst, out List<Point2d> pathVerts))
-                    continue;
+            // Connect first sprinkler to main pipe
+            var firstSpr = sprinklers[firstSprinklerIdx];
+            double minDist = double.MaxValue;
+            Point2d attachPt = firstSpr;
+            for (int i = 0; i + 1 < mainPipePts.Count; i++)
+            {
+                var a = mainPipePts[i];
+                var b = mainPipePts[i + 1];
+                var closest = ClosestPointOnSegment(a, b, firstSpr);
+                double d = closest.GetDistanceTo(firstSpr);
+                if (d < minDist)
+                {
+                    minDist = d;
+                    attachPt = closest;
+                }
+            }
 
-                // Draw the branch polyline
+            if (BuildOrthogonalPath(attachPt, firstSpr, zoneRing, verticalFirst, out List<Point2d> pathVerts))
+            {
                 var branch = CreateBranchPolyline(db, pathVerts, elevation, branchLayerId, branchW);
                 if (branch != null)
                 {
@@ -262,6 +281,31 @@ namespace autocad_final.Commands
                     tr.AddNewlyCreatedDBObject(branch, true);
                     successCount++;
                 }
+            }
+
+            // Connect remaining sprinklers to each other in sequence
+            Point2d prevSprinkler = firstSpr;
+            for (int si = 0; si < sprinklers.Count; si++)
+            {
+                if (si == firstSprinklerIdx) continue; // Skip first sprinkler, already connected
+
+                var currentSpr = sprinklers[si];
+
+                // Build orthogonal L-path from previous sprinkler to current sprinkler
+                if (!BuildOrthogonalPath(prevSprinkler, currentSpr, zoneRing, verticalFirst, out List<Point2d> pathVts))
+                    continue;
+
+                // Draw the branch polyline
+                var branch = CreateBranchPolyline(db, pathVts, elevation, branchLayerId, branchW);
+                if (branch != null)
+                {
+                    SprinklerXData.ApplyZoneBoundaryTag(branch, zoneBoundaryHex?.Trim() ?? "");
+                    ms.AppendEntity(branch);
+                    tr.AddNewlyCreatedDBObject(branch, true);
+                    successCount++;
+                }
+
+                prevSprinkler = currentSpr;
             }
 
             return successCount == sprinklers.Count;
