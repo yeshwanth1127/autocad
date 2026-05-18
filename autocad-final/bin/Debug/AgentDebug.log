@@ -168960,3 +168960,383 @@ SESSION START  2026-05-18 11:02:50.670  pid=31536
 [11:03:15.763] #0085 T001 [TryRoute] TryOrthogonalConnectInside done
 [11:03:15.763] #0086 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
 [11:03:15.778] #0087 T001 [TryRouteMainPipeForZone] entities committed, done
+
+══════════════════════════════════════════════════════
+SESSION START  2026-05-18 13:16:15.898  pid=10752
+══════════════════════════════════════════════════════
+[13:16:15.899] #0001 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[13:16:15.903] #0002 T001 [TryRoute] GetRingForPlanarClipping
+[13:16:15.905] #0003 T001 [TryRoute] extent=97 duPerMeter=1 spacingDu=3 offsetDu=2
+[13:16:15.906] #0004 T001 [TryRoute] sprinklersOverride count=1300
+[13:16:15.908] #0005 T001 [TryRoute] strategy=sprinkler_driven initial horiz=True
+[13:16:15.909] #0006 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=True
+[13:16:15.915] #0007 T001 [TryRoute] Orthogonal covering trunk unavailable — fallback to best-effort sprinkler-driven trunk.
+[13:16:15.917] #0008 T001 [TryPickBestTrunkSegment] scanlines=31 sprinklers=1300
+[13:16:15.919] #0009 T001 [TryPickBestTrunkSegment] scanlines=49 sprinklers=1300
+[13:16:15.921] #0010 T001 [TryPickSprinklerDrivenTrunk] H=40938.6 V=69454.2 pick=H
+[13:16:15.921] #0011 T001 [TryRoute] Trunk span does not cover all sprinklers — routing anyway.
+[13:16:15.922] #0012 T001 [TryRoute] TryPickBestTrunkSegment done
+[13:16:15.923] #0013 T001 [TryRoute] TryOrthogonalConnectInside start
+[13:16:15.924] #0014 T001 [TryRoute] TryOrthogonalConnectInside done
+[13:16:15.925] #0015 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[13:16:15.944] #0016 T001 [TryRouteMainPipeForZone] entities committed, done
+[13:18:53.480] #0017 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[13:18:53.481] #0018 T001 [TryRoute] GetRingForPlanarClipping
+[13:18:53.482] #0019 T001 [TryRoute] extent=68 duPerMeter=1 spacingDu=3 offsetDu=2
+[13:18:53.482] #0020 T001 [TryRoute] sprinklersOverride count=1123
+[13:18:53.483] #0021 T001 [TryRoute] strategy=sprinkler_driven initial horiz=True
+[13:18:53.484] #0022 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=True
+[13:18:53.484] #0023 T001 [TryRoute] Orthogonal covering trunk unavailable — fallback to best-effort sprinkler-driven trunk.
+[13:18:53.485] #0024 T001 [TryPickBestTrunkSegment] scanlines=29 sprinklers=1123
+[13:18:53.486] #0025 T001 [TryPickBestTrunkSegment] scanlines=42 sprinklers=1123
+[13:18:53.487] #0026 T001 [TryPickSprinklerDrivenTrunk] H=39295.2 V=43860.3 pick=H
+[13:18:53.488] #0027 T001 [TryRoute] Trunk span does not cover all sprinklers — routing anyway.
+[13:18:53.488] #0028 T001 [TryRoute] TryPickBestTrunkSegment done
+[13:18:53.488] #0029 T001 [TryRoute] TryOrthogonalConnectInside start
+[13:18:53.489] #0030 T001 [TryRoute] TryOrthogonalConnectInside done
+[13:18:53.489] #0031 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[13:18:53.503] #0032 T001 [TryRouteMainPipeForZone] entities committed, done
+[13:19:12.083] #0033 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[13:19:12.084] #0034 T001 [TryRoute] GetRingForPlanarClipping
+[13:19:12.084] #0035 T001 [TryRoute] extent=88 duPerMeter=1 spacingDu=3 offsetDu=2
+[13:19:12.085] #0036 T001 [TryRoute] sprinklersOverride count=216
+[13:19:12.085] #0037 T001 [TryRoute] strategy=sprinkler_driven initial horiz=False
+[13:19:12.086] #0038 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=False
+[13:19:12.086] #0039 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806629.9,552682.4) H=x V=1304.5 pick=V
+[13:19:12.086] #0040 T001 [TryRoute] TryPickBestTrunkSegment done
+[13:19:12.087] #0041 T001 [TryRoute] TryOrthogonalConnectInside start
+[13:19:12.087] #0042 T001 [TryRoute] TryOrthogonalConnectInside done
+[13:19:12.088] #0043 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[13:19:12.102] #0044 T001 [TryRouteMainPipeForZone] entities committed, done
+
+══════════════════════════════════════════════════════
+SESSION START  2026-05-18 16:28:25.831  pid=29904
+══════════════════════════════════════════════════════
+[16:28:25.833] #0001 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[16:28:25.837] #0002 T001 [TryRoute] GetRingForPlanarClipping
+[16:28:25.838] #0003 T001 [TryRoute] extent=103 duPerMeter=1 spacingDu=3 offsetDu=2
+[16:28:25.839] #0004 T001 [TryRoute] sprinklersOverride count=260
+[16:28:25.841] #0005 T001 [TryRoute] strategy=sprinkler_driven initial horiz=True
+[16:28:25.842] #0006 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=True
+[16:28:25.848] #0007 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806555.8,552788.4) H=1592.0 V=6377.8 pick=H
+[16:28:25.849] #0008 T001 [TryRoute] TryPickBestTrunkSegment done
+[16:28:25.850] #0009 T001 [TryRoute] TryOrthogonalConnectInside start
+[16:28:25.851] #0010 T001 [TryRoute] TryOrthogonalConnectInside done
+[16:28:25.852] #0011 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[16:28:25.897] #0012 T001 [TryRouteMainPipeForZone] entities committed, done
+[16:31:06.616] #0013 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[16:31:06.617] #0014 T001 [TryRoute] GetRingForPlanarClipping
+[16:31:06.617] #0015 T001 [TryRoute] extent=68 duPerMeter=1 spacingDu=3 offsetDu=2
+[16:31:06.618] #0016 T001 [TryRoute] sprinklersOverride count=1123
+[16:31:06.619] #0017 T001 [TryRoute] strategy=sprinkler_driven initial horiz=True
+[16:31:06.619] #0018 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=True
+[16:31:06.619] #0019 T001 [TryRoute] Orthogonal covering trunk unavailable — fallback to best-effort sprinkler-driven trunk.
+[16:31:06.621] #0020 T001 [TryPickBestTrunkSegment] scanlines=29 sprinklers=1123
+[16:31:06.623] #0021 T001 [TryPickBestTrunkSegment] scanlines=42 sprinklers=1123
+[16:31:06.624] #0022 T001 [TryPickSprinklerDrivenTrunk] H=39295.2 V=43860.3 pick=H
+[16:31:06.625] #0023 T001 [TryRoute] Trunk span does not cover all sprinklers — routing anyway.
+[16:31:06.625] #0024 T001 [TryRoute] TryPickBestTrunkSegment done
+[16:31:06.625] #0025 T001 [TryRoute] TryOrthogonalConnectInside start
+[16:31:06.626] #0026 T001 [TryRoute] TryOrthogonalConnectInside done
+[16:31:06.626] #0027 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[16:31:06.640] #0028 T001 [TryRouteMainPipeForZone] entities committed, done
+
+══════════════════════════════════════════════════════
+SESSION START  2026-05-18 16:37:12.875  pid=14768
+══════════════════════════════════════════════════════
+[16:37:12.877] #0001 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[16:37:12.881] #0002 T001 [TryRoute] GetRingForPlanarClipping
+[16:37:12.882] #0003 T001 [TryRoute] extent=103 duPerMeter=1 spacingDu=3 offsetDu=2
+[16:37:12.883] #0004 T001 [TryRoute] sprinklersOverride count=260
+[16:37:12.886] #0005 T001 [TryRoute] strategy=sprinkler_driven initial horiz=True
+[16:37:12.886] #0006 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=True
+[16:37:12.892] #0007 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806555.8,552788.4) H=1592.0 V=6377.8 pick=H
+[16:37:12.893] #0008 T001 [TryRoute] TryPickBestTrunkSegment done
+[16:37:12.894] #0009 T001 [TryRoute] TryOrthogonalConnectInside start
+[16:37:12.895] #0010 T001 [TryRoute] TryOrthogonalConnectInside done
+[16:37:12.896] #0011 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[16:37:12.923] #0012 T001 [TryRouteMainPipeForZone] entities committed, done
+
+══════════════════════════════════════════════════════
+SESSION START  2026-05-18 16:48:20.262  pid=30292
+══════════════════════════════════════════════════════
+[16:48:20.263] #0001 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[16:48:20.268] #0002 T001 [TryRoute] GetRingForPlanarClipping
+[16:48:20.269] #0003 T001 [TryRoute] extent=103 duPerMeter=1 spacingDu=3 offsetDu=2
+[16:48:20.270] #0004 T001 [TryRoute] sprinklersOverride count=260
+[16:48:20.273] #0005 T001 [TryRoute] strategy=sprinkler_driven initial horiz=True
+[16:48:20.273] #0006 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=True
+[16:48:20.279] #0007 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806555.8,552788.4) H=1592.0 V=6377.8 pick=H
+[16:48:20.280] #0008 T001 [TryRoute] TryPickBestTrunkSegment done
+[16:48:20.281] #0009 T001 [TryRoute] TryOrthogonalConnectInside start
+[16:48:20.282] #0010 T001 [TryRoute] TryOrthogonalConnectInside done
+[16:48:20.283] #0011 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[16:48:20.310] #0012 T001 [TryRouteMainPipeForZone] entities committed, done
+
+══════════════════════════════════════════════════════
+SESSION START  2026-05-18 16:59:44.266  pid=21204
+══════════════════════════════════════════════════════
+[16:59:44.268] #0001 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[16:59:44.272] #0002 T001 [TryRoute] GetRingForPlanarClipping
+[16:59:44.273] #0003 T001 [TryRoute] extent=103 duPerMeter=1 spacingDu=3 offsetDu=2
+[16:59:44.274] #0004 T001 [TryRoute] sprinklersOverride count=260
+[16:59:44.277] #0005 T001 [TryRoute] strategy=sprinkler_driven initial horiz=True
+[16:59:44.277] #0006 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=True
+[16:59:44.284] #0007 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806555.8,552788.4) H=1592.0 V=6377.8 pick=H
+[16:59:44.284] #0008 T001 [TryRoute] TryPickBestTrunkSegment done
+[16:59:44.285] #0009 T001 [TryRoute] TryOrthogonalConnectInside start
+[16:59:44.286] #0010 T001 [TryRoute] TryOrthogonalConnectInside done
+[16:59:44.288] #0011 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[16:59:44.315] #0012 T001 [TryRouteMainPipeForZone] entities committed, done
+
+══════════════════════════════════════════════════════
+SESSION START  2026-05-18 17:08:23.314  pid=29300
+══════════════════════════════════════════════════════
+[17:08:23.315] #0001 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[17:08:23.319] #0002 T001 [TryRoute] GetRingForPlanarClipping
+[17:08:23.320] #0003 T001 [TryRoute] extent=103 duPerMeter=1 spacingDu=3 offsetDu=2
+[17:08:23.321] #0004 T001 [TryRoute] sprinklersOverride count=260
+[17:08:23.324] #0005 T001 [TryRoute] strategy=sprinkler_driven initial horiz=True
+[17:08:23.324] #0006 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=True
+[17:08:23.330] #0007 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806555.8,552788.4) H=1592.0 V=6377.8 pick=H
+[17:08:23.331] #0008 T001 [TryRoute] TryPickBestTrunkSegment done
+[17:08:23.332] #0009 T001 [TryRoute] TryOrthogonalConnectInside start
+[17:08:23.333] #0010 T001 [TryRoute] TryOrthogonalConnectInside done
+[17:08:23.334] #0011 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[17:08:23.364] #0012 T001 [TryRouteMainPipeForZone] entities committed, done
+[17:09:14.963] #0013 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[17:09:14.964] #0014 T001 [TryRoute] GetRingForPlanarClipping
+[17:09:14.965] #0015 T001 [TryRoute] extent=62 duPerMeter=1 spacingDu=3 offsetDu=2
+[17:09:14.965] #0016 T001 [TryRoute] sprinklersOverride count=201
+[17:09:14.965] #0017 T001 [TryRoute] strategy=sprinkler_driven initial horiz=False
+[17:09:14.966] #0018 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=False
+[17:09:14.966] #0019 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806758.5,552671.2) H=3086.2 V=1563.1 pick=V
+[17:09:14.967] #0020 T001 [TryRoute] TryPickBestTrunkSegment done
+[17:09:14.967] #0021 T001 [TryRoute] TryOrthogonalConnectInside start
+[17:09:14.967] #0022 T001 [TryRoute] TryOrthogonalConnectInside done
+[17:09:14.968] #0023 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[17:09:14.982] #0024 T001 [TryRouteMainPipeForZone] entities committed, done
+
+══════════════════════════════════════════════════════
+SESSION START  2026-05-18 17:14:47.362  pid=21768
+══════════════════════════════════════════════════════
+[17:14:47.363] #0001 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[17:14:47.367] #0002 T001 [TryRoute] GetRingForPlanarClipping
+[17:14:47.368] #0003 T001 [TryRoute] extent=68 duPerMeter=1 spacingDu=3 offsetDu=2
+[17:14:47.369] #0004 T001 [TryRoute] sprinklersOverride count=313
+[17:14:47.372] #0005 T001 [TryRoute] strategy=sprinkler_driven initial horiz=True
+[17:14:47.372] #0006 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=True
+[17:14:47.378] #0007 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806564.7,552706.4) H=3274.6 V=5306.6 pick=H
+[17:14:47.379] #0008 T001 [TryRoute] TryPickBestTrunkSegment done
+[17:14:47.380] #0009 T001 [TryRoute] TryOrthogonalConnectInside start
+[17:14:47.381] #0010 T001 [TryRoute] TryOrthogonalConnectInside done
+[17:14:47.382] #0011 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[17:14:47.399] #0012 T001 [TryRouteMainPipeForZone] entities committed, done
+
+══════════════════════════════════════════════════════
+SESSION START  2026-05-18 17:20:35.490  pid=26724
+══════════════════════════════════════════════════════
+[17:20:35.491] #0001 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[17:20:35.495] #0002 T001 [TryRoute] GetRingForPlanarClipping
+[17:20:35.497] #0003 T001 [TryRoute] extent=68 duPerMeter=1 spacingDu=3 offsetDu=2
+[17:20:35.498] #0004 T001 [TryRoute] sprinklersOverride count=313
+[17:20:35.500] #0005 T001 [TryRoute] strategy=sprinkler_driven initial horiz=True
+[17:20:35.501] #0006 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=True
+[17:20:35.508] #0007 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806564.7,552706.4) H=3274.6 V=5306.6 pick=H
+[17:20:35.508] #0008 T001 [TryRoute] TryPickBestTrunkSegment done
+[17:20:35.509] #0009 T001 [TryRoute] TryOrthogonalConnectInside start
+[17:20:35.510] #0010 T001 [TryRoute] TryOrthogonalConnectInside done
+[17:20:35.512] #0011 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[17:20:35.530] #0012 T001 [TryRouteMainPipeForZone] entities committed, done
+
+══════════════════════════════════════════════════════
+SESSION START  2026-05-18 18:17:17.696  pid=14644
+══════════════════════════════════════════════════════
+[18:17:17.697] #0001 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[18:17:17.702] #0002 T001 [TryRoute] GetRingForPlanarClipping
+[18:17:17.703] #0003 T001 [TryRoute] extent=72 duPerMeter=1 spacingDu=3 offsetDu=2
+[18:17:17.704] #0004 T001 [TryRoute] sprinklersOverride count=257
+[18:17:17.707] #0005 T001 [TryRoute] strategy=sprinkler_driven initial horiz=True
+[18:17:17.707] #0006 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=True
+[18:17:17.713] #0007 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806495.0,552817.7) H=2133.1 V=4541.9 pick=H
+[18:17:17.714] #0008 T001 [TryRoute] TryPickBestTrunkSegment done
+[18:17:17.715] #0009 T001 [TryRoute] TryOrthogonalConnectInside start
+[18:17:17.716] #0010 T001 [TryRoute] TryOrthogonalConnectInside done
+[18:17:17.717] #0011 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[18:17:17.739] #0012 T001 [TryRouteMainPipeForZone] entities committed, done
+[18:17:19.977] #0013 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[18:17:19.977] #0014 T001 [TryRoute] GetRingForPlanarClipping
+[18:17:19.978] #0015 T001 [TryRoute] extent=77 duPerMeter=1 spacingDu=3 offsetDu=2
+[18:17:19.978] #0016 T001 [TryRoute] sprinklersOverride count=270
+[18:17:19.979] #0017 T001 [TryRoute] strategy=sprinkler_driven initial horiz=True
+[18:17:19.979] #0018 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=True
+[18:17:19.980] #0019 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806565.0,552817.9) H=x V=4903.0 pick=V
+[18:17:19.980] #0020 T001 [TryRoute] TryPickBestTrunkSegment done
+[18:17:19.980] #0021 T001 [TryRoute] TryOrthogonalConnectInside start
+[18:17:19.981] #0022 T001 [TryRoute] TryOrthogonalConnectInside done
+[18:17:19.981] #0023 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[18:17:19.991] #0024 T001 [TryRouteMainPipeForZone] entities committed, done
+[18:17:23.000] #0025 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[18:17:23.001] #0026 T001 [TryRoute] GetRingForPlanarClipping
+[18:17:23.001] #0027 T001 [TryRoute] extent=54 duPerMeter=1 spacingDu=3 offsetDu=2
+[18:17:23.002] #0028 T001 [TryRoute] sprinklersOverride count=261
+[18:17:23.002] #0029 T001 [TryRoute] strategy=sprinkler_driven initial horiz=False
+[18:17:23.003] #0030 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=False
+[18:17:23.003] #0031 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806481.4,552773.5) H=3473.9 V=2884.7 pick=V
+[18:17:23.004] #0032 T001 [TryRoute] TryPickBestTrunkSegment done
+[18:17:23.004] #0033 T001 [TryRoute] TryOrthogonalConnectInside start
+[18:17:23.005] #0034 T001 [TryRoute] TryOrthogonalConnectInside done
+[18:17:23.005] #0035 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[18:17:23.015] #0036 T001 [TryRouteMainPipeForZone] entities committed, done
+[18:17:26.724] #0037 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[18:17:26.724] #0038 T001 [TryRoute] GetRingForPlanarClipping
+[18:17:26.725] #0039 T001 [TryRoute] extent=103 duPerMeter=1 spacingDu=3 offsetDu=2
+[18:17:26.725] #0040 T001 [TryRoute] sprinklersOverride count=260
+[18:17:26.726] #0041 T001 [TryRoute] strategy=sprinkler_driven initial horiz=True
+[18:17:26.726] #0042 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=True
+[18:17:26.727] #0043 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806555.8,552788.4) H=1592.0 V=6377.8 pick=H
+[18:17:26.727] #0044 T001 [TryRoute] TryPickBestTrunkSegment done
+[18:17:26.727] #0045 T001 [TryRoute] TryOrthogonalConnectInside start
+[18:17:26.728] #0046 T001 [TryRoute] TryOrthogonalConnectInside done
+[18:17:26.728] #0047 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[18:17:26.737] #0048 T001 [TryRouteMainPipeForZone] entities committed, done
+[18:17:29.712] #0049 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[18:17:29.713] #0050 T001 [TryRoute] GetRingForPlanarClipping
+[18:17:29.713] #0051 T001 [TryRoute] extent=97 duPerMeter=1 spacingDu=3 offsetDu=2
+[18:17:29.714] #0052 T001 [TryRoute] sprinklersOverride count=1300
+[18:17:29.714] #0053 T001 [TryRoute] strategy=sprinkler_driven initial horiz=True
+[18:17:29.715] #0054 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=True
+[18:17:29.715] #0055 T001 [TryRoute] Orthogonal covering trunk unavailable — fallback to best-effort sprinkler-driven trunk.
+[18:17:29.717] #0056 T001 [TryPickBestTrunkSegment] scanlines=31 sprinklers=1300
+[18:17:29.718] #0057 T001 [TryPickBestTrunkSegment] scanlines=49 sprinklers=1300
+[18:17:29.720] #0058 T001 [TryPickSprinklerDrivenTrunk] H=40938.6 V=69454.2 pick=H
+[18:17:29.720] #0059 T001 [TryRoute] Trunk span does not cover all sprinklers — routing anyway.
+[18:17:29.721] #0060 T001 [TryRoute] TryPickBestTrunkSegment done
+[18:17:29.721] #0061 T001 [TryRoute] TryOrthogonalConnectInside start
+[18:17:29.722] #0062 T001 [TryRoute] TryOrthogonalConnectInside done
+[18:17:29.722] #0063 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[18:17:29.731] #0064 T001 [TryRouteMainPipeForZone] entities committed, done
+[18:17:32.901] #0065 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[18:17:32.902] #0066 T001 [TryRoute] GetRingForPlanarClipping
+[18:17:32.902] #0067 T001 [TryRoute] extent=60 duPerMeter=1 spacingDu=3 offsetDu=2
+[18:17:32.902] #0068 T001 [TryRoute] sprinklersOverride count=294
+[18:17:32.903] #0069 T001 [TryRoute] strategy=sprinkler_driven initial horiz=True
+[18:17:32.903] #0070 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=True
+[18:17:32.904] #0071 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806500.6,552704.6) H=3273.1 V=4351.1 pick=H
+[18:17:32.904] #0072 T001 [TryRoute] TryPickBestTrunkSegment done
+[18:17:32.904] #0073 T001 [TryRoute] TryOrthogonalConnectInside start
+[18:17:32.905] #0074 T001 [TryRoute] TryOrthogonalConnectInside done
+[18:17:32.905] #0075 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[18:17:32.915] #0076 T001 [TryRouteMainPipeForZone] entities committed, done
+[18:17:35.571] #0077 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[18:17:35.572] #0078 T001 [TryRoute] GetRingForPlanarClipping
+[18:17:35.572] #0079 T001 [TryRoute] extent=68 duPerMeter=1 spacingDu=3 offsetDu=2
+[18:17:35.572] #0080 T001 [TryRoute] sprinklersOverride count=313
+[18:17:35.573] #0081 T001 [TryRoute] strategy=sprinkler_driven initial horiz=True
+[18:17:35.573] #0082 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=True
+[18:17:35.574] #0083 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806564.7,552706.4) H=3274.6 V=5306.6 pick=H
+[18:17:35.574] #0084 T001 [TryRoute] TryPickBestTrunkSegment done
+[18:17:35.574] #0085 T001 [TryRoute] TryOrthogonalConnectInside start
+[18:17:35.575] #0086 T001 [TryRoute] TryOrthogonalConnectInside done
+[18:17:35.575] #0087 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[18:17:35.585] #0088 T001 [TryRouteMainPipeForZone] entities committed, done
+[18:17:38.352] #0089 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[18:17:38.352] #0090 T001 [TryRoute] GetRingForPlanarClipping
+[18:17:38.353] #0091 T001 [TryRoute] extent=60 duPerMeter=1 spacingDu=3 offsetDu=2
+[18:17:38.353] #0092 T001 [TryRoute] sprinklersOverride count=291
+[18:17:38.354] #0093 T001 [TryRoute] strategy=sprinkler_driven initial horiz=True
+[18:17:38.354] #0094 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=True
+[18:17:38.354] #0095 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806500.6,552660.3) H=3254.8 V=4287.4 pick=H
+[18:17:38.355] #0096 T001 [TryRoute] TryPickBestTrunkSegment done
+[18:17:38.355] #0097 T001 [TryRoute] TryOrthogonalConnectInside start
+[18:17:38.355] #0098 T001 [TryRoute] TryOrthogonalConnectInside done
+[18:17:38.356] #0099 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[18:17:38.378] #0100 T001 [TryRouteMainPipeForZone] entities committed, done
+[18:17:41.237] #0101 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[18:17:41.237] #0102 T001 [TryRoute] GetRingForPlanarClipping
+[18:17:41.238] #0103 T001 [TryRoute] extent=68 duPerMeter=1 spacingDu=3 offsetDu=2
+[18:17:41.238] #0104 T001 [TryRoute] sprinklersOverride count=1123
+[18:17:41.239] #0105 T001 [TryRoute] strategy=sprinkler_driven initial horiz=True
+[18:17:41.239] #0106 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=True
+[18:17:41.239] #0107 T001 [TryRoute] Orthogonal covering trunk unavailable — fallback to best-effort sprinkler-driven trunk.
+[18:17:41.240] #0108 T001 [TryPickBestTrunkSegment] scanlines=29 sprinklers=1123
+[18:17:41.241] #0109 T001 [TryPickBestTrunkSegment] scanlines=42 sprinklers=1123
+[18:17:41.242] #0110 T001 [TryPickSprinklerDrivenTrunk] H=39295.2 V=43860.3 pick=H
+[18:17:41.242] #0111 T001 [TryRoute] Trunk span does not cover all sprinklers — routing anyway.
+[18:17:41.243] #0112 T001 [TryRoute] TryPickBestTrunkSegment done
+[18:17:41.243] #0113 T001 [TryRoute] TryOrthogonalConnectInside start
+[18:17:41.244] #0114 T001 [TryRoute] TryOrthogonalConnectInside done
+[18:17:41.244] #0115 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[18:17:41.254] #0116 T001 [TryRouteMainPipeForZone] entities committed, done
+[18:17:44.357] #0117 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[18:17:44.357] #0118 T001 [TryRoute] GetRingForPlanarClipping
+[18:17:44.358] #0119 T001 [TryRoute] extent=88 duPerMeter=1 spacingDu=3 offsetDu=2
+[18:17:44.358] #0120 T001 [TryRoute] sprinklersOverride count=1167
+[18:17:44.359] #0121 T001 [TryRoute] strategy=sprinkler_driven initial horiz=True
+[18:17:44.359] #0122 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=True
+[18:17:44.359] #0123 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806651.8,552682.7) H=x V=57866.5 pick=V
+[18:17:44.360] #0124 T001 [TryRoute] TryPickBestTrunkSegment done
+[18:17:44.360] #0125 T001 [TryRoute] TryOrthogonalConnectInside start
+[18:17:44.361] #0126 T001 [TryRoute] TryOrthogonalConnectInside done
+[18:17:44.361] #0127 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[18:17:44.370] #0128 T001 [TryRouteMainPipeForZone] entities committed, done
+[18:17:47.301] #0129 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[18:17:47.302] #0130 T001 [TryRoute] GetRingForPlanarClipping
+[18:17:47.302] #0131 T001 [TryRoute] extent=88 duPerMeter=1 spacingDu=3 offsetDu=2
+[18:17:47.303] #0132 T001 [TryRoute] sprinklersOverride count=216
+[18:17:47.303] #0133 T001 [TryRoute] strategy=sprinkler_driven initial horiz=False
+[18:17:47.304] #0134 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=False
+[18:17:47.304] #0135 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806629.9,552682.4) H=x V=1304.5 pick=V
+[18:17:47.304] #0136 T001 [TryRoute] TryPickBestTrunkSegment done
+[18:17:47.305] #0137 T001 [TryRoute] TryOrthogonalConnectInside start
+[18:17:47.305] #0138 T001 [TryRoute] TryOrthogonalConnectInside done
+[18:17:47.305] #0139 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[18:17:47.314] #0140 T001 [TryRouteMainPipeForZone] entities committed, done
+[18:17:50.456] #0141 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[18:17:50.456] #0142 T001 [TryRoute] GetRingForPlanarClipping
+[18:17:50.457] #0143 T001 [TryRoute] extent=87 duPerMeter=1 spacingDu=3 offsetDu=2
+[18:17:50.457] #0144 T001 [TryRoute] sprinklersOverride count=213
+[18:17:50.458] #0145 T001 [TryRoute] strategy=sprinkler_driven initial horiz=False
+[18:17:50.458] #0146 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=False
+[18:17:50.459] #0147 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806675.7,552691.0) H=3713.3 V=x pick=H
+[18:17:50.459] #0148 T001 [TryRoute] TryPickBestTrunkSegment done
+[18:17:50.459] #0149 T001 [TryRoute] TryOrthogonalConnectInside start
+[18:17:50.460] #0150 T001 [TryRoute] TryOrthogonalConnectInside done
+[18:17:50.460] #0151 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[18:17:50.470] #0152 T001 [TryRouteMainPipeForZone] entities committed, done
+[18:17:53.549] #0153 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[18:17:53.550] #0154 T001 [TryRoute] GetRingForPlanarClipping
+[18:17:53.550] #0155 T001 [TryRoute] extent=82 duPerMeter=1 spacingDu=3 offsetDu=2
+[18:17:53.550] #0156 T001 [TryRoute] sprinklersOverride count=207
+[18:17:53.551] #0157 T001 [TryRoute] strategy=sprinkler_driven initial horiz=True
+[18:17:53.551] #0158 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=True
+[18:17:53.552] #0159 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806731.9,552714.4) H=1248.8 V=4052.9 pick=H
+[18:17:53.552] #0160 T001 [TryRoute] TryPickBestTrunkSegment done
+[18:17:53.552] #0161 T001 [TryRoute] TryOrthogonalConnectInside start
+[18:17:53.553] #0162 T001 [TryRoute] TryOrthogonalConnectInside done
+[18:17:53.553] #0163 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[18:17:53.562] #0164 T001 [TryRouteMainPipeForZone] entities committed, done
+[18:17:56.493] #0165 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[18:17:56.493] #0166 T001 [TryRoute] GetRingForPlanarClipping
+[18:17:56.493] #0167 T001 [TryRoute] extent=62 duPerMeter=1 spacingDu=3 offsetDu=2
+[18:17:56.494] #0168 T001 [TryRoute] sprinklersOverride count=219
+[18:17:56.494] #0169 T001 [TryRoute] strategy=sprinkler_driven initial horiz=False
+[18:17:56.495] #0170 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=False
+[18:17:56.495] #0171 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806717.8,552683.4) H=2184.5 V=x pick=H
+[18:17:56.495] #0172 T001 [TryRoute] TryPickBestTrunkSegment done
+[18:17:56.496] #0173 T001 [TryRoute] TryOrthogonalConnectInside start
+[18:17:56.496] #0174 T001 [TryRoute] TryOrthogonalConnectInside done
+[18:17:56.496] #0175 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[18:17:56.505] #0176 T001 [TryRouteMainPipeForZone] entities committed, done
+[18:17:59.697] #0177 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[18:17:59.698] #0178 T001 [TryRoute] GetRingForPlanarClipping
+[18:17:59.698] #0179 T001 [TryRoute] extent=62 duPerMeter=1 spacingDu=3 offsetDu=2
+[18:17:59.699] #0180 T001 [TryRoute] sprinklersOverride count=201
+[18:17:59.699] #0181 T001 [TryRoute] strategy=sprinkler_driven initial horiz=False
+[18:17:59.700] #0182 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=False
+[18:17:59.700] #0183 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806758.5,552671.2) H=3086.2 V=1563.1 pick=V
+[18:17:59.701] #0184 T001 [TryRoute] TryPickBestTrunkSegment done
+[18:17:59.701] #0185 T001 [TryRoute] TryOrthogonalConnectInside start
+[18:17:59.702] #0186 T001 [TryRoute] TryOrthogonalConnectInside done
+[18:17:59.702] #0187 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[18:17:59.711] #0188 T001 [TryRouteMainPipeForZone] entities committed, done

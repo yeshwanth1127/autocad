@@ -283,19 +283,24 @@ namespace autocad_final.Commands
                 }
             }
 
-            // Connect remaining sprinklers to each other in sequence
+            // Connect remaining sprinklers: prefer direct main pipe, fallback to chaining
             Point2d prevSprinkler = firstSpr;
             for (int si = 0; si < sprinklers.Count; si++)
             {
-                if (si == firstSprinklerIdx) continue; // Skip first sprinkler, already connected
+                if (si == firstSprinklerIdx) continue;
 
                 var currentSpr = sprinklers[si];
+                Point2d connectFrom = prevSprinkler;
 
-                // Build orthogonal L-path from previous sprinkler to current sprinkler
-                if (!BuildOrthogonalPath(prevSprinkler, currentSpr, zoneRing, verticalFirst, out List<Point2d> pathVts))
+                Point2d mainAttach = ClosestPointOnSegment(mainPipePts[0], mainPipePts[mainPipePts.Count - 1], currentSpr);
+                if (BuildOrthogonalPath(mainAttach, currentSpr, zoneRing, verticalFirst, out List<Point2d> pathToMain))
+                {
+                    connectFrom = mainAttach;
+                }
+
+                if (!BuildOrthogonalPath(connectFrom, currentSpr, zoneRing, verticalFirst, out List<Point2d> pathVts))
                     continue;
 
-                // Draw the branch polyline
                 var branch = CreateBranchPolyline(db, pathVts, elevation, branchLayerId, branchW);
                 if (branch != null)
                 {
