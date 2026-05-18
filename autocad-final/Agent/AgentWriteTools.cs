@@ -453,10 +453,41 @@ namespace autocad_final.Agent
                 bool hasSplitShaftZones = ringsPerShaft.Any(c => c > 1);
                 int shaftAssignedRings = metrics.ZoneTable.Count(z => (z.ZoneOwnerIndex ?? -1) >= 0);
                 int uncoveredRings = metrics.ZoneTable.Count(z => z.ZoneOwnerIndex.HasValue && z.ZoneOwnerIndex.Value < 0);
-                bool zonesMatchShafts = !hasSplitShaftZones && shaftAssignedRings == n && uncoveredRings == 0;
+                bool clusteredMode = string.Equals(modeUsed, "clustered_equal_strips", StringComparison.Ordinal);
+                bool requiresManualShaftAssignment = clusteredMode;
+                bool zonesMatchShafts = clusteredMode
+                    ? metrics.ZoneTable.Count == n && !hasSplitShaftZones
+                    : !hasSplitShaftZones && shaftAssignedRings == n && uncoveredRings == 0;
+
+                bool shaftsClustered = clusteredMode;
+                if (!shaftsClustered && floor != null)
+                {
+                    var floorRing = new List<Point2d>();
+                    try
+                    {
+                        int fv = floor.NumberOfVertices;
+                        for (int k = 0; k < fv; k++)
+                        {
+                            var v = floor.GetPoint3dAt(k);
+                            floorRing.Add(new Point2d(v.X, v.Y));
+                        }
+                    }
+                    catch { floorRing = null; }
+
+                    if (floorRing != null && floorRing.Count >= 3 &&
+                        ShaftSpatialSpread2d.TryAnalyze(sites, floorRing, tol, out var spreadReport))
+                        shaftsClustered = spreadReport.IsClustered;
+                }
 
                 RecordDecision(doc, memory, "create_sprinkler_zones", resolvedFloorHandle, modeUsed, metrics.ZoningSummary);
                 NotifyWriteCommitted(doc);
+
+                string nextStep = requiresManualShaftAssignment
+                    ? "Clustered shafts: run ASSIGNSHAFTOZONE once per zone to link each zone boundary to a shaft, then design_zone / route_main_pipe / attach_branches."
+                    : "Call list_zones to refresh. Run design_zone with each new zone boundary_handle." +
+                      (hasSplitShaftZones
+                          ? " WARNING: at least one shaft produced more than one zone outline — labels may show 'Zone N (2)'. Prefer re-running zoning after grid fixes or report to developer."
+                          : string.Empty);
 
                 return JsonSupport.Serialize(new
                 {
@@ -465,6 +496,8 @@ namespace autocad_final.Agent
                     floor_boundary_auto_detection = autoDetectionNote,
                     mode_used = modeUsed,
                     zoning_summary = metrics.ZoningSummary,
+                    shafts_clustered = shaftsClustered,
+                    requires_manual_shaft_assignment = requiresManualShaftAssignment,
                     shaft_site_count = n,
                     zone_outline_count = metrics.ZoneTable.Count,
                     shaft_assigned_zone_outlines = shaftAssignedRings,
@@ -474,10 +507,7 @@ namespace autocad_final.Agent
                     zones_created = zonesJson,
                     prior_zone_entities_erased = priorZonesErased,
                     fallbacks_attempted = fallbacksAttempted,
-                    next_step = "Call list_zones to refresh. Run design_zone with each new zone boundary_handle." +
-                        (hasSplitShaftZones
-                            ? " WARNING: at least one shaft produced more than one zone outline — labels may show 'Zone N (2)'. Prefer re-running zoning after grid fixes or report to developer."
-                            : string.Empty)
+                    next_step = nextStep
                 });
             }
             catch (Exception ex)

@@ -49,6 +49,12 @@ namespace autocad_final.Geometry
         /// </summary>
         private const string KeyShaftUid = "SHAFT_UID";
 
+        /// <summary>How the zone outline was produced (e.g. clustered equal strips without auto shaft pairing).</summary>
+        private const string KeyZoningKind = "ZONING_KIND";
+
+        /// <summary><see cref="KeyZoningKind"/> value: equal-area strips; manual ASSIGNSHAFTOZONE expected.</summary>
+        public const string ZoningKindClusteredStrips = "CLUSTERED_STRIPS";
+
         public static void EnsureRegApp(Transaction tr, Database db)
         {
             if (tr == null || db == null) return;
@@ -555,6 +561,23 @@ namespace autocad_final.Geometry
                 return false;
             return int.TryParse(s.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out shaftUid)
                 && shaftUid >= 1;
+        }
+
+        /// <summary>Tags a zone outline with <see cref="KeyZoningKind"/> (e.g. <see cref="ZoningKindClusteredStrips"/>).</summary>
+        public static void ApplyZoningKindTag(Entity ent, string zoningKind)
+        {
+            if (ent == null || string.IsNullOrWhiteSpace(zoningKind)) return;
+            MergeStringTag(ent, KeyZoningKind, zoningKind.Trim());
+        }
+
+        public static bool TryGetZoningKind(Entity ent, out string zoningKind)
+            => TryReadStringTag(ent, KeyZoningKind, out zoningKind);
+
+        public static bool IsClusteredStripsPartition(Entity ent)
+        {
+            if (!TryGetZoningKind(ent, out string k) || string.IsNullOrEmpty(k))
+                return false;
+            return string.Equals(k, ZoningKindClusteredStrips, System.StringComparison.Ordinal);
         }
 
         // ── Private helpers ───────────────────────────────────────────────────────

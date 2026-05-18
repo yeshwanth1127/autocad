@@ -16,8 +16,9 @@ namespace autocad_final.Commands
         public const int DefaultShaftVoronoiLloydPasses = 16;
 
         /// <summary>
-        /// Erases prior zone outlines inside the floor, then tries: equal-area bisection → Voronoi+Lloyd →
-        /// equal-area strips → shaft midline (with snap retries) → grid → grid+cap.
+        /// Erases prior zone outlines inside the floor. When shafts are spatially clustered, runs equal-area strips only
+        /// (<see cref="ZoneAreaCommand.ZoningMode.ClusteredEqualStrips"/>) and stops — no bisection, grid, Lloyd, or midline.
+        /// Otherwise: equal-area bisection → Voronoi+Lloyd → equal-area strips → shaft midline → grid → grid+cap.
         /// </summary>
         /// <returns>True when at least one zone outline was produced.</returns>
         public static bool TryRun(
@@ -42,17 +43,9 @@ namespace autocad_final.Commands
 
             var db = doc.Database;
 
-            var floorRing = new List<Point2d>();
-            try
-            {
-                int fv = floor.NumberOfVertices;
-                for (int k = 0; k < fv; k++)
-                {
-                    var v = floor.GetPoint3dAt(k);
-                    floorRing.Add(new Point2d(v.X, v.Y));
-                }
-            }
-            catch { floorRing = null; }
+            // Same ring sources as strip/Voronoi engines; vertex-copy alone can miss valid boundaries.
+            if (!TryGetFloorRingForClustering(floor, out List<Point2d> floorRing))
+                floorRing = null;
 
             if (floorRing != null && floorRing.Count >= 3)
             {
@@ -64,6 +57,43 @@ namespace autocad_final.Commands
                     priorZoneEntitiesErased = SprinklerZoneAutomationCleanup.ClearPriorZoneOutlinesInsideFloor(
                         tr, ms, floorRing, floorEntityId);
                     tr.Commit();
+                }
+            }
+
+            double tol = BoundaryEntityToClosedLwPolyline.CoincidentTolerance(db);
+            if (tol <= 0) tol = 1e-6;
+
+            // Must match <see cref="ZoneAreaCommand.TryRunWithBoundary"/> shaft dedupe so clustering matches zoning N.
+            FindShaftsInsideBoundary.GetShaftHandlesAndPositionsInsideBoundary(db, floor, out var shaftPts, out var shaftHandlesRaw);
+            ShaftVoronoiZonesOnFloorPolyline.DedupeShaftSitesWithHandles(
+                shaftPts, shaftHandlesRaw, tol,
+                out List<Point2d> sitesForCluster,
+                out _);
+
+            // ── Hard override: localized shafts → equal-area strips only; never recursive bisection / grid / Lloyd.
+            if (floorRing != null && floorRing.Count >= 3 && sitesForCluster.Count >= 2)
+            {
+                ShaftSpatialSpread2d.TryAnalyze(sitesForCluster, floorRing, tol, out var spread);
+                if (spread.IsClustered)
+                {
+                    var hCluster = new List<string>();
+                    ZoneAreaCommand.TryRunWithBoundary(
+                        doc, floor, ZoneAreaCommand.ZoningMode.ClusteredEqualStrips,
+                        echoMessages, shaftMidlineSnapSearchMeters: 0, hCluster, out var mCluster);
+                    if (ZoneAreaCommand.OutlinesWereDrawn(mCluster))
+                    {
+                        metrics = mCluster;
+                        if (!string.IsNullOrEmpty(spread.Reason))
+                            metrics.ZoningSummary = spread.Reason + " " + (metrics.ZoningSummary ?? string.Empty);
+                        modeUsed = "clustered_equal_strips";
+                        createdZoneBoundaryHandles.AddRange(hCluster);
+                        return true;
+                    }
+
+                    fallbacksAttempted.Add("clustered_equal_strips: " + (mCluster?.ZoningSummary ?? "no outlines"));
+                    metrics = mCluster;
+                    modeUsed = "clustered_equal_strips_failed";
+                    return false;
                 }
             }
 
@@ -208,6 +238,47 @@ namespace autocad_final.Commands
             }
 
             return ZoneAreaCommand.OutlinesWereDrawn(metrics);
+        }
+
+        /// <summary>
+        /// Floor boundary as a 2D ring: vertex loop first, then the same sampler used by strip zoning if needed.
+        /// </summary>
+        private static bool TryGetFloorRingForClustering(Polyline floor, out List<Point2d> floorRing)
+        {
+            floorRing = null;
+            if (floor == null)
+                return false;
+
+            try
+            {
+                var ring = new List<Point2d>();
+                int fv = floor.NumberOfVertices;
+                for (int k = 0; k < fv; k++)
+                {
+                    var v = floor.GetPoint3dAt(k);
+                    ring.Add(new Point2d(v.X, v.Y));
+                }
+                if (ring.Count >= 3)
+                {
+                    floorRing = ring;
+                    return true;
+                }
+            }
+            catch
+            {
+                /* fall through */
+            }
+
+            try
+            {
+                floorRing = PolylineClosedBoundaryRingSampler2d.ConvertPolylineToRingPoints(floor);
+                return floorRing != null && floorRing.Count >= 3;
+            }
+            catch
+            {
+                floorRing = null;
+                return false;
+            }
         }
 
         private static bool IsEasyDividableOrthogonalFloor(List<Point2d> ring)

@@ -2024,9 +2024,8 @@ namespace autocad_final.Commands
         /// </summary>
         private static bool GetVerticalFirstLegForBranchDraw(Lateral lat, bool trunkHorizontal, double clusterTol)
         {
-            double te = clusterTol > 0 ? clusterTol : 1e-6;
-            if (lat != null && lat.BranchAxis.Length > te && IsAxisAlignedBranchAxisWcs(lat.BranchAxis, te))
-                return Math.Abs(lat.BranchAxis.Y) >= Math.Abs(lat.BranchAxis.X);
+            // Always use the global trunk orientation, never override with per-lateral BranchAxis.
+            // Per-lateral axes cause inconsistent routing (some vertical, some horizontal) for identical sprinklers.
             return trunkHorizontal;
         }
 
@@ -2061,15 +2060,7 @@ namespace autocad_final.Commands
             if (db == null || zone == null || laterals == null || laterals.Count == 0) return;
 
             double shaftClearDu = 0;
-            try
-            {
-                if (DrawingUnitsHelper.TryMetersToDrawingLength(db.Insunits, 0.12, out double sc) && sc > 0)
-                    shaftClearDu = sc;
-            }
-            catch { }
-            if (shaftClearDu <= 0)
-                shaftClearDu = Math.Max(clusterTol > 0 ? clusterTol * 2.0 : 1e-3, 1e-4);
-
+            // Use tight shaft footprint only: only reroute if actually crossing the shaft, not the buffer.
             var shaftBoxes = BranchPipeShaftDetour2d.BuildShaftObstacles(db, zone, shaftClearDu);
             if (shaftBoxes.Count == 0) return;
 
@@ -2114,33 +2105,9 @@ namespace autocad_final.Commands
                         { shaftIdx = si; break; }
                     }
 
-                    // Check diagonal: segment must be roughly aligned with this lateral's branch axis
-                    // (connector / tangent-based laterals use a non-axis-aligned BranchAxis — compare to that
-                    // instead of a global WCS X/Y branchDir to avoid false positives).
-                    bool diagonal = false;
-                    if (shaftIdx < 0)
-                    {
-                        double segDx = spr.X - prev.X;
-                        double segDy = spr.Y - prev.Y;
-                        double segLen = Math.Sqrt(segDx * segDx + segDy * segDy);
-                        if (segLen > tol)
-                        {
-                            bool skipSlantCheck =
-                                lat.Role == BranchRole.PrimaryBranch &&
-                                lat.BranchAxis.Length > tol &&
-                                !IsAxisAlignedBranchAxisWcs(lat.BranchAxis, tol);
-
-                            if (!skipSlantCheck)
-                            {
-                                Vector2d alignAxis = lat.BranchAxis.Length > tol ? lat.BranchAxis : branchDir;
-                                double dot = AbsCosineSegmentToAxis(segDx, segDy, segLen, alignAxis);
-                                // cos(30°) ≈ 0.866 — reject segments more than 30° off the branch axis
-                                if (dot < 0.75) diagonal = true;
-                            }
-                        }
-                    }
-
-                    bool blocked = shaftIdx >= 0 || diagonal;
+                    // Only block for actual shaft crossing, not for orientation mismatches.
+                    // Branch drawing will handle axis alignment; don't pre-reject based on angle.
+                    bool blocked = shaftIdx >= 0;
                     if (blocked)
                         blockedSprinklers.Add((li, spr, shaftIdx));
                     else
@@ -2245,6 +2212,8 @@ namespace autocad_final.Commands
                 return c != 0 ? c : a.along.CompareTo(b.along);
             });
 
+            Vector2d globalTangent = PolylineTangentNearPoint(pathPts, new Point2d((pMinX + pMaxX) * 0.5, (pMinY + pMaxY) * 0.5), tol);
+
             int start = 0;
             while (start < assigned.Count)
             {
@@ -2278,7 +2247,7 @@ namespace autocad_final.Commands
                     sprs.Add(assigned[i].spr);
 
                 Vector2d tangent = PolylineTangentNearPoint(pathPts, attach, tol);
-                Vector2d branchAxis = PickBranchAxisFromTangent(attach, sprs, tangent, tol);
+                Vector2d branchAxis = globalTangent;
                 sprs.Sort((p, q) => ProjectAlong(branchAxis, attach, p).CompareTo(ProjectAlong(branchAxis, attach, q)));
 
                 laterals.Add(new Lateral
@@ -3037,11 +3006,7 @@ namespace autocad_final.Commands
                 }
 
                 Vector2d tangent = PolylineTangentNearPoint(bestPoly, bestTap, tol);
-                double dx = head.X - bestTap.X;
-                double dy = head.Y - bestTap.Y;
-                Vector2d branchAxis = Math.Abs(dx) >= Math.Abs(dy)
-                    ? new Vector2d(dx >= 0 ? 1 : -1, 0)
-                    : new Vector2d(0, dy >= 0 ? 1 : -1);
+                Vector2d branchAxis = tangent;
 
                 laterals.Add(new Lateral
                 {
@@ -3049,7 +3014,7 @@ namespace autocad_final.Commands
                     Sprinklers = new List<Point2d> { head },
                     SubSprinklers = new List<Point2d>(),
                     IsTopOrRight = true,
-                    AxisValue = Math.Abs(branchAxis.X) > 0.5 ? head.Y : head.X,
+                    AxisValue = Math.Abs(tangent.X) > 0.5 ? head.Y : head.X,
                     FromConnectorFeed = false,
                     TrunkTangent = tangent,
                     BranchAxis = branchAxis,
@@ -3252,14 +3217,8 @@ namespace autocad_final.Commands
                 double labelOffsetDu = Math.Max(tickLen * 0.65, boundaryW * 0.08);
                 double labelTextHeight = Math.Max(boundaryW * 0.22, tickLen * 0.55);
 
-                double shaftClearDu = Math.Max(tickLen * 0.35, 1e-6);
-                try
-                {
-                    if (DrawingUnitsHelper.TryMetersToDrawingLength(db.Insunits, 0.08, out double sc) && sc > shaftClearDu)
-                        shaftClearDu = sc;
-                }
-                catch { /* ignore */ }
-                // Expanded boxes: pathfinding detours around shafts with clearance so branches do not hug shaft walls.
+                double shaftClearDu = 0;
+                // Use tight shaft footprint for pathfinding: only detour if actually colliding with shaft.
                 var shaftObstacles = BranchPipeShaftDetour2d.BuildShaftObstacles(db, zone, shaftClearDu);
                 // Tight footprint (no clearance inflate): only forbid drawing segments that pass through the shaft itself.
                 var shaftFootprintBoxes = BranchPipeShaftDetour2d.BuildShaftObstacles(db, zone, clearanceDu: 0);
@@ -4591,31 +4550,22 @@ namespace autocad_final.Commands
             double ringBoundaryTol,
             double clusterTol)
         {
-            bool vf = vfPreferred;
-            for (int attempt = 0; attempt < 2; attempt++)
+            var wpts = BranchPipeShaftDetour2d.OrthogonalWaypointsAvoidingBoxes(
+                a, b, vfPreferred, shaftDetourBoxes, branchClipRings, clusterTol);
+            if (wpts == null || wpts.Count < 2)
+                return (0, null);
+
+            int total = 0;
+            for (int wi = 0; wi + 1 < wpts.Count; wi++)
             {
-                var wpts = BranchPipeShaftDetour2d.OrthogonalWaypointsAvoidingBoxes(
-                    a, b, vf, shaftDetourBoxes, branchClipRings, clusterTol);
-                if (wpts == null || wpts.Count < 2)
-                {
-                    vf = !vf;
-                    continue;
-                }
-
-                int total = 0;
-                for (int wi = 0; wi + 1 < wpts.Count; wi++)
-                {
-                    total += DrawClippedBranchSegment(
-                        ms, tr, db, branchClipRings, zone, tagZone, zoneBoundaryHandleHex,
-                        wpts[wi], wpts[wi + 1], layerId, widthDu, tagAsConnector,
-                        shaftFootprintBoxes: shaftFootprintBoxes, ringBoundaryTol: ringBoundaryTol);
-                }
-
-                if (total > 0)
-                    return (total, wpts);
-
-                vf = !vf;
+                total += DrawClippedBranchSegment(
+                    ms, tr, db, branchClipRings, zone, tagZone, zoneBoundaryHandleHex,
+                    wpts[wi], wpts[wi + 1], layerId, widthDu, tagAsConnector,
+                    shaftFootprintBoxes: shaftFootprintBoxes, ringBoundaryTol: ringBoundaryTol);
             }
+
+            if (total > 0)
+                return (total, wpts);
 
             return (0, null);
         }

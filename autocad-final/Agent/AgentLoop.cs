@@ -317,11 +317,20 @@ namespace autocad_final.Agent
                         var boundaryHandlesMissingShaft = fresh.Zones == null
                             ? new List<string>()
                             : fresh.Zones.Where(z => z != null && !z.HasShaftInside).Select(z => z.BoundaryHandle).ToList();
+                        bool clusteredEqualStripsPartition = fresh.Zones != null && fresh.Zones.Count > 0 &&
+                            fresh.Zones.All(z => z != null && z.IsClusteredEqualStrips);
+
                         bool everyZoneHasShaftOk = true;
                         string shaftContainExplain;
                         if (zoneBoundaries == 0 || shaftSiteCount == 0)
                         {
                             shaftContainExplain = "Subzone/shaft containment not enforced (no subzones or no shaft sites).";
+                        }
+                        else if (clusteredEqualStripsPartition)
+                        {
+                            everyZoneHasShaftOk = true;
+                            shaftContainExplain =
+                                "Clustered equal strips (ZONING_KIND=CLUSTERED_STRIPS) — manual ASSIGNSHAFTOZONE expected; shafts may lie outside zone polygons until linked.";
                         }
                         else
                         {

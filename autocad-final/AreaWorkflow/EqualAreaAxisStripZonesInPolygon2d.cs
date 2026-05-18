@@ -163,7 +163,8 @@ namespace autocad_final.AreaWorkflow
         }
 
         /// <summary>
-        /// Builds N closed rings in sweep order and parallel list mapping strip i → deduped shaft index <c>shaftOrder[i]</c>.
+        /// Builds N closed rings in sweep order. When <paramref name="pairToShafts"/> is true, maps strip i → deduped shaft index by sorted axis position.
+        /// When false, <paramref name="ringShaftIndex"/> entries are -1 (manual shaft assignment).
         /// </summary>
         public static bool TryBuildZoneRings(
             Polyline boundary,
@@ -174,20 +175,33 @@ namespace autocad_final.AreaWorkflow
             out List<int> ringShaftIndex,
             out bool splitVertical,
             out string errorMessage)
+            => TryBuildZoneRings(boundary, shaftSites, zoneCount, tol, pairToShafts: true,
+                out rings, out ringShaftIndex, out splitVertical, out errorMessage);
+
+        public static bool TryBuildZoneRings(
+            Polyline boundary,
+            IList<Point2d> shaftSites,
+            int zoneCount,
+            double tol,
+            bool pairToShafts,
+            out List<List<Point2d>> rings,
+            out List<int> ringShaftIndex,
+            out bool splitVertical,
+            out string errorMessage)
         {
             rings = new List<List<Point2d>>();
             ringShaftIndex = new List<int>();
             splitVertical = true;
             errorMessage = null;
 
-            int nShaft = shaftSites?.Count ?? 0;
             if (zoneCount < 2)
             {
                 errorMessage = "Need at least two zones (shafts).";
                 return false;
             }
 
-            if (nShaft != zoneCount)
+            int nShaft = shaftSites?.Count ?? 0;
+            if (pairToShafts && nShaft != zoneCount)
             {
                 errorMessage = "Shaft site count must match zone count.";
                 return false;
@@ -197,6 +211,47 @@ namespace autocad_final.AreaWorkflow
             if (ring.Count < 3)
             {
                 errorMessage = "Boundary must be a closed polygon with enough detail (at least 3 vertices).";
+                return false;
+            }
+
+            return TryBuildZoneRingsFromRing(
+                ring, zoneCount, tol, pairToShafts, shaftSites,
+                out rings, out ringShaftIndex, out splitVertical, out errorMessage);
+        }
+
+        /// <summary>Equal-area strips on a pre-sampled floor ring (no AutoCAD boundary).</summary>
+        public static bool TryBuildZoneRingsFromRing(
+            IList<Point2d> ring,
+            int zoneCount,
+            double tol,
+            bool pairToShafts,
+            IList<Point2d> shaftSites,
+            out List<List<Point2d>> rings,
+            out List<int> ringShaftIndex,
+            out bool splitVertical,
+            out string errorMessage)
+        {
+            rings = new List<List<Point2d>>();
+            ringShaftIndex = new List<int>();
+            splitVertical = true;
+            errorMessage = null;
+
+            if (zoneCount < 2)
+            {
+                errorMessage = "Need at least two zones.";
+                return false;
+            }
+
+            if (ring == null || ring.Count < 3)
+            {
+                errorMessage = "Boundary ring must have at least 3 vertices.";
+                return false;
+            }
+
+            int nShaft = shaftSites?.Count ?? 0;
+            if (pairToShafts && nShaft != zoneCount)
+            {
+                errorMessage = "Shaft site count must match zone count.";
                 return false;
             }
 
@@ -236,20 +291,23 @@ namespace autocad_final.AreaWorkflow
                 return false;
             }
 
-            // Targets use the sampled ring area (same total as clips); margin centers any float remainder vs N equal parts.
             double aTargetRing = ringArea / zoneCount;
             double marginLeftArea = Math.Max(0, (ringArea - zoneCount * aTargetRing) * 0.5);
 
-            var shaftOrder = new int[zoneCount];
-            for (int i = 0; i < zoneCount; i++)
-                shaftOrder[i] = i;
-            Array.Sort(shaftOrder, (a, b) =>
+            int[] shaftOrder = null;
+            if (pairToShafts)
             {
-                double va = useVertical ? shaftSites[a].X : shaftSites[a].Y;
-                double vb = useVertical ? shaftSites[b].X : shaftSites[b].Y;
-                int c = va.CompareTo(vb);
-                return c != 0 ? c : a.CompareTo(b);
-            });
+                shaftOrder = new int[zoneCount];
+                for (int i = 0; i < zoneCount; i++)
+                    shaftOrder[i] = i;
+                Array.Sort(shaftOrder, (a, b) =>
+                {
+                    double va = useVertical ? shaftSites[a].X : shaftSites[a].Y;
+                    double vb = useVertical ? shaftSites[b].X : shaftSites[b].Y;
+                    int c = va.CompareTo(vb);
+                    return c != 0 ? c : a.CompareTo(b);
+                });
+            }
 
             for (int k = 0; k < zoneCount; k++)
             {
@@ -290,7 +348,7 @@ namespace autocad_final.AreaWorkflow
                 }
 
                 rings.Add(band);
-                ringShaftIndex.Add(shaftOrder[k]);
+                ringShaftIndex.Add(pairToShafts ? shaftOrder[k] : -1);
             }
 
             return true;

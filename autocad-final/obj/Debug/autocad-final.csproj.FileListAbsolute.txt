@@ -579,7 +579,10 @@ c:\Users\admin\source\repos\autocad-final\autocad-final\bin\build-verify-temp\en
 C:\Users\admin\source\repos\autocad-final\artifacts\verify-build\Properties.config
 C:\Users\admin\source\repos\autocad-final\artifacts\verify-build\autocad-final.dll
 C:\Users\admin\source\repos\autocad-final\artifacts\verify-build\autocad-final.pdb
+C:\Users\admin\source\repos\autocad-final\autocad-final\obj\Debug\autocad-final.csproj.AssemblyReference.cache
+C:\Users\admin\source\repos\autocad-final\autocad-final\obj\Debug\autocad-final.csproj.CoreCompileInputs.cache
 C:\Users\admin\source\repos\autocad-final\autocad-final\bin\Debug\Properties.config
+C:\Users\admin\source\repos\autocad-final\autocad-final\bin\Debug\autocad-final.dll
 C:\Users\admin\source\repos\autocad-final\autocad-final\bin\Debug\autocad-final.pdb
 C:\Users\admin\source\repos\autocad-final\autocad-final\bin\Debug\accoremgd.dll
 C:\Users\admin\source\repos\autocad-final\autocad-final\bin\Debug\acdbmgd.dll
@@ -610,9 +613,6 @@ C:\Users\admin\source\repos\autocad-final\autocad-final\bin\Debug\en-US\AcCustom
 C:\Users\admin\source\repos\autocad-final\autocad-final\bin\Debug\en-US\AppHomeInterop.resources.dll
 C:\Users\admin\source\repos\autocad-final\autocad-final\bin\Debug\en-US\AcMr.resources.dll
 C:\Users\admin\source\repos\autocad-final\autocad-final\bin\Debug\en-US\AcWindows.resources.dll
-C:\Users\admin\source\repos\autocad-final\autocad-final\obj\Debug\autocad-final.csproj.AssemblyReference.cache
-C:\Users\admin\source\repos\autocad-final\autocad-final\obj\Debug\autocad-final.csproj.CoreCompileInputs.cache
 C:\Users\admin\source\repos\autocad-final\autocad-final\obj\Debug\autocad-.604953D9.Up2Date
 C:\Users\admin\source\repos\autocad-final\autocad-final\obj\Debug\autocad-final.dll
 C:\Users\admin\source\repos\autocad-final\autocad-final\obj\Debug\autocad-final.pdb
-C:\Users\admin\source\repos\autocad-final\autocad-final\bin\Debug\autocad-final.dll

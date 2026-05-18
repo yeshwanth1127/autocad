@@ -33,7 +33,9 @@ namespace autocad_final.Commands
             GridWithCap,
             ShaftMidlineStrips,
             /// <summary>Straight-cut recursive bisection targeting total_area / n_shafts per zone.</summary>
-            EqualAreaBisection
+            EqualAreaBisection,
+            /// <summary>Equal-area strips; one zone per shaft count; no shaft pairing or auto-assign (clustered shafts).</summary>
+            ClusteredEqualStrips
         }
 
         [CommandMethod("SPRINKLERZONEAREA", CommandFlags.Modal)]
@@ -155,7 +157,8 @@ namespace autocad_final.Commands
 
             bool requireFloorBoundaryLayer =
                 mode == ZoningMode.EqualAreaStrips ||
-                mode == ZoningMode.ShaftMidlineStrips;
+                mode == ZoningMode.ShaftMidlineStrips ||
+                mode == ZoningMode.ClusteredEqualStrips;
 
             var boundary = requireFloorBoundaryLayer
                 ? SelectPolygonBoundaryOnSprinklerWorkLayer.Run(ed)
@@ -315,6 +318,85 @@ namespace autocad_final.Commands
                     FinishZoneOutlinesWithAutoShaftAssignment(db, metrics, outlineHandles, ringShaftIdx, shaftHandlesDeduped, boundary);
                     Msg("\nZone outlines added on layer \"" + SprinklerLayers.WorkLayer + "\" (floor boundary, dashed); labels on \"" +
                         SprinklerLayers.ZoneLabelLayer + "\".\n");
+                    foreach (var z in metrics.ZoneTable)
+                    {
+                        if (z.AreaM2.HasValue)
+                            Msg("  " + z.Name + ": " + z.AreaM2.Value.ToString("F2", CultureInfo.InvariantCulture) + " m²\n");
+                        else
+                            Msg("  " + z.Name + ": " + z.AreaDrawingUnits.ToString("F2", CultureInfo.InvariantCulture) + " sq. units\n");
+                    }
+                }
+
+                return true;
+            }
+
+            if (mode == ZoningMode.ClusteredEqualStrips)
+            {
+                if (!ClusteredEqualAreaStripZonesInPolygon2d.TryBuildZoneRings(
+                        boundary,
+                        sites,
+                        n,
+                        tol,
+                        out var zoneRings,
+                        out bool splitVertical,
+                        out string stripErr))
+                {
+                    Msg("\n" + stripErr + "\n");
+                    metrics.ZoningSummary = stripErr;
+                }
+                else if (zoneRings.Count > 0)
+                {
+                    DrawingUnitsHelper.ComputeFormulaZoneTargets(
+                        db,
+                        rawArea,
+                        n,
+                        out double aTargetDu,
+                        out double? floorM2Targets,
+                        out double? aTargetM2,
+                        out _);
+                    double? floorM2 = DrawingUnitsHelper.TryGetAreaSquareMeters(db, rawArea, out _);
+
+                    metrics.ZoningSummary =
+                        string.Format(
+                            CultureInfo.InvariantCulture,
+                            "Clustered shafts: {0} equal-area strips ({1}); each zone ≈ {2:F2} sq. drawing units. Zones are not auto-linked to shafts — use ASSIGNSHAFTOZONE before routing.",
+                            n,
+                            splitVertical ? "vertical cuts" : "horizontal cuts",
+                            aTargetDu);
+                    if (floorM2Targets.HasValue || floorM2.HasValue)
+                        metrics.ZoningSummary += string.Format(
+                            CultureInfo.InvariantCulture,
+                            " Floor {0:F2} m².",
+                            (floorM2Targets ?? floorM2).Value);
+
+                    if (aTargetM2.HasValue)
+                        metrics.ZoningSummary += string.Format(
+                            CultureInfo.InvariantCulture,
+                            " Target ≈ {0:F2} m² per zone.",
+                            aTargetM2.Value);
+
+                    metrics.ZoneTable = new List<ZoneTableEntry>(zoneRings.Count);
+                    for (int zi = 0; zi < zoneRings.Count; zi++)
+                    {
+                        double aDu = PolygonVerticalHalfPlaneClip2d.AbsArea(zoneRings[zi]);
+                        double? m2 = DrawingUnitsHelper.TryGetAreaSquareMeters(db, aDu, out _);
+                        string name = "Zone " + (zi + 1).ToString(CultureInfo.InvariantCulture);
+
+                        metrics.ZoneTable.Add(new ZoneTableEntry
+                        {
+                            Name = name,
+                            AreaDrawingUnits = aDu,
+                            AreaM2 = m2,
+                            ZoneOwnerIndex = null
+                        });
+                    }
+
+                    ShaftVoronoiZonesOnFloorPolyline.AppendZoneOutlinePolylines(
+                        doc, zoneRings, boundary, metrics.ZoneTable,
+                        zoneOutlinesOnFloorBoundaryLayer: true, outlineHandles);
+                    ApplyZoningKindToCreatedOutlines(db, outlineHandles, SprinklerXData.ZoningKindClusteredStrips);
+                    AssignShaftToZoneCommand.EnsureShaftUidsForFloorBoundary(db, boundary);
+                    Msg("\nZone outlines added (clustered-shaft equal strips, dashed). Assign each zone to a shaft with ASSIGNSHAFTOZONE before routing.\n");
                     foreach (var z in metrics.ZoneTable)
                     {
                         if (z.AreaM2.HasValue)
@@ -668,6 +750,42 @@ namespace autocad_final.Commands
         /// <summary>Returns true when zoning produced at least one zone outline row.</summary>
         public static bool OutlinesWereDrawn(PolygonMetrics metrics)
             => metrics?.ZoneTable != null && metrics.ZoneTable.Count > 0;
+
+        /// <summary>Writes <see cref="SprinklerXData.KeyZoningKind"/> on newly created zone outline polylines.</summary>
+        public static void ApplyZoningKindToCreatedOutlines(
+            Database db,
+            IList<string> outlineHandlesHex,
+            string zoningKind)
+        {
+            if (db == null || outlineHandlesHex == null || string.IsNullOrWhiteSpace(zoningKind))
+                return;
+
+            try
+            {
+                var doc = AcApp.DocumentManager.MdiActiveDocument;
+                using (doc?.LockDocument())
+                using (var tr = db.TransactionManager.StartTransaction())
+                {
+                    SprinklerXData.EnsureRegApp(tr, db);
+                    for (int i = 0; i < outlineHandlesHex.Count; i++)
+                    {
+                        string hx = outlineHandlesHex[i];
+                        if (string.IsNullOrEmpty(hx)) continue;
+                        Handle h;
+                        try { h = new Handle(Convert.ToInt64(hx, 16)); }
+                        catch { continue; }
+                        ObjectId id = ObjectId.Null;
+                        try { id = db.GetObjectId(false, h, 0); } catch { continue; }
+                        if (id.IsNull) continue;
+                        var ent = tr.GetObject(id, OpenMode.ForWrite, false) as Entity;
+                        if (ent != null)
+                            SprinklerXData.ApplyZoningKindTag(ent, zoningKind);
+                    }
+                    tr.Commit();
+                }
+            }
+            catch { /* best-effort */ }
+        }
 
         private static void FinishZoneOutlinesWithAutoShaftAssignment(
             Database db,

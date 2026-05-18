@@ -139,6 +139,7 @@
     <Compile Include="Commands\SelectShaftPointCommand.cs" />
     <Compile Include="Commands\ZoneTestCommand.cs" />
     <Compile Include="Commands\FixZoneBoundaryCommand.cs" />
+    <Compile Include="Commands\RouteBranchesFinalCommand.cs" />
     <Compile Include="AreaWorkflow\SelectPolygonBoundary.cs" />
     <Compile Include="AreaWorkflow\SprinklerZoneAutomationCleanup.cs" />
     <Compile Include="AreaWorkflow\SelectPolygonBoundaryOnSprinklerWorkLayer.cs" />
@@ -178,6 +179,8 @@
     <Compile Include="AreaWorkflow\ShaftVoronoiZonesOnFloorPolyline.cs" />
     <Compile Include="AreaWorkflow\EqualAreaStripZonesFromRectangle.cs" />
     <Compile Include="AreaWorkflow\EqualAreaAxisStripZonesInPolygon2d.cs" />
+    <Compile Include="AreaWorkflow\ClusteredEqualAreaStripZonesInPolygon2d.cs" />
+    <Compile Include="AreaWorkflow\ShaftSpatialSpread2d.cs" />
     <Compile Include="AreaWorkflow\GridNearestShaftZoning2d.cs" />
     <Compile Include="AreaWorkflow\EqualAreaRecursiveBisection2d.cs" />
     <Compile Include="AreaWorkflow\LlmCutZoning2d.cs" />

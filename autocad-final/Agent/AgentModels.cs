@@ -234,6 +234,14 @@ namespace autocad_final.Agent
         [DataMember(Name = "has_shaft_inside")]
         public bool HasShaftInside { get; set; }
 
+        /// <summary>XData <c>ZONING_KIND</c> when present (e.g. CLUSTERED_STRIPS).</summary>
+        [DataMember(Name = "zoning_kind")]
+        public string ZoningKind { get; set; }
+
+        /// <summary>True when partition used clustered equal strips (manual shaft assignment expected).</summary>
+        [DataMember(Name = "is_clustered_equal_strips")]
+        public bool IsClusteredEqualStrips { get; set; }
+
         [DataMember(Name = "has_manual_edits")]
         public bool HasManualEdits { get; set; }
 

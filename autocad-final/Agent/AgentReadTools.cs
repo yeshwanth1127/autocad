@@ -1099,6 +1099,10 @@ namespace autocad_final.Agent
                     return null;
                 }
 
+                bool isClusteredEqualStrips = SprinklerXData.IsClusteredStripsPartition(boundaryPolyline);
+                string zoningKind = null;
+                SprinklerXData.TryGetZoningKind(boundaryPolyline, out zoningKind);
+
                 AgentLog.Write("BuildZoneSnapshot", "GetRingForPlanarClipping");
                 var ring = PolylineClosedBoundaryRingSampler2d.ConvertPolylineToRingPoints(boundaryPolyline);
                 AgentLog.Write("BuildZoneSnapshot", "ring.Count=" + (ring?.Count.ToString() ?? "null"));
@@ -1203,6 +1207,8 @@ namespace autocad_final.Agent
                     NearestShaftId       = nearestShaft,
                     ShaftSitesInside     = shaftsInside,
                     HasShaftInside       = shaftsInside > 0,
+                    ZoningKind           = zoningKind,
+                    IsClusteredEqualStrips = isClusteredEqualStrips,
                     HasManualEdits       = IsManualEdit(memory, zone.BoundaryHandle),
                     MainPipeCount        = zone.MainPipeCount,
                     BranchCount          = zone.BranchCount,

@@ -85,11 +85,12 @@ namespace autocad_final.Agent
             "get_all_closed_polylines only lists closed polylines on sprinkler/floor layers (e.g. \"sprinkler - zone\", \"floor boundary\"), not the entire drawing.\n" +
             "2. Use preview=true before committing large zone designs to verify projected head count and coverage.\n" +
             "2b. Zoning: The floor/room closed polyline is the OUTER parcel only; create_sprinkler_zones draws dashed SUBZONES inside it (one tagged subzone per shaft). " +
-            "It tries equal-area recursive bisection first (straight cuts toward ~equal area per shaft), then Voronoi/grid fallbacks. " +
+            "When all shafts are clustered in one corner (not spread across the floor), it uses N equal-area strips only (mode clustered_equal_strips) and does NOT auto-assign shafts — run ASSIGNSHAFTOZONE for each zone before routing. " +
+            "Otherwise it tries equal-area recursive bisection first (straight cuts toward ~equal area per shaft), then Voronoi/grid fallbacks. " +
             "If automatic zoning is ugly or verification fails, use create_zones_by_cuts with floor_boundary_handle + exactly N−1 cut segments {{x1,y1,x2,y2}} in WCS for N shafts. " +
             "list_zones zone_boundary_count counts those inner subzone polylines, not the outer building outline. " +
             "create_sprinkler_zones accepts floor_boundary_handle=\"auto\" to auto-pick a closed polyline that contains all shaft blocks/hints (see floor_boundary_auto_detection in the JSON). " +
-            "Otherwise use the outer floor handle from get_all_closed_polylines — not a subzone handle. Each subzone must contain at least one shaft site (list_zones shows has_shaft_inside). " +
+            "Otherwise use the outer floor handle from get_all_closed_polylines — not a subzone handle. Each subzone must contain at least one shaft site (list_zones shows has_shaft_inside), except clustered_equal_strips (ZONING_KIND=CLUSTERED_STRIPS) where manual assignment is expected. " +
             "Expect N shaft sites ⇒ N subzone outlines. " +
             "If final verification reports zoning_ok=false, read automated_checks.zoning_failure_breakdown and zoning_retry_hints and issue the NEXT tool call with adjusted parameters (e.g. new floor_boundary_handle, clear_shaft_hints + set_shaft_hint, erase duplicate zone entities). " +
             "If the tool JSON reports has_split_shaft_zones=true or zone_outline_count > shaft_site_count (excluding Uncovered), stop and explain — do not proceed as if zoning succeeded. " +

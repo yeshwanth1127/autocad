@@ -133,6 +133,7 @@ namespace autocad_final.UI
                 ("Connect branches manually (optional main or branch pick)",  RunConnectBranchesManually),
                 ("Route branch pipes",         RunRouteBranchPipes),
                 ("Route branch pipe 2",        RunRouteBranchPipes2),
+                ("Route branches final",       RunRouteBranchesFinal),
                 ("Place reducers",             RunPlaceReducers),
                 ("Reducers (connector route)", RunPlaceReducersConnectorFirst),
                 ("Label main pipe",            RunLabelMainPipe),
@@ -727,6 +728,25 @@ namespace autocad_final.UI
             try
             {
                 new AttachBranchesCommand().RouteBranchPipes2();
+            }
+            catch (Exception ex)
+            {
+                PaletteCommandErrorUi.Show(ex, doc);
+            }
+        }
+
+        private void RunRouteBranchesFinal()
+        {
+            var doc = AcApp.DocumentManager.MdiActiveDocument;
+            if (doc == null)
+            {
+                MessageBox.Show("No active drawing. Open or create a drawing first.",
+                    "autocad-final", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            try
+            {
+                new RouteBranchesFinalCommand().Execute();
             }
             catch (Exception ex)
             {
