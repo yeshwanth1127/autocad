@@ -134,6 +134,7 @@ namespace autocad_final.UI
                 ("Route branch pipes",         RunRouteBranchPipes),
                 ("Route branch pipe 2",        RunRouteBranchPipes2),
                 ("Route branches final",       RunRouteBranchesFinal),
+                ("Label branches",             RunLabelBranches),
                 ("Place reducers",             RunPlaceReducers),
                 ("Reducers (connector route)", RunPlaceReducersConnectorFirst),
                 ("Label main pipe",            RunLabelMainPipe),
@@ -747,6 +748,25 @@ namespace autocad_final.UI
             try
             {
                 new RouteBranchesFinalCommand().Execute();
+            }
+            catch (Exception ex)
+            {
+                PaletteCommandErrorUi.Show(ex, doc);
+            }
+        }
+
+        private void RunLabelBranches()
+        {
+            var doc = AcApp.DocumentManager.MdiActiveDocument;
+            if (doc == null)
+            {
+                MessageBox.Show("No active drawing. Open or create a drawing first.",
+                    "autocad-final", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            try
+            {
+                new LabelBranchesCommand().Execute();
             }
             catch (Exception ex)
             {

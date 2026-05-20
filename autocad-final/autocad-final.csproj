@@ -140,6 +140,7 @@
     <Compile Include="Commands\ZoneTestCommand.cs" />
     <Compile Include="Commands\FixZoneBoundaryCommand.cs" />
     <Compile Include="Commands\RouteBranchesFinalCommand.cs" />
+    <Compile Include="Commands\LabelBranchesCommand.cs" />
     <Compile Include="AreaWorkflow\SelectPolygonBoundary.cs" />
     <Compile Include="AreaWorkflow\SprinklerZoneAutomationCleanup.cs" />
     <Compile Include="AreaWorkflow\SelectPolygonBoundaryOnSprinklerWorkLayer.cs" />

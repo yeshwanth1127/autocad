@@ -1829,7 +1829,91 @@ namespace autocad_final.Commands
                 }
             }
 
+            // Merge any single-sprinkler zero-branch-distance laterals into chained multi-sprinkler laterals.
+            // These arise when sprinklers sit directly on the trunk axis (horizontal distance = 0).
+            // Without merging, each gets its own 1-sprinkler lateral with a zero-length segment, falls into
+            // the last-resort fallback, and connects from arbitrary feed points — violating the rule that
+            // each segment connects only adjacent consecutive sprinklers.
+            MergeCollinearOnTrunkLaterals(laterals, clusterTol);
+
             return laterals;
+        }
+
+        private static void MergeCollinearOnTrunkLaterals(List<Lateral> laterals, double clusterTol)
+        {
+            double tol = Math.Max(clusterTol, 1e-6);
+
+            // Identify 1-sprinkler laterals where the sprinkler is coincident with (or very close to) AttachPoint.
+            var collinearIdxs = new List<int>();
+            for (int i = 0; i < laterals.Count; i++)
+            {
+                var lat = laterals[i];
+                if (lat == null || lat.Sprinklers == null || lat.Sprinklers.Count != 1) continue;
+                if (lat.IsSubMainSpine || lat.FromConnectorFeed) continue;
+                var spr = lat.Sprinklers[0];
+                double dist = spr.GetDistanceTo(lat.AttachPoint);
+                if (dist <= tol) collinearIdxs.Add(i);
+            }
+
+            if (collinearIdxs.Count < 2) return;
+
+            // Group these by their AttachPoint position (same attach = same trunk tap = same column/row).
+            var groups = new List<List<int>>();
+            var used = new HashSet<int>();
+            foreach (int i in collinearIdxs)
+            {
+                if (used.Contains(i)) continue;
+                var g = new List<int> { i };
+                used.Add(i);
+                var attachI = laterals[i].AttachPoint;
+                foreach (int j in collinearIdxs)
+                {
+                    if (used.Contains(j)) continue;
+                    if (laterals[j].AttachPoint.GetDistanceTo(attachI) <= tol)
+                    { g.Add(j); used.Add(j); }
+                }
+                groups.Add(g);
+            }
+
+            // For each group with 2+ laterals: collect all sprinklers, sort from the attach trunk point outward,
+            // and replace the group with a single multi-sprinkler lateral.
+            var indicesToRemove = new HashSet<int>();
+            var toAdd = new List<Lateral>();
+
+            foreach (var g in groups)
+            {
+                if (g.Count < 2) continue;
+
+                var first = laterals[g[0]];
+                var attach = first.AttachPoint;
+                var allSprs = new List<Point2d>();
+                foreach (int i in g) allSprs.AddRange(laterals[i].Sprinklers);
+
+                // Sort by distance from attach outward (consecutive-pair rule).
+                allSprs.Sort((a, b) => a.GetDistanceTo(attach).CompareTo(b.GetDistanceTo(attach)));
+
+                toAdd.Add(new Lateral
+                {
+                    AttachPoint = attach,
+                    Sprinklers = allSprs,
+                    SubSprinklers = new List<Point2d>(),
+                    IsTopOrRight = first.IsTopOrRight,
+                    AxisValue = first.AxisValue,
+                    FromConnectorFeed = false,
+                    TrunkTangent = first.TrunkTangent,
+                    BranchAxis = first.BranchAxis,
+                    Role = first.Role,
+                });
+
+                foreach (int i in g) indicesToRemove.Add(i);
+            }
+
+            // Remove old single-sprinkler laterals (iterate backwards to keep indices valid).
+            var sortedRemove = new List<int>(indicesToRemove);
+            sortedRemove.Sort((a, b) => b.CompareTo(a));
+            foreach (int i in sortedRemove) laterals.RemoveAt(i);
+
+            laterals.AddRange(toAdd);
         }
 
         private static void AddGridSideLaterals(

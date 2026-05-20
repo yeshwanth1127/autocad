@@ -1798,15 +1798,16 @@ namespace autocad_final.Commands
         {
             if (sprinklers.Count == 0) return 0;
 
+            var shafts = GetShaftsInZone(tr, db, zoneRing);
             var groups = GroupColinearSprinklers(sprinklers, trunkHorizontal);
             var served = new HashSet<int>();
+            var drawnBranches = new List<(Point2d start, Point2d end, List<Point2d> path)>();
             var drawnCount = 0;
 
             while (served.Count < sprinklers.Count)
             {
                 double minDist = double.MaxValue;
                 int nextGroupIdx = -1;
-                int nextSprInGroup = -1;
                 Point2d attachPt = Point2d.Origin;
                 bool foundDirectPath = false;
 
@@ -1828,7 +1829,6 @@ namespace autocad_final.Commands
                             {
                                 minDist = distToMain;
                                 nextGroupIdx = g;
-                                nextSprInGroup = i;
                                 attachPt = mainAttach;
                                 foundDirectPath = true;
                             }
@@ -1857,7 +1857,6 @@ namespace autocad_final.Commands
                                 {
                                     minDist = relayLen;
                                     nextGroupIdx = g;
-                                    nextSprInGroup = i;
                                     attachPt = mainAttach;
                                     foundDirectPath = true;
                                 }
@@ -1869,82 +1868,43 @@ namespace autocad_final.Commands
 
                     if (!foundDirectPath)
                     {
-                        for (int i = 0; i < sprinklers.Count; i++)
+                        // Find the unserved group whose nearest sprinkler is closest to any already-drawn branch point.
+                        // Route the entire group from that nearest branch point — never connect individual sprinklers
+                        // across groups, as that produces spaghetti routing.
+                        for (int g = 0; g < groups.Count; g++)
                         {
-                            if (served.Contains(i)) continue;
+                            var group = groups[g];
+                            bool groupAllServed = true;
+                            foreach (int sprIdx in group) if (!served.Contains(sprIdx)) { groupAllServed = false; break; }
+                            if (groupAllServed) continue;
 
-                            var spr = sprinklers[i];
-                            for (int j = 0; j < sprinklers.Count; j++)
+                            foreach (int sprIdx in group)
                             {
-                                if (!served.Contains(j)) continue;
-                                var servedSpr = sprinklers[j];
-                                double distToServed = spr.GetDistanceTo(servedSpr);
+                                if (served.Contains(sprIdx)) continue;
+                                var spr = sprinklers[sprIdx];
 
-                                if (BuildOrthogonalPath(servedSpr, spr, zoneRing, !trunkHorizontal, out List<Point2d> pathToServed))
+                                // Try nearest drawn branch endpoint as attach point
+                                Point2d nearestBranch = FindNearestBranchPoint(spr, drawnBranches);
+                                Point2d candidate = nearestBranch != Point2d.Origin ? nearestBranch : ClosestPointOnPolyline(mainPipePts, spr);
+                                double d = spr.GetDistanceTo(candidate);
+                                if (d < minDist)
                                 {
-                                    if (distToServed < minDist)
-                                    {
-                                        minDist = distToServed;
-                                        nextGroupIdx = -1;
-                                        nextSprInGroup = i;
-                                        attachPt = servedSpr;
-                                    }
+                                    minDist = d;
+                                    nextGroupIdx = g;
+                                    attachPt = candidate;
+                                    foundDirectPath = true;
                                 }
+                                break; // only need one unserved sprinkler per group for comparison
                             }
                         }
                     }
                 }
 
-                if (nextGroupIdx < 0 && nextSprInGroup < 0) break;
+                if (nextGroupIdx < 0) break;
 
-                if (nextGroupIdx >= 0)
                 {
                     var group = groups[nextGroupIdx];
-                    drawnCount += RouteColinearGroup(tr, ms, group, sprinklers, attachPt, zoneRing, db, zoneBoundaryHex, elevation, branchLayerId, branchW, !trunkHorizontal, served);
-                }
-                else if (nextSprInGroup >= 0)
-                {
-                    var nextSpr = sprinklers[nextSprInGroup];
-                    if (!BuildOrthogonalPath(attachPt, nextSpr, zoneRing, !trunkHorizontal, out List<Point2d> path))
-                    {
-                        Point2d relayPt = CreateRelayPoint(attachPt, nextSpr, zoneRing, !trunkHorizontal);
-                        if (BuildOrthogonalPath(attachPt, relayPt, zoneRing, !trunkHorizontal, out List<Point2d> relayPath))
-                        {
-                            var relayBranch = CreateBranchPolyline(db, relayPath, elevation, branchLayerId, branchW);
-                            if (relayBranch != null)
-                            {
-                                SprinklerXData.ApplyZoneBoundaryTag(relayBranch, zoneBoundaryHex?.Trim() ?? "");
-                                ms.AppendEntity(relayBranch);
-                                tr.AddNewlyCreatedDBObject(relayBranch, true);
-                                drawnCount++;
-                            }
-                        }
-
-                        if (BuildOrthogonalPath(relayPt, nextSpr, zoneRing, !trunkHorizontal, out List<Point2d> finalPath))
-                        {
-                            var finalBranch = CreateBranchPolyline(db, finalPath, elevation, branchLayerId, branchW);
-                            if (finalBranch != null)
-                            {
-                                SprinklerXData.ApplyZoneBoundaryTag(finalBranch, zoneBoundaryHex?.Trim() ?? "");
-                                ms.AppendEntity(finalBranch);
-                                tr.AddNewlyCreatedDBObject(finalBranch, true);
-                                drawnCount++;
-                            }
-                        }
-                    }
-                    else
-                    {
-                        var branch = CreateBranchPolyline(db, path, elevation, branchLayerId, branchW);
-                        if (branch != null)
-                        {
-                            SprinklerXData.ApplyZoneBoundaryTag(branch, zoneBoundaryHex?.Trim() ?? "");
-                            ms.AppendEntity(branch);
-                            tr.AddNewlyCreatedDBObject(branch, true);
-                            drawnCount++;
-                        }
-                    }
-
-                    served.Add(nextSprInGroup);
+                    drawnCount += RouteColinearGroup(tr, ms, group, sprinklers, attachPt, zoneRing, db, zoneBoundaryHex, elevation, branchLayerId, branchW, !trunkHorizontal, served, shafts, drawnBranches);
                 }
             }
 
@@ -1984,7 +1944,7 @@ namespace autocad_final.Commands
             return groups;
         }
 
-        private static int RouteColinearGroup(Transaction tr, BlockTableRecord ms, List<int> group, List<Point2d> sprinklers, Point2d mainAttachPt, List<Point2d> zoneRing, Database db, string zoneBoundaryHex, double elevation, ObjectId branchLayerId, double branchW, bool verticalFirst, HashSet<int> served)
+        private static int RouteColinearGroup(Transaction tr, BlockTableRecord ms, List<int> group, List<Point2d> sprinklers, Point2d mainAttachPt, List<Point2d> zoneRing, Database db, string zoneBoundaryHex, double elevation, ObjectId branchLayerId, double branchW, bool verticalFirst, HashSet<int> served, List<FindShaftsInsideBoundary.ShaftBlockInfo> shafts, List<(Point2d start, Point2d end, List<Point2d> path)> drawnBranches)
         {
             if (group.Count == 0) return 0;
 
@@ -1995,26 +1955,23 @@ namespace autocad_final.Commands
 
             if (unserved.Count == 0) return 0;
 
-            bool isRowGroup = Math.Abs(sprinklers[unserved[0]].Y - sprinklers[unserved[unserved.Count - 1]].Y) < Math.Abs(sprinklers[unserved[0]].X - sprinklers[unserved[unserved.Count - 1]].X);
+            // Determine row vs column by which axis has more spread
+            double spreadX = Math.Abs(sprinklers[unserved[0]].X - sprinklers[unserved[unserved.Count > 1 ? unserved.Count - 1 : 0]].X);
+            double spreadY = Math.Abs(sprinklers[unserved[0]].Y - sprinklers[unserved[unserved.Count > 1 ? unserved.Count - 1 : 0]].Y);
+            bool isRowGroup = spreadX > spreadY;
+
+            // Sort consecutively along the group axis so each segment only spans adjacent sprinklers
             unserved.Sort((a, b) => (isRowGroup ? sprinklers[a].X : sprinklers[a].Y).CompareTo(isRowGroup ? sprinklers[b].X : sprinklers[b].Y));
 
-            int closestIdx = -1;
-            double minDist = double.MaxValue;
-            for (int i = 0; i < unserved.Count; i++)
+            // Traverse starting from whichever end is closer to the main pipe attach point — never swap
+            // individual elements into the front, as that would create non-consecutive segments that
+            // pass through intermediate sprinklers.
+            if (unserved.Count >= 2)
             {
-                double d = sprinklers[unserved[i]].GetDistanceTo(mainAttachPt);
-                if (d < minDist)
-                {
-                    minDist = d;
-                    closestIdx = i;
-                }
-            }
-
-            if (closestIdx >= 0)
-            {
-                var temp = unserved[0];
-                unserved[0] = unserved[closestIdx];
-                unserved[closestIdx] = temp;
+                double distFirst = sprinklers[unserved[0]].GetDistanceTo(mainAttachPt);
+                double distLast  = sprinklers[unserved[unserved.Count - 1]].GetDistanceTo(mainAttachPt);
+                if (distLast < distFirst)
+                    unserved.Reverse();
             }
 
             var drawnCount = 0;
@@ -2025,29 +1982,28 @@ namespace autocad_final.Commands
                 var spr = sprinklers[sprIdx];
                 Point2d connectFrom = (i == 0) ? mainAttachPt : sprinklers[unserved[i - 1]];
 
-                if (!BuildOrthogonalPath(connectFrom, spr, zoneRing, verticalFirst, out List<Point2d> path))
-                {
-                    Point2d relayPt = CreateRelayPoint(connectFrom, spr, zoneRing, verticalFirst);
-                    if (BuildOrthogonalPath(connectFrom, relayPt, zoneRing, verticalFirst, out List<Point2d> relayPath))
-                    {
-                        var relayBranch = CreateBranchPolyline(db, relayPath, elevation, branchLayerId, branchW);
-                        if (relayBranch != null)
-                        {
-                            SprinklerXData.ApplyZoneBoundaryTag(relayBranch, zoneBoundaryHex?.Trim() ?? "");
-                            ms.AppendEntity(relayBranch);
-                            tr.AddNewlyCreatedDBObject(relayBranch, true);
-                            drawnCount++;
-                        }
-                    }
+                // First segment: L-shape from main pipe to first sprinkler in group
+                // Remaining segments: direct straight lines between consecutive sprinklers
+                List<Point2d> path;
+                if (i == 0)
+                    path = new List<Point2d> { connectFrom, new Point2d(connectFrom.X, spr.Y), spr };
+                else
+                    path = new List<Point2d> { connectFrom, spr };
 
-                    if (BuildOrthogonalPath(relayPt, spr, zoneRing, verticalFirst, out List<Point2d> finalPath))
+                path = CollapseCollinear(path);
+
+                if (BranchCrossesShaft(path, shafts))
+                {
+                    Point2d nearestPt = FindNearestBranchPoint(spr, drawnBranches);
+                    if (nearestPt != Point2d.Origin && BuildOrthogonalPath(nearestPt, spr, zoneRing, verticalFirst, out List<Point2d> fallbackPath))
                     {
-                        var finalBranch = CreateBranchPolyline(db, finalPath, elevation, branchLayerId, branchW);
-                        if (finalBranch != null)
+                        var fallbackBranch = CreateBranchPolyline(db, fallbackPath, elevation, branchLayerId, branchW);
+                        if (fallbackBranch != null)
                         {
-                            SprinklerXData.ApplyZoneBoundaryTag(finalBranch, zoneBoundaryHex?.Trim() ?? "");
-                            ms.AppendEntity(finalBranch);
-                            tr.AddNewlyCreatedDBObject(finalBranch, true);
+                            SprinklerXData.ApplyZoneBoundaryTag(fallbackBranch, zoneBoundaryHex?.Trim() ?? "");
+                            ms.AppendEntity(fallbackBranch);
+                            tr.AddNewlyCreatedDBObject(fallbackBranch, true);
+                            drawnBranches.Add((nearestPt, spr, fallbackPath));
                             drawnCount++;
                         }
                     }
@@ -2060,6 +2016,7 @@ namespace autocad_final.Commands
                         SprinklerXData.ApplyZoneBoundaryTag(branch, zoneBoundaryHex?.Trim() ?? "");
                         ms.AppendEntity(branch);
                         tr.AddNewlyCreatedDBObject(branch, true);
+                        drawnBranches.Add((connectFrom, spr, path));
                         drawnCount++;
                     }
                 }
@@ -2254,6 +2211,171 @@ namespace autocad_final.Commands
         private static double EstimatePipeWidth(Database db)
         {
             return NfpaBranchPipeSizing.GetMainTrunkPolylineDisplayWidthDu(db);
+        }
+
+        private static string GetBranchDiameter(int sprinklerCount)
+        {
+            if (sprinklerCount <= 2)  return "DN25";
+            if (sprinklerCount <= 3)  return "DN32";
+            if (sprinklerCount <= 5)  return "DN40";
+            if (sprinklerCount <= 10) return "DN50";
+            if (sprinklerCount <= 20) return "DN65";
+            if (sprinklerCount <= 40) return "DN80";
+            if (sprinklerCount <= 100) return "DN100";
+            return "DN150";
+        }
+
+        private static void AddBranchLabel(Transaction tr, BlockTableRecord ms, Database db, List<Point2d> path, int sprinklerCount, double elevation, ObjectId labelLayerId)
+        {
+            if (path == null || path.Count < 2) return;
+
+            Point2d mid = path.Count == 2
+                ? new Point2d((path[0].X + path[1].X) * 0.5, (path[0].Y + path[1].Y) * 0.5)
+                : path[path.Count / 2];
+
+            string label = GetBranchDiameter(sprinklerCount);
+
+            double textHeight = 1.0;
+            try
+            {
+                if (DrawingUnitsHelper.TryMetersToDrawingLength(db.Insunits, 0.10, out double h) && h > 0)
+                    textHeight = h;
+            }
+            catch { }
+
+            var txt = new DBText();
+            txt.SetDatabaseDefaults(db);
+            txt.LayerId = labelLayerId;
+            txt.TextString = label;
+            txt.Height = textHeight;
+            txt.Position = new Point3d(mid.X, mid.Y + textHeight * 0.5, elevation);
+            txt.HorizontalMode = TextHorizontalMode.TextCenter;
+            txt.AlignmentPoint = new Point3d(mid.X, mid.Y + textHeight * 0.5, elevation);
+
+            ms.AppendEntity(txt);
+            tr.AddNewlyCreatedDBObject(txt, true);
+        }
+
+        private static List<FindShaftsInsideBoundary.ShaftBlockInfo> GetShaftsInZone(Transaction tr, Database db, List<Point2d> zoneRing)
+        {
+            var shafts = new List<FindShaftsInsideBoundary.ShaftBlockInfo>();
+            if (zoneRing == null || zoneRing.Count < 3) return shafts;
+
+            var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+            var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+
+            foreach (ObjectId id in ms)
+            {
+                if (id.IsErased) continue;
+                var ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
+                if (!(ent is BlockReference br)) continue;
+
+                string layer = br.Layer ?? string.Empty;
+                bool isShaftLayer = string.Equals(layer, "mcd - shaft", StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(layer, "0", StringComparison.OrdinalIgnoreCase);
+                if (!isShaftLayer) continue;
+
+                var p2 = new Point2d(br.Position.X, br.Position.Y);
+                bool inZone = PointInPolygon(zoneRing, p2);
+
+                bool hasExt = false;
+                Extents2d e2 = default;
+
+                try
+                {
+                    var e3 = br.GeometricExtents;
+                    e2 = new Extents2d(new Point2d(e3.MinPoint.X, e3.MinPoint.Y), new Point2d(e3.MaxPoint.X, e3.MaxPoint.Y));
+                    hasExt = true;
+                }
+                catch
+                {
+                    try
+                    {
+                        var btr = (BlockTableRecord)tr.GetObject(br.BlockTableRecord, OpenMode.ForRead);
+                        if (!btr.Bounds.HasValue) continue;
+                        var b = btr.Bounds.Value;
+                        e2 = new Extents2d(new Point2d(b.MinPoint.X, b.MinPoint.Y), new Point2d(b.MaxPoint.X, b.MaxPoint.Y));
+                        hasExt = true;
+                    }
+                    catch { hasExt = false; }
+                }
+
+                if (!inZone)
+                {
+                    if (!hasExt) continue;
+                    bool extInZone = PointInPolygon(zoneRing, e2.MinPoint) || PointInPolygon(zoneRing, e2.MaxPoint) ||
+                                     PointInPolygon(zoneRing, new Point2d(e2.MinPoint.X, e2.MaxPoint.Y)) ||
+                                     PointInPolygon(zoneRing, new Point2d(e2.MaxPoint.X, e2.MinPoint.Y));
+                    if (!extInZone) continue;
+                }
+
+                shafts.Add(new FindShaftsInsideBoundary.ShaftBlockInfo(br.Position, hasExt, e2));
+            }
+
+            return shafts;
+        }
+
+        private static bool BranchCrossesShaft(List<Point2d> path, List<FindShaftsInsideBoundary.ShaftBlockInfo> shafts)
+        {
+            if (path == null || path.Count < 2 || shafts == null || shafts.Count == 0)
+                return false;
+
+            foreach (var shaft in shafts)
+            {
+                if (!shaft.HasExtents) continue;
+
+                var ext = shaft.Extents2d;
+                double minX = ext.MinPoint.X;
+                double maxX = ext.MaxPoint.X;
+                double minY = ext.MinPoint.Y;
+                double maxY = ext.MaxPoint.Y;
+
+                bool pathEntersShaft = false;
+                bool pathExitsShaft = false;
+
+                for (int i = 0; i < path.Count - 1; i++)
+                {
+                    var pt = path[i];
+                    var ptNext = path[i + 1];
+
+                    bool ptInside = pt.X >= minX && pt.X <= maxX && pt.Y >= minY && pt.Y <= maxY;
+                    bool ptNextInside = ptNext.X >= minX && ptNext.X <= maxX && ptNext.Y >= minY && ptNext.Y <= maxY;
+
+                    if (!ptInside && ptNextInside)
+                        pathEntersShaft = true;
+                    if (ptInside && !ptNextInside)
+                        pathExitsShaft = true;
+                }
+
+                if (pathEntersShaft && pathExitsShaft)
+                    return true;
+            }
+            return false;
+        }
+
+        private static Point2d FindNearestBranchPoint(Point2d sprinkler, List<(Point2d start, Point2d end, List<Point2d> path)> drawnBranches)
+        {
+            if (drawnBranches.Count == 0)
+                return Point2d.Origin;
+
+            double minDist = double.MaxValue;
+            Point2d nearest = Point2d.Origin;
+
+            foreach (var (start, end, path) in drawnBranches)
+            {
+                if (path == null) continue;
+                foreach (var pt in path)
+                {
+                    double d = pt.GetDistanceTo(sprinkler);
+                    if (d < minDist)
+                    {
+                        minDist = d;
+                        nearest = pt;
+                    }
+                }
+            }
+
+            return nearest;
         }
     }
 }
