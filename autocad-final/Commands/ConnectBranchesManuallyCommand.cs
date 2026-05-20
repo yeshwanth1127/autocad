@@ -269,6 +269,12 @@ namespace autocad_final.Commands
                     });
                 }
 
+                // Erase any existing branch connections to the selected heads before drawing new ones,
+                // so we don't end up with two competing routes to the same sprinkler.
+                int erasedExisting = EraseExistingBranchConnectionsToHeads(tr, ms, db, work);
+                if (erasedExisting > 0)
+                    ed.WriteMessage("\nRemoved " + erasedExisting + " existing branch connection(s) to selected sprinkler heads.\n");
+
                 // Wider row bucket in explicit extension mode so slight drafting misalignment still chains on one lateral.
                 double groupTol = explicitFeedExtensionMode
                     ? GetManualConnectRowBucketSizeDu(db, minTeeSpacingDu)
@@ -791,6 +797,75 @@ namespace autocad_final.Commands
                 du > 1e-12)
                 return Math.Max(du, 1e-6);
             return 0.01;
+        }
+
+        /// <summary>
+        /// Erases every open branch-layer polyline that has any vertex coincident with a selected
+        /// sprinkler head position. Called before drawing new connections so stale routes are cleaned
+        /// up instead of accumulating alongside the new ones.
+        /// </summary>
+        private static int EraseExistingBranchConnectionsToHeads(
+            Transaction tr,
+            BlockTableRecord ms,
+            Database db,
+            IReadOnlyList<ResolvedHeadWork> work)
+        {
+            if (tr == null || ms == null || db == null || work == null || work.Count == 0)
+                return 0;
+
+            // Collect selected head positions (2D, ignoring elevation).
+            var headPositions = new List<Point2d>(work.Count);
+            foreach (var w in work)
+                headPositions.Add(new Point2d(w.HeadPt.X, w.HeadPt.Y));
+
+            // Tolerance: ~30 mm in drawing units; branch vertices should be essentially coincident
+            // with the head, but allow for small floating-point or snap drift.
+            double connTol = 1.0;
+            try
+            {
+                if (DrawingUnitsHelper.TryMetersToDrawingLength(db.Insunits, 0.03, out double du) && du > 0)
+                    connTol = du;
+            }
+            catch { }
+            double connTol2 = connTol * connTol;
+
+            int erased = 0;
+            foreach (ObjectId id in ms)
+            {
+                if (id.IsErased) continue;
+                Entity ent = null;
+                try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
+                catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                if (ent == null) continue;
+
+                if (!IsBranchPipeLayerName(ent.Layer)) continue;
+                var pl = ent as Polyline;
+                if (pl == null || pl.Closed) continue;
+
+                int nv = 0;
+                try { nv = pl.NumberOfVertices; } catch { continue; }
+                if (nv < 2) continue;
+
+                bool touchesHead = false;
+                for (int vi = 0; vi < nv && !touchesHead; vi++)
+                {
+                    Point3d v3;
+                    try { v3 = pl.GetPoint3dAt(vi); } catch { continue; }
+                    var v2 = new Point2d(v3.X, v3.Y);
+                    foreach (var hp in headPositions)
+                    {
+                        double dx = v2.X - hp.X, dy = v2.Y - hp.Y;
+                        if (dx * dx + dy * dy <= connTol2) { touchesHead = true; break; }
+                    }
+                }
+
+                if (!touchesHead) continue;
+
+                ent.UpgradeOpen();
+                try { ent.Erase(); erased++; } catch { }
+            }
+
+            return erased;
         }
 
         private static bool IsBranchPipeLayerName(string layerName)

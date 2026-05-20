@@ -123,21 +123,14 @@ namespace autocad_final.UI
             var designDefs = new (string Text, Action Action)[]
             {
                 ("Initialize layers & blocks", InitializeStandardsPaletteAction.Run),
-                ("Define floor area — points", RunPointsArea),
+                ("Define floor area by picking points", RunPointsArea),
                 ("Place sprinklers", PlaceSprinklersPaletteAction.Run),
                 ("Place sprinklers for rooms", RunPlaceRoomSprinklers),
                 ("Create zones",                   ZoneCreation2PaletteAction.Run),
-                ("Assign shaft to zone",       RunAssignShaftToZone),
+                ("Assign shaft to zone manually (optional)",       RunAssignShaftToZone),
                 ("Route main pipe",            RunRouteMainPipe),
-                ("Redesign from trunk",        RunRedesignFromTrunk),
-                ("Connect branches manually (optional main or branch pick)",  RunConnectBranchesManually),
-                ("Route branch pipes",         RunRouteBranchPipes),
-                ("Route branch pipe 2",        RunRouteBranchPipes2),
-                ("Route branches final",       RunRouteBranchesFinal),
-                ("Label branches",             RunLabelBranches),
-                ("Place reducers",             RunPlaceReducers),
-                ("Reducers (connector route)", RunPlaceReducersConnectorFirst),
-                ("Label main pipe",            RunLabelMainPipe),
+                ("Route branches",             RunRedesignFromTrunk),
+                ("Connect branches manually to a main pipe or a branch pipe",  RunConnectBranchesManually),
                 ("Delete all on layer",        RunDeleteAllOnLayer),
             };
 

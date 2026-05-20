@@ -1,0 +1,2 @@
+c:\Users\admin\source\repos\autocad-final\autocad-final\obj\chk_col\Debug\autocad-final.csproj.AssemblyReference.cache
+c:\Users\admin\source\repos\autocad-final\autocad-final\obj\chk_col\Debug\autocad-final.csproj.CoreCompileInputs.cache

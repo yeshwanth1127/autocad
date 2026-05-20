@@ -40,7 +40,7 @@ namespace autocad_final.Commands
             if (perZone.Status != PromptStatus.OK) return;
 
             // 2. Select shaft block.
-            var peoShaft = new PromptEntityOptions("\nSelect shaft block: ");
+            var peoShaft = new PromptEntityOptions("\nSelect shaft: ");
             peoShaft.SetRejectMessage("\nPlease select a block reference.");
             peoShaft.AddAllowedClass(typeof(BlockReference), exactMatch: true);
             var perShaft = ed.GetEntity(peoShaft);
