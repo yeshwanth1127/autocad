@@ -53,9 +53,9 @@ namespace autocad_final.Agent
 
         /// <summary>
         /// Plan-view sprinkler head symbol radius (meters) for reducer placement. Loaded from <c>SprinklerHeadRadiusM</c>;
-        /// when that key is absent, equals <see cref="SprinklerToBoundaryDistanceM"/> after config load.
+        /// when that key is absent, defaults to 0.025 m (plan symbol size).
         /// </summary>
-        public double SprinklerHeadRadiusM { get; private set; } = 1.5;
+        public double SprinklerHeadRadiusM { get; private set; } = 0.025;
 
         /// <summary>
         /// Maximum floor area one shaft may serve (m²). Loaded from <c>ShaftMaxServiceAreaM2</c>.
@@ -169,8 +169,6 @@ namespace autocad_final.Agent
                 settings.SprinklerToBoundaryDistanceM = bd;
             if (TryParsePositiveDouble(values, "SprinklerHeadRadiusM", out var headR))
                 settings.SprinklerHeadRadiusM = headR;
-            else
-                settings.SprinklerHeadRadiusM = settings.SprinklerToBoundaryDistanceM;
             if (TryParsePositiveDouble(values, "ShaftMaxServiceAreaM2", out var shaft))
                 settings.ShaftMaxServiceAreaM2 = shaft;
 

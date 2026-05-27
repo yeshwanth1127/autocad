@@ -211,6 +211,27 @@ namespace autocad_final.Geometry
             return (centroidOutside || startOutside) && PolygonUtils.PointInPolygon(ring, clamped);
         }
 
+        /// <summary>Branch reducer insert places wide face on head circle toward smaller pipe.</summary>
+        public static bool BranchReducerInsert_WideFaceOnCircumference()
+        {
+            var joint = new Point2d(0, 0);
+            double radius = ReducerPlacementGeometry.DefaultSprinklerSymbolRadiusDu;
+            double wideHalf = ReducerPlacementGeometry.DefaultReducerHalfLengthDu;
+
+            var insert = ReducerPlacementGeometry.ComputeBranchReducerInsertAtHead(
+                joint, 1.0, 0.0, radius, wideHalf);
+            var contact = ReducerPlacementGeometry.ComputeWideFaceContactOnHead(
+                joint, 1.0, 0.0, radius);
+
+            if (Math.Abs(insert.X - (radius - wideHalf)) > 1e-9 || Math.Abs(insert.Y) > 1e-9)
+                return false;
+            if (Math.Abs(contact.X - radius) > 1e-9 || Math.Abs(contact.Y) > 1e-9)
+                return false;
+
+            var wideFace = new Point2d(insert.X + wideHalf, insert.Y);
+            return wideFace.GetDistanceTo(contact) < 1e-9;
+        }
+
         public static bool RunAll() =>
             DiagonalTrunk_AwkwardHeadNeedsAlternateOrientation()
             && OrthogonalWaypoints_VerticalFirstBreaksDiagonal()
@@ -223,6 +244,7 @@ namespace autocad_final.Geometry
             && OrthogonalWaypoints_NoMicroSegmentsInOutput()
             && ClampPointToClosedRing_OutsideMovesInside()
             && ClampPointToClosedRing_InsideUnchanged()
-            && ClampPointToClosedRing_ConcaveCentroidOutsideStillInside();
+            && ClampPointToClosedRing_ConcaveCentroidOutsideStillInside()
+            && BranchReducerInsert_WideFaceOnCircumference();
     }
 }

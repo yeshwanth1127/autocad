@@ -2690,18 +2690,6 @@ namespace autocad_final.Commands
             }
             catch { /* ignore */ }
 
-            double headRadiusM = RuntimeSettings.Load().SprinklerHeadRadiusM;
-            double radiusDu;
-            try
-            {
-                if (!DrawingUnitsHelper.TryMetersToDrawingLength(db.Insunits, headRadiusM, out radiusDu) || radiusDu <= 0)
-                    radiusDu = Math.Max(tickLen * 0.5, 1e-6);
-            }
-            catch
-            {
-                radiusDu = Math.Max(tickLen * 0.5, 1e-6);
-            }
-
             double reducerHalf = ComputeReducerHalfArm(db, tickLen, mainW);
             bool tagZone = !string.IsNullOrEmpty(zoneBoundaryHandleHex);
 
@@ -2717,6 +2705,13 @@ namespace autocad_final.Commands
                     errorMessage = reducerBlockErr ?? "Reducer block is missing.";
                     return false;
                 }
+
+                double sprinklerRadiusDu = ReducerPlacementGeometry.ResolveSprinklerSymbolRadiusDu(tr, db);
+                ReducerPlacementGeometry.ResolveReducerHalfExtentsDu(
+                    tr,
+                    reducerBlockDefId,
+                    out _,
+                    out double reducerWideHalfDu);
 
                 var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
                 var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
@@ -2777,9 +2772,6 @@ namespace autocad_final.Commands
                             ? new Vector2d(curPt.X - prevPt.X, curPt.Y - prevPt.Y)
                             : new Vector2d(prevPt.X - curPt.X, prevPt.Y - curPt.Y);
 
-                        double bigW = Math.Max(beforeW, afterW);
-                        double smallW = Math.Min(beforeW, afterW);
-
                         double dxSeg = curPt.X - prevPt.X;
                         double dySeg = curPt.Y - prevPt.Y;
                         double lenSeg = Math.Sqrt(dxSeg * dxSeg + dySeg * dySeg);
@@ -2800,21 +2792,15 @@ namespace autocad_final.Commands
                             }
                         }
 
-                        double wedgeLen = Math.Max(
-                            reducerHalf * 2.0,
-                            Math.Max(
-                                Math.Max(bigW, smallW) * 1.35 + Math.Abs(bigW - smallW) * 0.25,
-                                teeFiberPlacement ? Math.Max(mainW * 1.1, halfOutPlaceForWedgeLen * 2.8) : 0));
-
-                        double halfLenAlong = ComputeReducerWedgeHalfLengthDu(wedgeLen, bigW, smallW);
                         Point2d center = wedgeCenterNonTee;
                         if (teeFiberPlacement)
                         {
                             Point2d fiber = OffsetReducerToMainOuterFiber(prevPt, curPt, trunkHorizontal, trunkAxis, halfOutPlaceForWedgeLen);
-                            halfLenAlong = Math.Max(halfLenAlong, halfOutPlaceForWedgeLen * 1.35);
-                            center = new Point2d(
-                                fiber.X + suxL * halfLenAlong,
-                                fiber.Y + suyL * halfLenAlong);
+                            center = ReducerPlacementGeometry.ComputeMainTeeReducerInsertFromFiber(
+                                fiber,
+                                suxL,
+                                suyL,
+                                reducerWideHalfDu);
                         }
 
                         if (zoneRing != null && zoneRing.Count >= 3)
@@ -2910,19 +2896,13 @@ namespace autocad_final.Commands
                             svy = uy;
                         }
 
-                        // On the head circle, on the side of the smaller pipe; block center lies toward the bigger pipe.
-                        double halfLenPre = ComputeReducerWedgeHalfLengthDu(
-                            Math.Max(
-                                reducerHalf * 2.0,
-                                Math.Max(Math.Max(beforeWj, afterWj) * 1.35 + Math.Abs(beforeWj - afterWj) * 0.25, 0)),
-                            beforeWj,
-                            afterWj);
-                        Point2d radiusPt = new Point2d(
-                            joint.X + svx * radiusDu,
-                            joint.Y + svy * radiusDu);
-                        Point2d wedgeJoint = new Point2d(
-                            radiusPt.X - svx * halfLenPre,
-                            radiusPt.Y - svy * halfLenPre);
+                        // Wide face on head circle toward smaller pipe; block center toward larger pipe.
+                        Point2d wedgeJoint = ReducerPlacementGeometry.ComputeBranchReducerInsertAtHead(
+                            joint,
+                            svx,
+                            svy,
+                            sprinklerRadiusDu,
+                            reducerWideHalfDu);
 
                         PlaceOneReducer(
                             wedgeJoint,

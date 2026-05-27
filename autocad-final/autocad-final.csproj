@@ -152,6 +152,7 @@
     <Compile Include="AreaWorkflow\SprinklerTrunkLocator.cs" />
     <Compile Include="AreaWorkflow\PendentSprinklerBlockInsert.cs" />
     <Compile Include="AreaWorkflow\ReducerBlockInsert.cs" />
+    <Compile Include="AreaWorkflow\ReducerPlacementGeometry.cs" />
     <Compile Include="AreaWorkflow\PolylineNetArea.cs" />
     <Compile Include="AreaWorkflow\ZoneGlobalBoundaryBuilder.cs" />
     <Compile Include="AreaWorkflow\EditorWritePolygonNetArea.cs" />

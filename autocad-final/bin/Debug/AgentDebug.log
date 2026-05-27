@@ -170084,3 +170084,57 @@ SESSION START  2026-05-27 17:00:01.879  pid=30752
    at autocad_final.Commands.PlaceReducersCommand.ResolveMainPipeWidthDu(Transaction tr, BlockTableRecord ms, List`1 zoneRing, Database db) in C:\Users\admin\source\repos\autocad-final\autocad-final\Commands\PlaceReducersCommand.cs:line 778
    at autocad_final.Commands.PlaceReducersCommand.TryRunForShaft(Document doc, Database db, Editor ed, ObjectId shaftEntityId, String& resultMessage, Boolean& success) in C:\Users\admin\source\repos\autocad-final\autocad-final\Commands\PlaceReducersCommand.cs:line 149
 [17:00:04.823] #0014 T001 [PlaceReducers] EXCEPTION InvalidInput
+
+══════════════════════════════════════════════════════
+SESSION START  2026-05-27 17:11:28.577  pid=21600
+══════════════════════════════════════════════════════
+[17:11:29.138] #0001 T001 [PlaceReducers] command start log=C:\Users\admin\source\repos\autocad-final\autocad-final\bin\Debug\AgentDebug.log
+[17:11:30.254] #0002 T001 [PlaceReducers] shaft selected id=(3387855854128)
+[17:11:30.259] #0003 T001 [PlaceReducers] 01 LockDocument
+[17:11:30.263] #0004 T001 [PlaceReducers] 02 StartTransaction
+[17:11:30.267] #0005 T001 [PlaceReducers] 03 EnsureRegApp
+[17:11:30.272] #0006 T001 [PlaceReducers] 04 ReadShaft
+[17:11:30.277] #0007 T001 [PlaceReducers] Shaft at 806567.26,552832.99
+[17:11:30.279] #0008 T001 [PlaceReducers] 05 OpenModelSpace
+[17:11:30.287] #0009 T001 [PlaceReducers] 06 FindZone
+[17:11:30.298] #0010 T001 [PlaceReducers] Zone handle=4EDC2 ringVerts=5
+[17:11:30.302] #0011 T001 [PlaceReducers] 07 ResolveMainWidth
+[17:11:30.310] #0012 T001 [PlaceReducers] mainW=0.017 labelMatchTol=0.500
+[17:11:30.314] #0013 T001 [PlaceReducers] 08 CollectBranches
+[17:11:30.320] #0014 T001 [PlaceReducers] branches=258
+[17:11:30.322] #0015 T001 [PlaceReducers] 09 CollectLabels
+[17:11:30.335] #0016 T001 [PlaceReducers] labels=258
+[17:11:30.337] #0017 T001 [PlaceReducers] 10 ResolveReducerBlock
+[17:11:30.340] #0018 T001 [PlaceReducers] reducerBlockDefId=(3387855878992)
+[17:11:30.343] #0019 T001 [PlaceReducers] 11 ValidateReducerBlock
+[17:11:30.350] #0020 T001 [PlaceReducers] 12 EraseOldReducers
+[17:11:30.355] #0021 T001 [PlaceReducers] 13 EnsureReducerLayer
+[17:11:30.359] #0022 T001 [PlaceReducers] reducerLayerId=(3387855879312)
+[17:11:30.361] #0023 T001 [PlaceReducers] 14 ComputePlacementSizes
+[17:11:30.367] #0024 T001 [PlaceReducers] 15 PlaceReducersLoop
+[17:11:30.386] #0025 T001 [PlaceReducers] 16 Commit
+[17:11:30.391] #0026 T001 [PlaceReducers] DONE: Placed 0 reducer(s) from branch labels.
+
+══════════════════════════════════════════════════════
+SESSION START  2026-05-27 17:20:14.155  pid=21244
+══════════════════════════════════════════════════════
+[17:20:14.156] #0001 T001 [PlaceReducers] command start log=C:\Users\admin\source\repos\autocad-final\autocad-final\bin\Debug\AgentDebug.log
+[17:20:17.491] #0002 T001 [PlaceReducers] shaft selected id=(2931698199088)
+[17:20:17.508] #0003 T001 [PlaceReducers] zone handle=4EDC2 ringVerts=5
+[17:20:17.605] #0004 T001 [PlaceReducers] DONE: Reducers placed: 88.
+
+══════════════════════════════════════════════════════
+SESSION START  2026-05-27 17:58:25.163  pid=35360
+══════════════════════════════════════════════════════
+[17:58:25.169] #0001 T001 [PlaceReducers] command start log=C:\Users\admin\source\repos\autocad-final\autocad-final\bin\Debug\AgentDebug.log
+[17:58:26.799] #0002 T001 [PlaceReducers] shaft selected id=(2681235243568)
+[17:58:28.206] #0003 T001 [PlaceReducers] zone handle=4EDC2 ringVerts=5
+[17:58:28.752] #0004 T001 [PlaceReducers] DONE: Reducers placed: 88.
+
+══════════════════════════════════════════════════════
+SESSION START  2026-05-27 18:11:13.394  pid=19920
+══════════════════════════════════════════════════════
+[18:11:13.396] #0001 T001 [PlaceReducers] command start log=C:\Users\admin\source\repos\autocad-final\autocad-final\bin\Debug\AgentDebug.log
+[18:11:14.831] #0002 T001 [PlaceReducers] shaft selected id=(2491262771760)
+[18:11:14.837] #0003 T001 [PlaceReducers] zone handle=4EDC2 ringVerts=5
+[18:11:14.928] #0004 T001 [PlaceReducers] DONE: Reducers placed: 88.
