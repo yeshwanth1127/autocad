@@ -105,6 +105,12 @@ namespace autocad_final.AreaWorkflow
         /// <summary>When a block with this name exists in the drawing, branch reducers use it instead of the built-in wedge.</summary>
         public const string ReducerBlockName = "reducer";
 
+        /// <summary>Alternate reducer block name accepted in the current drawing.</summary>
+        public const string McdReducerBlockName = "mcd-reducer";
+
+        /// <summary>Reducer block names searched in the drawing, in priority order.</summary>
+        public static readonly string[] ReducerBlockCandidateNames = { ReducerBlockName, McdReducerBlockName };
+
         public static string GetConfiguredSprinklerBlockName()
         {
             var configured = RuntimeSettings.Load()?.SprinklerBlockFile;

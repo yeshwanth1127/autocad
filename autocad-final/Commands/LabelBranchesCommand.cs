@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.Colors;
 using Autodesk.AutoCAD.DatabaseServices;
@@ -141,43 +140,8 @@ namespace autocad_final.Commands
                 }
                 catch { }
 
-                // Build endpoint graph: branch index → list of connected branch indices
-                var graph = new Dictionary<int, List<int>>();
-                for (int i = 0; i < branches.Count; i++) graph[i] = new List<int>();
-
-                for (int i = 0; i < branches.Count; i++)
-                {
-                    var ptsI = branches[i].pts;
-                    for (int j = i + 1; j < branches.Count; j++)
-                    {
-                        var ptsJ = branches[j].pts;
-                        if (EndpointsNear(ptsI, ptsJ, snapTol)) { graph[i].Add(j); graph[j].Add(i); }
-                    }
-                }
-
-                // Find root branches (touching main pipe)
-                var rootBranches = new List<int>();
-                for (int i = 0; i < branches.Count; i++)
-                {
-                    var pts = branches[i].pts;
-                    bool touchesMain = false;
-                    foreach (var mp in mainPipePts)
-                    {
-                        if (pts[0].GetDistanceTo(mp) <= snapTol || pts[pts.Count - 1].GetDistanceTo(mp) <= snapTol)
-                        { touchesMain = true; break; }
-                    }
-                    if (!touchesMain)
-                    {
-                        Point2d c1 = ClosestOnPolyline(mainPipePts, pts[0]);
-                        Point2d c2 = ClosestOnPolyline(mainPipePts, pts[pts.Count - 1]);
-                        if (c1.GetDistanceTo(pts[0]) <= snapTol || c2.GetDistanceTo(pts[pts.Count - 1]) <= snapTol)
-                            touchesMain = true;
-                    }
-                    if (touchesMain) rootBranches.Add(i);
-                }
-
-                // DFS to compute downstream sprinkler count per branch segment
-                var downstreamCounts = ComputeDownstreamCounts(branches, graph, rootBranches, snapTol, sprinklers);
+                bool mainRunsAlongX = MainRunsPrimarilyAlongX(mainPipePts);
+                bool verticalBranches = mainRunsAlongX;
 
                 // Erase existing branch labels tagged to this zone
                 ObjectId labelLayerId = SprinklerLayers.EnsureBranchLabelLayer(tr, db);
@@ -216,15 +180,8 @@ namespace autocad_final.Commands
 
                 for (int i = 0; i < branches.Count; i++)
                 {
-                    int count = downstreamCounts[i];
-                    if (count <= 0) count = 1;
-
-                    if (!NfpaBranchPipeSizing.TryGetMinNominalMmForSprinklerCount(count, out int nominalMm))
-                        continue;
-
                     var pts = branches[i].pts;
 
-                    // Label each segment of the branch polyline separately
                     for (int si = 0; si + 1 < pts.Count; si++)
                     {
                         var segA = pts[si];
@@ -234,9 +191,16 @@ namespace autocad_final.Commands
                         double len = Math.Sqrt(dx * dx + dy * dy);
                         if (len < 1e-6) continue;
 
+                        Point2d mainTap = ClosestOnPolyline(mainPipePts, segA);
+                        int count = CountSprinklersServedOnSegmentFromFarEnd(
+                            segA, segB, mainTap, verticalBranches, sprinklers, snapTol);
+                        if (count <= 0) count = 1;
+
+                        if (!NfpaBranchPipeSizing.TryGetMinNominalMmForSprinklerCount(count, out int nominalMm))
+                            continue;
+
                         var mid = new Point2d((segA.X + segB.X) * 0.5, (segA.Y + segB.Y) * 0.5);
 
-                        // Offset perpendicular: horizontal seg → above (+Y), vertical seg → right (+X)
                         bool segVertical = Math.Abs(dy) >= Math.Abs(dx);
                         double px = segVertical ? 1.0 : 0.0;
                         double py = segVertical ? 0.0 : 1.0;
@@ -271,77 +235,97 @@ namespace autocad_final.Commands
         }
 
         /// <summary>
-        /// For each branch polyline, compute the number of sprinkler-heads reachable from its
-        /// outgoing end (the end pointing away from the main pipe).
-        /// <para>
-        /// This mirrors <c>PlanSprinklersServedOnBranchSegmentFromTip(i, m) = m - i</c> used in
-        /// <c>AttachBranchesCommand</c>: the root segment (closest to main pipe) carries all m heads;
-        /// each step toward the tip reduces the count by 1; the tip segment carries 1.
-        /// </para>
+        /// Sprinklers served on this segment when counting from the farthest head in the row/column
+        /// back toward the main (last segment = 1, each step toward main adds one).
         /// </summary>
-        private static int[] ComputeDownstreamCounts(
-            List<(ObjectId id, Polyline pl, List<Point2d> pts)> branches,
-            Dictionary<int, List<int>> graph,
-            List<int> roots,
-            double snapTol,
-            List<Point2d> sprinklers)
+        private static int CountSprinklersServedOnSegmentFromFarEnd(
+            Point2d segA,
+            Point2d segB,
+            Point2d mainTap,
+            bool verticalBranches,
+            List<Point2d> sprinklers,
+            double snapTol)
         {
-            var result = new int[branches.Count];
-            var visited = new HashSet<int>();
+            if (sprinklers == null || sprinklers.Count == 0)
+                return 0;
 
-            // incomingPt: the endpoint of this polyline that faces the parent / main pipe.
-            // local = 1 if a sprinkler sits at the OUTGOING endpoint (away from main pipe), 0 if
-            //         this is an intermediate corner (L-shape bend with no head).
-            // result[idx] = local + sum(result[children]) — equivalent to PlanSprinklersServedOnBranchSegmentFromTip.
-            void Dfs(int idx, int parentIdx, Point2d incomingPt)
+            double tol = snapTol > 0 ? snapTol : 1e-6;
+            double mainAxis = verticalBranches ? mainTap.Y : mainTap.X;
+
+            double runA = DistanceAlongBranchRun(segA, mainTap, verticalBranches);
+            double runB = DistanceAlongBranchRun(segB, mainTap, verticalBranches);
+            Point2d outboard = runA >= runB ? segA : segB;
+
+            double cross = verticalBranches ? outboard.X : outboard.Y;
+            double outboardSide = (verticalBranches ? outboard.Y : outboard.X) - mainAxis;
+
+            var onRun = new List<(double dist, Point2d p)>();
+            for (int i = 0; i < sprinklers.Count; i++)
             {
-                if (visited.Contains(idx)) return;
-                visited.Add(idx);
+                var s = sprinklers[i];
+                double sRun = verticalBranches ? s.Y : s.X;
+                double sCross = verticalBranches ? s.X : s.Y;
+                if (Math.Abs(sCross - cross) > tol)
+                    continue;
 
-                var pts = branches[idx].pts;
-                bool pt0IsIncoming = incomingPt != Point2d.Origin &&
-                                     pts[0].GetDistanceTo(incomingPt) <= snapTol;
-                Point2d outgoingPt = pt0IsIncoming ? pts[pts.Count - 1] : pts[0];
+                double sSide = sRun - mainAxis;
+                if (Math.Abs(sSide) <= tol && Math.Abs(outboardSide) > tol)
+                    continue;
+                if (outboardSide > tol && sSide < -tol)
+                    continue;
+                if (outboardSide < -tol && sSide > tol)
+                    continue;
 
-                // Each step adds exactly 1 if a sprinkler head sits at the outgoing endpoint —
-                // same unit as the m-i formula in AttachBranchesCommand.
-                int local = sprinklers.Exists(s => outgoingPt.GetDistanceTo(s) <= snapTol) ? 1 : 0;
-
-                int downstream = 0;
-                foreach (int nb in graph[idx])
-                {
-                    if (nb == parentIdx) continue;
-                    Dfs(nb, idx, outgoingPt);
-                    downstream += result[nb];
-                }
-
-                result[idx] = local + downstream;
+                onRun.Add((Math.Abs(sSide), s));
             }
 
-            foreach (int root in roots)
-            {
-                var pts = branches[root].pts;
-                // Incoming side of the root = the end NOT at a sprinkler (it attaches to the main pipe).
-                Point2d rootIncoming = sprinklers.Exists(s => pts[0].GetDistanceTo(s) <= snapTol)
-                    ? pts[pts.Count - 1]
-                    : pts[0];
-                Dfs(root, -1, rootIncoming);
-            }
+            if (onRun.Count == 0)
+                return 0;
 
-            // Orphaned branches not reachable from any detected root — walk from first endpoint.
-            for (int i = 0; i < branches.Count; i++)
-                if (!visited.Contains(i))
-                    Dfs(i, -1, branches[i].pts[0]);
+            onRun.Sort((a, b) => a.dist.CompareTo(b.dist));
+            int m = onRun.Count;
 
-            return result;
+            int rankFromMain = RankSprinklerNearestEndpoint(outboard, onRun, tol);
+            if (rankFromMain <= 0)
+                rankFromMain = 1;
+
+            return m - rankFromMain + 1;
         }
 
-        private static bool EndpointsNear(List<Point2d> a, List<Point2d> b, double tol)
+        private static double DistanceAlongBranchRun(Point2d p, Point2d mainTap, bool verticalBranches)
         {
-            Point2d a0 = a[0], a1 = a[a.Count - 1];
-            Point2d b0 = b[0], b1 = b[b.Count - 1];
-            return a0.GetDistanceTo(b0) <= tol || a0.GetDistanceTo(b1) <= tol ||
-                   a1.GetDistanceTo(b0) <= tol || a1.GetDistanceTo(b1) <= tol;
+            return Math.Abs((verticalBranches ? p.Y : p.X) - (verticalBranches ? mainTap.Y : mainTap.X));
+        }
+
+        private static int RankSprinklerNearestEndpoint(
+            Point2d endpoint,
+            List<(double dist, Point2d p)> sortedFromMain,
+            double tol)
+        {
+            int bestRank = 0;
+            double bestD = double.MaxValue;
+            for (int i = 0; i < sortedFromMain.Count; i++)
+            {
+                double d = endpoint.GetDistanceTo(sortedFromMain[i].p);
+                if (d < bestD)
+                {
+                    bestD = d;
+                    bestRank = i + 1;
+                }
+            }
+
+            if (bestD > tol * 4.0)
+                return 0;
+            return bestRank;
+        }
+
+        private static bool MainRunsPrimarilyAlongX(List<Point2d> mainPts)
+        {
+            if (mainPts == null || mainPts.Count < 2)
+                return true;
+            double dx = mainPts[mainPts.Count - 1].X - mainPts[0].X;
+            double dy = mainPts[mainPts.Count - 1].Y - mainPts[0].Y;
+            return Math.Abs(dx) >= Math.Abs(dy);
         }
 
         private static Point2d ClosestOnPolyline(List<Point2d> pts, Point2d p)

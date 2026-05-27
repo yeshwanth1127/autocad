@@ -1,0 +1,8 @@
+c:\Users\admin\source\repos\autocad-final\artifacts\main-pipe-edge-fix\obj\autocad-final.csproj.AssemblyReference.cache
+c:\Users\admin\source\repos\autocad-final\artifacts\main-pipe-edge-fix\obj\autocad-final.csproj.CoreCompileInputs.cache
+c:\Users\admin\source\repos\autocad-final\artifacts\main-pipe-edge-fix\obj\autocad-.604953D9.Up2Date
+c:\Users\admin\source\repos\autocad-final\artifacts\main-pipe-edge-fix\Properties.config
+c:\Users\admin\source\repos\autocad-final\artifacts\main-pipe-edge-fix\obj\autocad-final.dll
+c:\Users\admin\source\repos\autocad-final\artifacts\main-pipe-edge-fix\obj\autocad-final.pdb
+c:\Users\admin\source\repos\autocad-final\artifacts\main-pipe-edge-fix\autocad-final.dll
+c:\Users\admin\source\repos\autocad-final\artifacts\main-pipe-edge-fix\autocad-final.pdb

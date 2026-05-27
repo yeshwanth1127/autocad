@@ -1,11 +1,12 @@
 using System;
 using Autodesk.AutoCAD.DatabaseServices;
-using autocad_final.Blocks;
 
 namespace autocad_final.AreaWorkflow
 {
     /// <summary>
-    /// Resolves the branch reducer block (<see cref="SprinklerLayers.ReducerBlockName"/>) in the current drawing.
+    /// Resolves the branch reducer block from the current drawing.
+    /// Accepts block definitions named <see cref="SprinklerLayers.ReducerBlockName"/>
+    /// or <see cref="SprinklerLayers.McdReducerBlockName"/> only.
     /// </summary>
     public static class ReducerBlockInsert
     {
@@ -19,41 +20,54 @@ namespace autocad_final.AreaWorkflow
                 return false;
             }
 
-            string name = SprinklerLayers.GetConfiguredReducerBlockName();
+            foreach (string candidate in SprinklerLayers.ReducerBlockCandidateNames)
+            {
+                if (TryFindBlockDefinitionInDrawing(tr, db, candidate, out blockDefId))
+                    return true;
+            }
+
+            errorMessage =
+                "No reducer block found in this drawing. Add a block named \"" +
+                SprinklerLayers.ReducerBlockName +
+                "\" or \"" +
+                SprinklerLayers.McdReducerBlockName +
+                "\" (run Initialize to create the standard reducer block).";
+            return false;
+        }
+
+        private static bool TryFindBlockDefinitionInDrawing(
+            Transaction tr,
+            Database db,
+            string blockName,
+            out ObjectId blockDefId)
+        {
+            blockDefId = ObjectId.Null;
+            if (string.IsNullOrWhiteSpace(blockName))
+                return false;
+
             var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
 
-            if (bt.Has(name))
+            if (bt.Has(blockName))
             {
-                blockDefId = bt[name];
-                return true;
+                blockDefId = bt[blockName];
+                return !blockDefId.IsNull;
             }
 
             foreach (ObjectId oid in bt)
             {
-                if (!(tr.GetObject(oid, OpenMode.ForRead, false) is BlockTableRecord btr))
-                    continue;
+                BlockTableRecord btr = null;
+                try { btr = tr.GetObject(oid, OpenMode.ForRead, false) as BlockTableRecord; }
+                catch (Autodesk.AutoCAD.Runtime.Exception) { continue; }
+                if (btr == null) continue;
                 if (btr.IsLayout || btr.IsAnonymous)
                     continue;
-                if (string.Equals(btr.Name, name, StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(btr.Name, blockName, StringComparison.OrdinalIgnoreCase))
                 {
                     blockDefId = oid;
                     return true;
                 }
             }
 
-            // Not in drawing — import from BlocksLibrary.dwg.
-            var imported = autocad_final.Blocks.BlockLibrary.EnsureBlockLoaded(db, name, out string libErr);
-            if (!imported.IsNull)
-            {
-                blockDefId = imported;
-                return true;
-            }
-
-            errorMessage =
-                "Block \"" + name +
-                "\" was not found and could not be loaded from BlocksLibrary.dwg" +
-                (string.IsNullOrEmpty(libErr) ? "." : " (" + libErr + ").") +
-                " Run Initialize first or add the reducer block to this drawing.";
             return false;
         }
     }

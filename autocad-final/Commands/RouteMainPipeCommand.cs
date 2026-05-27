@@ -87,7 +87,8 @@ namespace autocad_final.Commands
             double? skeletonCellSizeMeters = null,
             double? skeletonMinClearanceMeters = null,
             double? skeletonPruneBranchLengthMeters = null,
-            double? mainPipeLengthPenalty = null)
+            double? mainPipeLengthPenalty = null,
+            bool replaceExistingTrunk = true)
         {
             errorMessage = null;
             routeSummary = null;
@@ -154,7 +155,8 @@ namespace autocad_final.Commands
                 skeletonCellSizeMeters,
                 skeletonMinClearanceMeters,
                 skeletonPruneBranchLengthMeters,
-                mainPipeLengthPenalty);
+                mainPipeLengthPenalty,
+                replaceExistingTrunk);
 
             if (routed && usedExplicitAssignment && !string.IsNullOrEmpty(routeSummary))
             {
@@ -181,7 +183,8 @@ namespace autocad_final.Commands
             double? skeletonCellSizeMeters = null,
             double? skeletonMinClearanceMeters = null,
             double? skeletonPruneBranchLengthMeters = null,
-            double? mainPipeLengthPenalty = null)
+            double? mainPipeLengthPenalty = null,
+            bool replaceExistingTrunk = true)
         {
             errorMessage = null;
             routeSummary = null;
@@ -242,11 +245,12 @@ namespace autocad_final.Commands
             }
 
             // ── Detect existing trunk at any angle ────────────────────────────────
-            // If the user has already drawn (or manually adjusted) a trunk for this zone,
-            // preserve it and only update the connector from the shaft to that trunk.
-            // This makes routing idempotent with respect to manually rotated/slanted pipes.
-            var existingSegments = MainPipeDetector.FindMainPipes(db, boundaryHandleHex);
-            if (existingSegments.Count > 0)
+            // When replaceExistingTrunk is false, preserve a manually adjusted trunk and only
+            // re-route the connector. Palette "Route main pipe" always replaces the trunk.
+            var existingSegments = replaceExistingTrunk
+                ? new List<MainPipeDetector.MainPipeSegment>()
+                : MainPipeDetector.FindMainPipes(db, boundaryHandleHex);
+            if (!replaceExistingTrunk && existingSegments.Count > 0)
             {
                 AgentLog.Write("TryRouteMainPipeForZone",
                     "Existing trunk detected (" + existingSegments.Count + " segment(s)). Routing connector only.");

@@ -132,24 +132,44 @@ namespace autocad_final.AreaWorkflow
 
             if (wantCenterL)
             {
-                // Simple, stable “route main pipe” behavior:
-                // - trunk is a straight H/V scanline through the zone centroid (nudged if needed)
-                // - connector meets the trunk at the point closest to the shaft / snapped entry
-                //   (short orthogonal or A* path inside the zone).
-                Point2d mid = PolygonUtils.ApproxCentroidAreaWeighted(ring);
-                NudgeMidpointOffSprinklers(ref mid, sprinklers, spacingDu, eps);
+                // Centered trunk: prefer a centroid scanline that serves existing sprinklers and
+                // stays inset from the zone boundary (avoids hugging the perimeter on tapered zones).
+                double lambdaCenter = (mainPipeLengthPenalty.HasValue && mainPipeLengthPenalty.Value >= 0)
+                    ? mainPipeLengthPenalty.Value
+                    : 0.1;
 
-                double desiredAxis = trunkHorizontal ? mid.Y : mid.X;
-                Segment trunkSegCenter;
-                if (!TryPickLongestSpanNearAxisSearch(ring, desiredAxis, trunkHorizontal, eps, out trunkSegCenter))
+                Segment trunkSegCenter = default;
+                bool pickedHzCenter = trunkHorizontal;
+                bool trunkOk = false;
+                if (sprinklers != null && sprinklers.Count > 0)
                 {
-                    // If centroid axis doesn't intersect the polygon (rare for concave), try a spine-like search.
-                    if (!TryPickSpineTrunkSegment(ring, trunkHorizontal, eps, out trunkSegCenter, out _))
+                    trunkOk = TryPickMidpointBasedCoveringTrunk(
+                        ring, sprinklers, spacingDu, eps, lambdaCenter,
+                        orientationLocked, trunkHorizontal,
+                        out trunkSegCenter, out pickedHzCenter, out _);
+                    if (trunkOk)
+                        trunkHorizontal = pickedHzCenter;
+                }
+
+                if (!trunkOk)
+                {
+                    Point2d mid = PolygonUtils.ApproxCentroidAreaWeighted(ring);
+                    NudgeMidpointOffSprinklers(ref mid, sprinklers, spacingDu, eps);
+
+                    double desiredAxis = trunkHorizontal ? mid.Y : mid.X;
+                    if (!TryPickLongestSpanNearAxisSearch(ring, desiredAxis, trunkHorizontal, spacingDu, eps, out trunkSegCenter))
                     {
-                        errorMessage = "Could not place a centered trunk inside the zone.";
-                        return false;
+                        if (!TryPickSpineTrunkSegment(ring, trunkHorizontal, spacingDu, eps, out trunkSegCenter, out _))
+                        {
+                            errorMessage = "Could not place a centered trunk inside the zone.";
+                            return false;
+                        }
                     }
                 }
+
+                double clusterTolCenter = Math.Max(eps * 20.0, spacingDu * 0.2);
+                trunkSegCenter = TryNudgeTrunkSegmentInsetFromParallelWalls(
+                    ring, sprinklers, trunkSegCenter, trunkHorizontal, spacingDu, eps, clusterTolCenter);
 
                 var trunkPathCenter = new List<Point2d>(2)
                 {
@@ -314,7 +334,7 @@ namespace autocad_final.AreaWorkflow
                     }
                     else
                     {
-                        ok = TryPickSpineTrunkSegment(ring, trunkHorizontal, eps, out trunkSeg, out trunkErr);
+                        ok = TryPickSpineTrunkSegment(ring, trunkHorizontal, spacingDu, eps, out trunkSeg, out trunkErr);
                     }
                     break;
                 case "shortest_path":
@@ -378,15 +398,18 @@ namespace autocad_final.AreaWorkflow
                 return false;
             }
 
+            double clusterTolRoute = Math.Max(eps * 20.0, spacingDu * 0.2);
             if (requireOrthogonalCoverage)
             {
-                double clusterTol = Math.Max(eps * 20.0, spacingDu * 0.2);
-                if (!SegmentCoversAllSprinklers(sprinklers, trunkSeg, trunkHorizontal, clusterTol))
+                if (!SegmentCoversAllSprinklers(sprinklers, trunkSeg, trunkHorizontal, clusterTolRoute))
                 {
                     AgentLog.Write("TryRoute", "Trunk span does not cover all sprinklers — routing anyway.");
                     orthogonalCoverageWarning = orthogonalCoverageWarning ?? OrthogonalCoverageWarningText;
                 }
             }
+
+            trunkSeg = TryNudgeTrunkSegmentInsetFromParallelWalls(
+                ring, sprinklers, trunkSeg, trunkHorizontal, spacingDu, eps, clusterTolRoute);
 
             var trunkPath = new List<Point2d>(2)
             {
@@ -523,6 +546,7 @@ namespace autocad_final.AreaWorkflow
             List<Point2d> ring,
             double desiredAxis,
             bool horizontal,
+            double spacingDu,
             double eps,
             out Segment best)
         {
@@ -536,9 +560,9 @@ namespace autocad_final.AreaWorkflow
             int maxAttempts = 35;
 
             bool foundAny = false;
-            double bestLen = 0;
+            double bestScore = double.MaxValue;
 
-            // Evaluate desired axis first, then alternating nudges above/below to find the longest usable span.
+            // Prefer centroid-near, boundary-inset spans; use length only as a tie-breaker.
             for (int attempt = 0; attempt <= maxAttempts; attempt++)
             {
                 double axis;
@@ -558,9 +582,12 @@ namespace autocad_final.AreaWorkflow
                     continue;
 
                 double len = horizontal ? Math.Abs(cand.X1 - cand.X0) : Math.Abs(cand.Y1 - cand.Y0);
-                if (!foundAny || len > bestLen)
+                double score = BoundaryInsetPenalty(ring, cand, spacingDu, eps)
+                    + Math.Abs(axis - desiredAxis) * 2.0
+                    - len * 1e-4;
+                if (!foundAny || score < bestScore)
                 {
-                    bestLen = len;
+                    bestScore = score;
                     best = cand;
                     foundAny = true;
                 }
@@ -673,6 +700,261 @@ namespace autocad_final.AreaWorkflow
             }
         }
 
+        private static double MinDistancePointToRingBoundary(Point2d p, List<Point2d> ring)
+        {
+            double best = double.MaxValue;
+            int n = ring.Count;
+            for (int i = 0; i < n; i++)
+            {
+                int j = (i + 1) % n;
+                double d = PolygonUtils.DistancePointToSegment(p, ring[i], ring[j]);
+                if (d < best)
+                    best = d;
+            }
+            return best;
+        }
+
+        /// <summary>
+        /// Distance from a trunk scanline axis to the nearest boundary edge parallel to that axis
+        /// (horizontal trunk → horizontal walls; vertical trunk → vertical walls).
+        /// </summary>
+        private static double MinDistanceAxisToParallelBoundaryEdges(
+            List<Point2d> ring, double axis, bool trunkHorizontal, double eps)
+        {
+            if (ring == null || ring.Count < 3)
+                return double.MaxValue;
+
+            double min = double.MaxValue;
+            int n = ring.Count;
+            for (int i = 0; i < n; i++)
+            {
+                var a = ring[i];
+                var b = ring[(i + 1) % n];
+                if (trunkHorizontal)
+                {
+                    if (Math.Abs(a.Y - b.Y) > eps)
+                        continue;
+                    double edgeY = 0.5 * (a.Y + b.Y);
+                    min = Math.Min(min, Math.Abs(axis - edgeY));
+                }
+                else
+                {
+                    if (Math.Abs(a.X - b.X) > eps)
+                        continue;
+                    double edgeX = 0.5 * (a.X + b.X);
+                    min = Math.Min(min, Math.Abs(axis - edgeX));
+                }
+            }
+            return min;
+        }
+
+        /// <summary>Target clearance from parallel zone walls (≈ 1–1.5 sprinkler rows inward from the boundary).</summary>
+        private static double TrunkInsetTargetDu(double spacingDu, double eps)
+            => Math.Max(spacingDu * 1.25, Math.Max(spacingDu * 0.9, eps * 80.0));
+
+        /// <summary>
+        /// Penalty for trunks hugging straight zone walls. Scanline chords always touch the boundary at
+        /// their endpoints, so we measure axis distance to parallel edges and centerline distance to the ring.
+        /// </summary>
+        private static double TrunkPlacementPenalty(
+            List<Point2d> ring, Segment seg, bool trunkHorizontal, double spacingDu, double eps)
+        {
+            double insetTarget = TrunkInsetTargetDu(spacingDu, eps);
+            double axis = trunkHorizontal ? seg.Y0 : seg.X0;
+
+            double axisDist = MinDistanceAxisToParallelBoundaryEdges(ring, axis, trunkHorizontal, eps);
+            double axisPen = axisDist >= insetTarget ? 0 : (insetTarget - axisDist) * 16000.0;
+
+            var mid = new Point2d(0.5 * (seg.X0 + seg.X1), 0.5 * (seg.Y0 + seg.Y1));
+            double midDist = MinDistancePointToRingBoundary(mid, ring);
+            double midPen = midDist >= insetTarget ? 0 : (insetTarget - midDist) * 8000.0;
+
+            return axisPen + midPen;
+        }
+
+        private static double BoundaryInsetPenalty(List<Point2d> ring, Segment seg, double spacingDu, double eps)
+        {
+            bool horizontal = Math.Abs(seg.Y0 - seg.Y1) <= Math.Max(eps * 5.0, 1e-9);
+            return TrunkPlacementPenalty(ring, seg, horizontal, spacingDu, eps);
+        }
+
+        /// <summary>
+        /// For tapered zones (e.g. flat ceiling + slanted wall), find the first scanline below the top
+        /// horizontal wall that still spans all sprinklers — the most inset feasible trunk row.
+        /// </summary>
+        private static bool TryAddInsetCoveringAxisFromParallelBoundary(
+            List<Point2d> ring,
+            List<Point2d> sprinklers,
+            bool horizontal,
+            double spacingDu,
+            double eps,
+            double clusterTol,
+            List<double> axes)
+        {
+            if (ring == null || ring.Count < 3 || sprinklers == null || sprinklers.Count == 0 || axes == null)
+                return false;
+
+            double insetTarget = TrunkInsetTargetDu(spacingDu, eps);
+            double step = Math.Max(spacingDu * 0.25, eps * 40.0);
+            GetExtents(ring, out double minX, out double minY, out double maxX, out double maxY);
+
+            // Collect parallel boundary axes (deduped).
+            var boundaryAxes = new List<double>();
+            int n = ring.Count;
+            for (int i = 0; i < n; i++)
+            {
+                var a = ring[i];
+                var b = ring[(i + 1) % n];
+                if (horizontal)
+                {
+                    if (Math.Abs(a.Y - b.Y) <= eps)
+                        boundaryAxes.Add(0.5 * (a.Y + b.Y));
+                }
+                else
+                {
+                    if (Math.Abs(a.X - b.X) <= eps)
+                        boundaryAxes.Add(0.5 * (a.X + b.X));
+                }
+            }
+            if (boundaryAxes.Count == 0)
+                return false;
+
+            boundaryAxes.Sort();
+            boundaryAxes = DedupScalars(boundaryAxes, Math.Max(eps * 10.0, spacingDu * 0.1));
+
+            Point2d ringMid = PolygonUtils.ApproxCentroidAreaWeighted(ring);
+            bool added = false;
+            foreach (double boundaryAxis in boundaryAxes)
+            {
+                bool inwardPositive = horizontal
+                    ? boundaryAxis < ringMid.Y
+                    : boundaryAxis < ringMid.X;
+
+                int maxSteps = (int)Math.Ceiling((horizontal ? (maxY - minY) : (maxX - minX)) / step) + 2;
+                for (int s = 1; s <= maxSteps; s++)
+                {
+                    double axis = inwardPositive ? boundaryAxis + s * step : boundaryAxis - s * step;
+                    if (horizontal)
+                    {
+                        if (axis < minY + eps || axis > maxY - eps)
+                            break;
+                        foreach (var span in HorizontalSegmentsAtY(ring, axis, eps))
+                        {
+                            var seg = new Segment(span.X0, axis, span.X1, axis);
+                            if (!SegmentCoversAllSprinklers(sprinklers, seg, horizontal: true, tol: clusterTol))
+                                continue;
+                            if (MinDistanceAxisToParallelBoundaryEdges(ring, axis, true, eps) < insetTarget * 0.95)
+                                continue;
+                            axes.Add(axis);
+                            added = true;
+                            break;
+                        }
+                    }
+                    else
+                    {
+                        if (axis < minX + eps || axis > maxX - eps)
+                            break;
+                        foreach (var span in VerticalSegmentsAtX(ring, axis, eps))
+                        {
+                            var seg = new Segment(axis, span.Y0, axis, span.Y1);
+                            if (!SegmentCoversAllSprinklers(sprinklers, seg, horizontal: false, tol: clusterTol))
+                                continue;
+                            if (MinDistanceAxisToParallelBoundaryEdges(ring, axis, false, eps) < insetTarget * 0.95)
+                                continue;
+                            axes.Add(axis);
+                            added = true;
+                            break;
+                        }
+                    }
+                    if (added)
+                        break;
+                }
+                if (added)
+                    break;
+            }
+
+            return added;
+        }
+
+        /// <summary>
+        /// After trunk selection, step the scanline inward from parallel walls (ceiling/floor for horizontal mains)
+        /// while still covering all sprinklers. Handles tapered zones where every chord touches the boundary.
+        /// </summary>
+        private static Segment TryNudgeTrunkSegmentInsetFromParallelWalls(
+            List<Point2d> ring,
+            List<Point2d> sprinklers,
+            Segment seg,
+            bool horizontal,
+            double spacingDu,
+            double eps,
+            double clusterTol)
+        {
+            if (ring == null || ring.Count < 3 || sprinklers == null || sprinklers.Count == 0)
+                return seg;
+
+            double insetTarget = TrunkInsetTargetDu(spacingDu, eps);
+            double axis = horizontal ? seg.Y0 : seg.X0;
+            if (MinDistanceAxisToParallelBoundaryEdges(ring, axis, horizontal, eps) >= insetTarget * 0.98)
+                return seg;
+
+            Point2d ringMid = PolygonUtils.ApproxCentroidAreaWeighted(ring);
+            bool inwardPositive = horizontal ? axis < ringMid.Y : axis < ringMid.X;
+            double step = Math.Max(spacingDu * 0.25, eps * 30.0);
+            GetExtents(ring, out double minX, out double minY, out double maxX, out double maxY);
+
+            Segment best = seg;
+            double bestClear = MinDistanceAxisToParallelBoundaryEdges(ring, axis, horizontal, eps);
+
+            for (int s = 1; s <= 40; s++)
+            {
+                double trialAxis = inwardPositive ? axis + s * step : axis - s * step;
+                if (horizontal && (trialAxis < minY + eps || trialAxis > maxY - eps))
+                    break;
+                if (!horizontal && (trialAxis < minX + eps || trialAxis > maxX - eps))
+                    break;
+
+                Segment trialSeg = default;
+                bool have = false;
+                if (horizontal)
+                {
+                    foreach (var span in HorizontalSegmentsAtY(ring, trialAxis, eps))
+                    {
+                        var cand = new Segment(span.X0, trialAxis, span.X1, trialAxis);
+                        if (!SegmentCoversAllSprinklers(sprinklers, cand, horizontal: true, tol: clusterTol))
+                            continue;
+                        trialSeg = cand;
+                        have = true;
+                        break;
+                    }
+                }
+                else
+                {
+                    foreach (var span in VerticalSegmentsAtX(ring, trialAxis, eps))
+                    {
+                        var cand = new Segment(trialAxis, span.Y0, trialAxis, span.Y1);
+                        if (!SegmentCoversAllSprinklers(sprinklers, cand, horizontal: false, tol: clusterTol))
+                            continue;
+                        trialSeg = cand;
+                        have = true;
+                        break;
+                    }
+                }
+                if (!have)
+                    break;
+
+                double clear = MinDistanceAxisToParallelBoundaryEdges(ring, trialAxis, horizontal, eps);
+                if (clear > bestClear)
+                {
+                    bestClear = clear;
+                    best = trialSeg;
+                }
+                if (clear >= insetTarget)
+                    return trialSeg;
+            }
+
+            return best;
+        }
+
         // Sprinkler placement now lives in SprinklerGridPlacement2d.
 
         private static bool ChooseTrunkOrientation(List<Point2d> sprinklers)
@@ -767,12 +1049,13 @@ namespace autocad_final.AreaWorkflow
                         if (covered <= 0) continue;
                         double missed = sprinklers.Count - covered;
                         double offCentre = Math.Abs(c - median);
-                        double length = Math.Abs(s.X1 - s.X0);
-                        double score = missed * 1000.0 + offCentre - length * 1e-6;
+                        var segCand = new Segment(s.X0, c, s.X1, c);
+                        double score = missed * 1000.0 + offCentre
+                            + BoundaryInsetPenalty(ring, segCand, spacingDu, eps);
                         if (score < bestScore)
                         {
                             bestScore = score;
-                            best = new Segment(s.X0, c, s.X1, c);
+                            best = segCand;
                             found = true;
                         }
                     }
@@ -785,12 +1068,13 @@ namespace autocad_final.AreaWorkflow
                         if (covered <= 0) continue;
                         double missed = sprinklers.Count - covered;
                         double offCentre = Math.Abs(c - median);
-                        double length = Math.Abs(s.Y1 - s.Y0);
-                        double score = missed * 1000.0 + offCentre - length * 1e-6;
+                        var segCand = new Segment(c, s.Y0, c, s.Y1);
+                        double score = missed * 1000.0 + offCentre
+                            + BoundaryInsetPenalty(ring, segCand, spacingDu, eps);
                         if (score < bestScore)
                         {
                             bestScore = score;
-                            best = new Segment(c, s.Y0, c, s.Y1);
+                            best = segCand;
                             found = true;
                         }
                     }
@@ -836,6 +1120,7 @@ namespace autocad_final.AreaWorkflow
         private static bool TryPickSpineTrunkSegment(
             List<Point2d> ring,
             bool horizontal,
+            double spacingDu,
             double eps,
             out Segment best,
             out string errorMessage)
@@ -849,9 +1134,11 @@ namespace autocad_final.AreaWorkflow
             double step  = Math.Max(ortho * 0.02, eps * 50.0); // nudge step — 2% of zone depth
             int maxAttempts = 25;
 
+            bool foundAny = false;
+            double bestScore = double.MaxValue;
+
             for (int attempt = 0; attempt <= maxAttempts; attempt++)
             {
-                // Alternate nudges above/below spine so we find a line that actually cuts the zone.
                 int sign = (attempt % 2 == 0) ? 1 : -1;
                 int mag = (attempt + 1) / 2;
                 double axis = spine + sign * mag * step;
@@ -875,15 +1162,26 @@ namespace autocad_final.AreaWorkflow
                         if (len > bestLen) { bestLen = len; local = new Segment(axis, s.Y0, axis, s.Y1); have = true; }
                     }
                 }
-                if (have)
+                if (!have)
+                    continue;
+
+                double score = BoundaryInsetPenalty(ring, local, spacingDu, eps)
+                    + Math.Abs(axis - spine) * 2.0
+                    - bestLen * 1e-4;
+                if (!foundAny || score < bestScore)
                 {
+                    bestScore = score;
                     best = local;
-                    return true;
+                    foundAny = true;
                 }
             }
 
-            errorMessage = "Spine trunk could not fit inside the zone near its median axis (irregular shape?).";
-            return false;
+            if (!foundAny)
+            {
+                errorMessage = "Spine trunk could not fit inside the zone near its median axis (irregular shape?).";
+                return false;
+            }
+            return true;
         }
 
         private static bool TryPickBestTrunkSegment(
@@ -932,7 +1230,8 @@ namespace autocad_final.AreaWorkflow
                     foreach (var s in segs)
                     {
                         var seg = new Segment(s.X0, c, s.X1, c);
-                        double cost = CostToSegment(sprinklers, seg, horizontal) + lambda * Math.Abs(s.X1 - s.X0);
+                        double cost = CostToSegment(sprinklers, seg, horizontal) + lambda * Math.Abs(s.X1 - s.X0)
+                            + BoundaryInsetPenalty(ring, seg, spacingDu, eps);
                         if (cost < bestCost)
                         {
                             bestCost = cost;
@@ -947,7 +1246,8 @@ namespace autocad_final.AreaWorkflow
                     foreach (var s in segs)
                     {
                         var seg = new Segment(c, s.Y0, c, s.Y1);
-                        double cost = CostToSegment(sprinklers, seg, horizontal) + lambda * Math.Abs(s.Y1 - s.Y0);
+                        double cost = CostToSegment(sprinklers, seg, horizontal) + lambda * Math.Abs(s.Y1 - s.Y0)
+                            + BoundaryInsetPenalty(ring, seg, spacingDu, eps);
                         if (cost < bestCost)
                         {
                             bestCost = cost;
@@ -1081,25 +1381,14 @@ namespace autocad_final.AreaWorkflow
             Point2d mid = PolygonUtils.ApproxCentroidAreaWeighted(ring);
             NudgeMidpointOffSprinklers(ref mid, sprinklers, spacingDu, eps);
 
-            bool hOk = TryBestSpanThroughMid(
-                ring, sprinklers, mid, horizontal: true, eps, clusterTol, lambda,
-                requireMidOnSpan: true, out Segment hSeg, out double hCost);
-            if (!hOk)
-            {
-                hOk = TryBestSpanThroughMid(
-                    ring, sprinklers, mid, horizontal: true, eps, clusterTol, lambda,
-                    requireMidOnSpan: false, out hSeg, out hCost);
-            }
-
-            bool vOk = TryBestSpanThroughMid(
-                ring, sprinklers, mid, horizontal: false, eps, clusterTol, lambda,
-                requireMidOnSpan: true, out Segment vSeg, out double vCost);
-            if (!vOk)
-            {
-                vOk = TryBestSpanThroughMid(
-                    ring, sprinklers, mid, horizontal: false, eps, clusterTol, lambda,
-                    requireMidOnSpan: false, out vSeg, out vCost);
-            }
+            // IMPORTANT: In tapered/slanted zones the centroid scanline can be very close to the boundary.
+            // Search nearby scanlines and prefer trunks with more boundary clearance while still covering all sprinklers.
+            bool hOk = TryPickCoveringSpanNearAxisSearch(
+                ring, sprinklers, desiredAxis: mid.Y, horizontal: true, spacingDu, eps, clusterTol, lambda,
+                out Segment hSeg, out double hCost);
+            bool vOk = TryPickCoveringSpanNearAxisSearch(
+                ring, sprinklers, desiredAxis: mid.X, horizontal: false, spacingDu, eps, clusterTol, lambda,
+                out Segment vSeg, out double vCost);
 
             if (orientationLocked)
             {
@@ -1108,7 +1397,7 @@ namespace autocad_final.AreaWorkflow
                     if (!hOk)
                     {
                         errorMessage =
-                            "Midpoint-based trunk: preferred horizontal main cannot serve all sprinklers from the zone centroid line.";
+                            "Midpoint-based trunk: preferred horizontal main cannot serve all sprinklers near the zone centroid line.";
                         return false;
                     }
                     best = hSeg;
@@ -1119,7 +1408,7 @@ namespace autocad_final.AreaWorkflow
                     if (!vOk)
                     {
                         errorMessage =
-                            "Midpoint-based trunk: preferred vertical main cannot serve all sprinklers from the zone centroid line.";
+                            "Midpoint-based trunk: preferred vertical main cannot serve all sprinklers near the zone centroid line.";
                         return false;
                     }
                     best = vSeg;
@@ -1131,7 +1420,7 @@ namespace autocad_final.AreaWorkflow
                 if (!hOk && !vOk)
                 {
                     errorMessage =
-                        "Midpoint-based trunk: no horizontal or vertical line through the zone centroid serves all sprinklers orthogonally.";
+                        "Midpoint-based trunk: no horizontal or vertical trunk near the zone centroid can serve all sprinklers orthogonally.";
                     return false;
                 }
 
@@ -1195,11 +1484,124 @@ namespace autocad_final.AreaWorkflow
             }
         }
 
+        private static bool TryPickCoveringSpanNearAxisSearch(
+            List<Point2d> ring,
+            List<Point2d> sprinklers,
+            double desiredAxis,
+            bool horizontal,
+            double spacingDu,
+            double eps,
+            double clusterTol,
+            double lambda,
+            out Segment best,
+            out double bestCost)
+        {
+            best = default;
+            bestCost = double.MaxValue;
+            if (ring == null || ring.Count < 3 || sprinklers == null || sprinklers.Count == 0)
+                return false;
+
+            GetExtents(ring, out double minX, out double minY, out double maxX, out double maxY);
+            double ortho = horizontal ? (maxY - minY) : (maxX - minX);
+            double step = Math.Max(ortho * 0.02, Math.Max(spacingDu * 0.25, eps * 50.0));
+            int maxAttempts = 35;
+
+            var axes = new List<double>(sprinklers.Count + maxAttempts + 4);
+            foreach (var p in sprinklers)
+                axes.Add(horizontal ? p.Y : p.X);
+            axes.Add(desiredAxis);
+            TryAddInsetCoveringAxisFromParallelBoundary(ring, sprinklers, horizontal, spacingDu, eps, clusterTol, axes);
+            axes.Sort();
+            axes = DedupScalars(axes, Math.Max(clusterTol * 0.5, eps * 10.0));
+
+            for (int attempt = 0; attempt <= maxAttempts; attempt++)
+            {
+                int sign = (attempt % 2 == 1) ? 1 : -1;
+                int mag = (attempt + 1) / 2;
+                axes.Add(desiredAxis + sign * mag * step);
+            }
+
+            axes.Sort();
+            axes = DedupScalars(axes, Math.Max(clusterTol * 0.5, eps * 10.0));
+
+            bool found = false;
+            double insetTarget = TrunkInsetTargetDu(spacingDu, eps);
+
+            foreach (double axis in axes)
+            {
+                if (horizontal)
+                {
+                    foreach (var s in HorizontalSegmentsAtY(ring, axis, eps))
+                    {
+                        double x0 = s.X0, x1 = s.X1;
+                        double len = Math.Abs(x1 - x0);
+                        var seg = new Segment(x0, axis, x1, axis);
+                        if (!SegmentCoversAllSprinklers(sprinklers, seg, horizontal: true, tol: clusterTol))
+                            continue;
+
+                        double perp = 0;
+                        for (int i = 0; i < sprinklers.Count; i++)
+                            perp += Math.Abs(sprinklers[i].Y - axis);
+
+                        double axisClear = MinDistanceAxisToParallelBoundaryEdges(ring, axis, true, eps);
+                        double cost = perp
+                                      + lambda * len
+                                      + TrunkPlacementPenalty(ring, seg, true, spacingDu, eps)
+                                      + Math.Abs(axis - desiredAxis) * 2.0
+                                      - axisClear * 30.0;
+                        if (axisClear < insetTarget)
+                            cost += (insetTarget - axisClear) * 20000.0;
+
+                        if (cost < bestCost)
+                        {
+                            bestCost = cost;
+                            best = seg;
+                            found = true;
+                        }
+                    }
+                }
+                else
+                {
+                    foreach (var s in VerticalSegmentsAtX(ring, axis, eps))
+                    {
+                        double y0 = s.Y0, y1 = s.Y1;
+                        double len = Math.Abs(y1 - y0);
+                        var seg = new Segment(axis, y0, axis, y1);
+                        if (!SegmentCoversAllSprinklers(sprinklers, seg, horizontal: false, tol: clusterTol))
+                            continue;
+
+                        double perp = 0;
+                        for (int i = 0; i < sprinklers.Count; i++)
+                            perp += Math.Abs(sprinklers[i].X - axis);
+
+                        double axisClear = MinDistanceAxisToParallelBoundaryEdges(ring, axis, false, eps);
+                        double cost = perp
+                                      + lambda * len
+                                      + TrunkPlacementPenalty(ring, seg, false, spacingDu, eps)
+                                      + Math.Abs(axis - desiredAxis) * 2.0
+                                      - axisClear * 30.0;
+                        if (axisClear < insetTarget)
+                            cost += (insetTarget - axisClear) * 20000.0;
+
+                        if (cost < bestCost)
+                        {
+                            bestCost = cost;
+                            best = seg;
+                            found = true;
+                        }
+                    }
+                }
+            }
+
+            return found;
+        }
+
         private static bool TryBestSpanThroughMid(
             List<Point2d> ring,
             List<Point2d> sprinklers,
             Point2d mid,
             bool horizontal,
+            double spacingDu,
             double eps,
             double clusterTol,
             double lambda,
@@ -1225,7 +1627,8 @@ namespace autocad_final.AreaWorkflow
                     double perp = 0;
                     for (int i = 0; i < sprinklers.Count; i++)
                         perp += Math.Abs(sprinklers[i].Y - mid.Y);
-                    double cost = perp + lambda * (hi - lo);
+                    double cost = perp + lambda * (hi - lo)
+                        + BoundaryInsetPenalty(ring, seg, spacingDu, eps);
                     if (cost < bestCost)
                     {
                         bestCost = cost;
@@ -1248,7 +1651,8 @@ namespace autocad_final.AreaWorkflow
                     double perp = 0;
                     for (int i = 0; i < sprinklers.Count; i++)
                         perp += Math.Abs(sprinklers[i].X - mid.X);
-                    double cost = perp + lambda * (hi - lo);
+                    double cost = perp + lambda * (hi - lo)
+                        + BoundaryInsetPenalty(ring, seg, spacingDu, eps);
                     if (cost < bestCost)
                     {
                         bestCost = cost;
@@ -1310,7 +1714,8 @@ namespace autocad_final.AreaWorkflow
                         double perp = 0;
                         for (int i = 0; i < sprinklers.Count; i++)
                             perp += Math.Abs(sprinklers[i].Y - c);
-                        double cost = perp + lambda * Math.Abs(s.X1 - s.X0);
+                        double cost = perp + lambda * Math.Abs(s.X1 - s.X0)
+                            + BoundaryInsetPenalty(ring, seg, spacingDu, eps);
                         if (cost < bestCost)
                         {
                             bestCost = cost;
@@ -1330,7 +1735,8 @@ namespace autocad_final.AreaWorkflow
                         double perp = 0;
                         for (int i = 0; i < sprinklers.Count; i++)
                             perp += Math.Abs(sprinklers[i].X - c);
-                        double cost = perp + lambda * Math.Abs(s.Y1 - s.Y0);
+                        double cost = perp + lambda * Math.Abs(s.Y1 - s.Y0)
+                            + BoundaryInsetPenalty(ring, seg, spacingDu, eps);
                         if (cost < bestCost)
                         {
                             bestCost = cost;

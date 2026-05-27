@@ -1814,6 +1814,234 @@ namespace autocad_final.Commands
                 : new Point2d(columnTap.X, spr.Y);
         }
 
+        /// <summary>Order heads along the branch run (column = ±Y, row = ±X).</summary>
+        private static void SortSprinklerIndicesAlongBranch(
+            List<int> indices,
+            List<Point2d> sprinklers,
+            bool useVerticalBranches)
+        {
+            if (indices == null || indices.Count < 2 || sprinklers == null)
+                return;
+            indices.Sort((a, b) =>
+            {
+                double va = useVerticalBranches ? sprinklers[a].Y : sprinklers[a].X;
+                double vb = useVerticalBranches ? sprinklers[b].Y : sprinklers[b].X;
+                return va.CompareTo(vb);
+            });
+        }
+
+        /// <summary>
+        /// Split column/row heads into the two sides of the main (e.g. above/below a horizontal main).
+        /// Matches <see cref="AttachBranchesCommand"/> top/bottom lateral split.
+        /// </summary>
+        private static void SplitSprinklerIndicesBySideOfMain(
+            List<Point2d> sprinklers,
+            List<int> indices,
+            Point2d feedOnMain,
+            bool useVerticalBranches,
+            double tol,
+            out List<int> positiveSide,
+            out List<int> negativeSide)
+        {
+            positiveSide = new List<int>();
+            negativeSide = new List<int>();
+            if (indices == null || sprinklers == null)
+                return;
+
+            double axis = useVerticalBranches ? feedOnMain.Y : feedOnMain.X;
+            double t = tol > 0 ? tol : BranchAxisSnapEps;
+            for (int i = 0; i < indices.Count; i++)
+            {
+                int si = indices[i];
+                double coord = useVerticalBranches ? sprinklers[si].Y : sprinklers[si].X;
+                if (coord >= axis - t)
+                    positiveSide.Add(si);
+                if (coord <= axis + t)
+                    negativeSide.Add(si);
+            }
+        }
+
+        /// <summary>
+        /// Chain from main on one side only: main → nearest head → next head → … (never across the main).
+        /// </summary>
+        private static int TryDrawChainedBranchRunOnOneSideOfMain(
+            Transaction tr,
+            BlockTableRecord ms,
+            BranchRouteContext ctx,
+            ObjectId branchLayerId,
+            double branchW,
+            double elevation,
+            Point2d feedOnMain,
+            List<Point2d> sprinklers,
+            List<int> sideIndices,
+            bool useVerticalBranches,
+            HashSet<int> served,
+            ref int drawnCount)
+        {
+            if (sideIndices == null || sideIndices.Count == 0 || sprinklers == null)
+                return 0;
+
+            var drawOrder = new List<int>();
+            for (int i = 0; i < sideIndices.Count; i++)
+            {
+                int si = sideIndices[i];
+                if (served != null && served.Contains(si))
+                    continue;
+                drawOrder.Add(si);
+            }
+            if (drawOrder.Count == 0)
+                return 0;
+
+            drawOrder.Sort((a, b) =>
+            {
+                double da = useVerticalBranches
+                    ? Math.Abs(sprinklers[a].Y - feedOnMain.Y)
+                    : Math.Abs(sprinklers[a].X - feedOnMain.X);
+                double db = useVerticalBranches
+                    ? Math.Abs(sprinklers[b].Y - feedOnMain.Y)
+                    : Math.Abs(sprinklers[b].X - feedOnMain.X);
+                return da.CompareTo(db);
+            });
+
+            int servedHere = 0;
+            Point2d prev = feedOnMain;
+            for (int k = 0; k < drawOrder.Count; k++)
+            {
+                int si = drawOrder[k];
+                Point2d spr = sprinklers[si];
+                Point2d from = k == 0
+                    ? AlignColumnTapToHead(prev, spr, useVerticalBranches)
+                    : prev;
+
+                if (!TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, from, spr, ref drawnCount))
+                {
+                    if (k == 0)
+                        break;
+                    continue;
+                }
+
+                served?.Add(si);
+                servedHere++;
+                prev = spr;
+            }
+
+            return servedHere;
+        }
+
+        /// <summary>
+        /// Draw one straight segment per leg on each side of the main: feed → first head → second head → …
+        /// Heads on opposite sides of the main never share one continuous branch through the trunk.
+        /// </summary>
+        private static int TryDrawChainedStraightBranchesFromFeed(
+            Transaction tr,
+            BlockTableRecord ms,
+            BranchRouteContext ctx,
+            ObjectId branchLayerId,
+            double branchW,
+            double elevation,
+            Point2d feedOnMain,
+            List<Point2d> sprinklers,
+            List<int> indicesInOrder,
+            bool useVerticalBranches,
+            HashSet<int> served,
+            ref int drawnCount)
+        {
+            if (indicesInOrder == null || indicesInOrder.Count == 0 || sprinklers == null)
+                return 0;
+
+            SplitSprinklerIndicesBySideOfMain(
+                sprinklers,
+                indicesInOrder,
+                feedOnMain,
+                useVerticalBranches,
+                BranchAxisSnapEps,
+                out List<int> positiveSide,
+                out List<int> negativeSide);
+
+            int servedHere = 0;
+            servedHere += TryDrawChainedBranchRunOnOneSideOfMain(
+                tr, ms, ctx, branchLayerId, branchW, elevation,
+                feedOnMain, sprinklers, positiveSide, useVerticalBranches, served, ref drawnCount);
+            servedHere += TryDrawChainedBranchRunOnOneSideOfMain(
+                tr, ms, ctx, branchLayerId, branchW, elevation,
+                feedOnMain, sprinklers, negativeSide, useVerticalBranches, served, ref drawnCount);
+
+            return servedHere;
+        }
+
+        /// <summary>
+        /// After an auxiliary bar at a trunk end, chain heads along the bar then drop to each sprinkler.
+        /// </summary>
+        private static int TryDrawChainedPileFromAuxiliaryBar(
+            Transaction tr,
+            BlockTableRecord ms,
+            BranchRouteContext ctx,
+            ObjectId branchLayerId,
+            double branchW,
+            double elevation,
+            List<Point2d> sprinklers,
+            List<int> pileIndices,
+            bool useVerticalBranches,
+            double barFixedCoord,
+            HashSet<int> servedIndices,
+            ref int drawnCount)
+        {
+            if (pileIndices == null || pileIndices.Count == 0 || sprinklers == null)
+                return 0;
+
+            var order = new List<int>(pileIndices);
+            SortSprinklerIndicesAlongBranch(order, sprinklers, useVerticalBranches);
+
+            int servedHere = 0;
+            Point2d? prevSpr = null;
+            for (int k = 0; k < order.Count; k++)
+            {
+                int si = order[k];
+                if (servedIndices != null && servedIndices.Contains(si))
+                    continue;
+
+                Point2d spr = sprinklers[si];
+                Point2d junction = useVerticalBranches
+                    ? new Point2d(spr.X, barFixedCoord)
+                    : new Point2d(barFixedCoord, spr.Y);
+
+                bool ok;
+                if (!prevSpr.HasValue)
+                {
+                    ok = TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, junction, spr, ref drawnCount);
+                }
+                else
+                {
+                    Point2d prev = prevSpr.Value;
+                    bool sameColumn = useVerticalBranches
+                        ? Math.Abs(spr.X - prev.X) <= BranchAxisSnapEps
+                        : Math.Abs(spr.Y - prev.Y) <= BranchAxisSnapEps;
+
+                    if (sameColumn)
+                    {
+                        ok = TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, prev, spr, ref drawnCount);
+                    }
+                    else
+                    {
+                        Point2d prevJunction = useVerticalBranches
+                            ? new Point2d(prev.X, barFixedCoord)
+                            : new Point2d(barFixedCoord, prev.Y);
+                        ok = TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, prevJunction, junction, ref drawnCount)
+                            && TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, junction, spr, ref drawnCount);
+                    }
+                }
+
+                if (!ok)
+                    continue;
+
+                servedIndices?.Add(si);
+                servedHere++;
+                prevSpr = spr;
+            }
+
+            return servedHere;
+        }
+
         private static bool TryDrawPerHeadBranch(
             Transaction tr,
             BlockTableRecord ms,
@@ -1856,7 +2084,7 @@ namespace autocad_final.Commands
         }
 
         /// <summary>
-        /// Stub-end heads: outward auxiliary bar from trunk end vertex, then one straight two-point branch per head at spr.X / spr.Y.
+        /// Stub-end heads: auxiliary bar from trunk end, then chained drops along the bar to each head.
         /// </summary>
         private static void DrawAuxiliaryFromEndVertexAndPerpendicularFeeds(
             Transaction tr,
@@ -1898,18 +2126,19 @@ namespace autocad_final.Commands
                         new List<Point2d> { new Point2d(endVertex.X, yBar), new Point2d(barEnd, yBar) }, ref drawnCount);
                 }
 
+                var outwardPile = new List<int>();
                 for (int p = 0; p < pileIndices.Count; p++)
                 {
                     int si = pileIndices[p];
                     if (servedIndices.Contains(si))
                         continue;
-                    Point2d spr = sprinklers[si];
-                    if (!IsOutwardAlongAxis(spr.X, endVertex.X, outwardX))
+                    if (!IsOutwardAlongAxis(sprinklers[si].X, endVertex.X, outwardX))
                         continue;
-                    Point2d tapAux = new Point2d(spr.X, yBar);
-                    if (TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, tapAux, spr, ref drawnCount))
-                        servedIndices.Add(si);
+                    outwardPile.Add(si);
                 }
+                TryDrawChainedPileFromAuxiliaryBar(
+                    tr, ms, ctx, branchLayerId, branchW, elevation,
+                    sprinklers, outwardPile, useVerticalBranchDropsFromZoneMain, yBar, servedIndices, ref drawnCount);
             }
             else
             {
@@ -1933,18 +2162,19 @@ namespace autocad_final.Commands
                         new List<Point2d> { new Point2d(xBar, endVertex.Y), new Point2d(xBar, barEndY) }, ref drawnCount);
                 }
 
+                var outwardPile = new List<int>();
                 for (int p = 0; p < pileIndices.Count; p++)
                 {
                     int si = pileIndices[p];
                     if (servedIndices.Contains(si))
                         continue;
-                    Point2d spr = sprinklers[si];
-                    if (!IsOutwardAlongAxis(spr.Y, endVertex.Y, outwardY))
+                    if (!IsOutwardAlongAxis(sprinklers[si].Y, endVertex.Y, outwardY))
                         continue;
-                    Point2d tapAux = new Point2d(xBar, spr.Y);
-                    if (TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, tapAux, spr, ref drawnCount))
-                        servedIndices.Add(si);
+                    outwardPile.Add(si);
                 }
+                TryDrawChainedPileFromAuxiliaryBar(
+                    tr, ms, ctx, branchLayerId, branchW, elevation,
+                    sprinklers, outwardPile, useVerticalBranchDropsFromZoneMain, xBar, servedIndices, ref drawnCount);
             }
         }
 
@@ -2247,7 +2477,9 @@ namespace autocad_final.Commands
             return Math.Abs(tap.X - spr.X) < BranchAxisSnapEps || Math.Abs(tap.Y - spr.Y) < BranchAxisSnapEps;
         }
 
-        /// <summary>One straight two-point branch per sprinkler; column groups pick shared taps only.</summary>
+        /// <summary>
+        /// Straight two-point branch segments chained along each row/column: main tap → first head → second head → …
+        /// </summary>
         private static int DrawSimplePerpendicularBranchesFromMain(
             Transaction tr,
             BlockTableRecord ms,
@@ -2297,32 +2529,36 @@ namespace autocad_final.Commands
                 if (columnAux[g] == 0 || columnAux[g] == 1)
                     continue;
 
+                var groupIndices = new List<int>(columnGroups[g].Indices);
+                SortSprinklerIndicesAlongBranch(groupIndices, sprinklers, useVerticalBranches);
+
                 if (columnMainTap[g].HasValue)
                 {
-                    Point2d columnTap = columnMainTap[g].Value;
-                    for (int k = 0; k < columnGroups[g].Indices.Count; k++)
-                    {
-                        int si = columnGroups[g].Indices[k];
-                        if (served.Contains(si))
-                            continue;
-                        Point2d tap = AlignColumnTapToHead(columnTap, sprinklers[si], useVerticalBranches);
-                        if (TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, tap, sprinklers[si], ref drawnCount))
-                            served.Add(si);
-                    }
+                    TryDrawChainedStraightBranchesFromFeed(
+                        tr, ms, ctx, branchLayerId, branchW, elevation,
+                        columnMainTap[g].Value, sprinklers, groupIndices, useVerticalBranches, served, ref drawnCount);
                     continue;
                 }
 
-                for (int k = 0; k < columnGroups[g].Indices.Count; k++)
+                var unserved = new List<int>();
+                for (int k = 0; k < groupIndices.Count; k++)
                 {
-                    int si = columnGroups[g].Indices[k];
-                    if (served.Contains(si))
-                        continue;
-                    if (!TryPickPerpendicularTapOnMain(mainPipePts, sprinklers[si], useVerticalBranches, out Point2d tapPerc))
-                        continue;
-                    Point2d tap = AlignColumnTapToHead(tapPerc, sprinklers[si], useVerticalBranches);
-                    if (TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, tap, sprinklers[si], ref drawnCount))
-                        served.Add(si);
+                    if (!served.Contains(groupIndices[k]))
+                        unserved.Add(groupIndices[k]);
                 }
+                if (unserved.Count == 0)
+                    continue;
+
+                if (!TryPickPerpendicularTapOnMain(
+                        mainPipePts,
+                        sprinklers[unserved[0]],
+                        useVerticalBranches,
+                        out Point2d tapPerc))
+                    continue;
+
+                TryDrawChainedStraightBranchesFromFeed(
+                    tr, ms, ctx, branchLayerId, branchW, elevation,
+                    tapPerc, sprinklers, unserved, useVerticalBranches, served, ref drawnCount);
             }
 
             var pileNearStart = new List<int>();
@@ -2350,11 +2586,20 @@ namespace autocad_final.Commands
                 int g = headToGroup[i];
                 if (g >= 0 && columnAux[g] != 0 && columnAux[g] != 1 && columnMainTap[g].HasValue)
                 {
-                    Point2d tap = AlignColumnTapToHead(columnMainTap[g].Value, sprinklers[i], useVerticalBranches);
-                    if (TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, tap, sprinklers[i], ref drawnCount))
+                    var unservedInColumn = new List<int>();
+                    for (int k = 0; k < columnGroups[g].Indices.Count; k++)
                     {
-                        served.Add(i);
-                        continue;
+                        int si = columnGroups[g].Indices[k];
+                        if (!served.Contains(si))
+                            unservedInColumn.Add(si);
+                    }
+                    if (unservedInColumn.Count > 0)
+                    {
+                        SortSprinklerIndicesAlongBranch(unservedInColumn, sprinklers, useVerticalBranches);
+                        if (TryDrawChainedStraightBranchesFromFeed(
+                                tr, ms, ctx, branchLayerId, branchW, elevation,
+                                columnMainTap[g].Value, sprinklers, unservedInColumn, useVerticalBranches, served, ref drawnCount) > 0)
+                            continue;
                     }
                 }
 
@@ -2362,31 +2607,18 @@ namespace autocad_final.Commands
                 {
                     Point2d endVertex = columnAux[g] == 0 ? mainPipePts[0] : mainPipePts[mainPipePts.Count - 1];
                     Point2d spr = sprinklers[i];
-                    if (useVerticalBranches)
+                    double barCoord = useVerticalBranches ? endVertex.Y : endVertex.X;
+                    double outwardSign = useVerticalBranches
+                        ? TrunkEndOutwardSign(mainPipePts, endVertex, axisIsX: true)
+                        : TrunkEndOutwardSign(mainPipePts, endVertex, axisIsX: false);
+                    double headCoord = useVerticalBranches ? spr.X : spr.Y;
+                    double anchorCoord = useVerticalBranches ? endVertex.X : endVertex.Y;
+                    if (IsOutwardAlongAxis(headCoord, anchorCoord, outwardSign))
                     {
-                        double outwardX = TrunkEndOutwardSign(mainPipePts, endVertex, axisIsX: true);
-                        if (IsOutwardAlongAxis(spr.X, endVertex.X, outwardX))
-                        {
-                            Point2d tapAux = new Point2d(spr.X, endVertex.Y);
-                            if (TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, tapAux, spr, ref drawnCount))
-                            {
-                                served.Add(i);
-                                continue;
-                            }
-                        }
-                    }
-                    else
-                    {
-                        double outwardY = TrunkEndOutwardSign(mainPipePts, endVertex, axisIsX: false);
-                        if (IsOutwardAlongAxis(spr.Y, endVertex.Y, outwardY))
-                        {
-                            Point2d tapAux = new Point2d(endVertex.X, spr.Y);
-                            if (TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, tapAux, spr, ref drawnCount))
-                            {
-                                served.Add(i);
-                                continue;
-                            }
-                        }
+                        if (TryDrawChainedPileFromAuxiliaryBar(
+                                tr, ms, ctx, branchLayerId, branchW, elevation,
+                                sprinklers, new List<int> { i }, useVerticalBranches, barCoord, served, ref drawnCount) > 0)
+                            continue;
                     }
                 }
 

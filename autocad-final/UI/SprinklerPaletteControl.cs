@@ -130,6 +130,8 @@ namespace autocad_final.UI
                 ("Assign shaft to zone manually (optional)",       RunAssignShaftToZone),
                 ("Route main pipe",            RunRouteMainPipe),
                 ("Route branches",             RunRedesignFromTrunk),
+                ("Label branches",             RunLabelBranches),
+                ("Place reducers",             RunPlaceReducers),
                 ("Connect branches manually to a main pipe or a branch pipe",  RunConnectBranchesManually),
                 ("Delete all on layer",        RunDeleteAllOnLayer),
             };
@@ -684,7 +686,17 @@ namespace autocad_final.UI
             }
             try
             {
-                new AttachBranchesCommand().PlaceReducers();
+                BeginInvoke(new Action(() =>
+                {
+                    try
+                    {
+                        doc.SendStringToExecute("._PLACEREDUCERS ", true, false, false);
+                    }
+                    catch (Exception ex)
+                    {
+                        PaletteCommandErrorUi.Show(ex, doc);
+                    }
+                }));
             }
             catch (Exception ex)
             {
