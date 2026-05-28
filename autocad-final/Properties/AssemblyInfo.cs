@@ -22,6 +22,7 @@ using autocad_final;
 [assembly: CommandClass(typeof(PlaceReducersCommand))]
 [assembly: CommandClass(typeof(RoutingRegressionCommand))]
 [assembly: CommandClass(typeof(ConnectBranchesManuallyCommand))]
+[assembly: CommandClass(typeof(FixOrphansCommand))]
 [assembly: CommandClass(typeof(DeleteAllOnLayerCommand))]
 [assembly: CommandClass(typeof(RebuildFromTrunkCommand))]
 [assembly: CommandClass(typeof(RedesignFromTrunkCommand))]

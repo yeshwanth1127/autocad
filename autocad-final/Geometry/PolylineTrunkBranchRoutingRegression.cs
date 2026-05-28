@@ -211,7 +211,7 @@ namespace autocad_final.Geometry
             return (centroidOutside || startOutside) && PolygonUtils.PointInPolygon(ring, clamped);
         }
 
-        /// <summary>Branch reducer insert places wide face on head circle toward smaller pipe.</summary>
+        /// <summary>Branch reducer wide face tangent on upstream head circumference; body outside head.</summary>
         public static bool BranchReducerInsert_WideFaceOnCircumference()
         {
             var joint = new Point2d(0, 0);
@@ -223,12 +223,12 @@ namespace autocad_final.Geometry
             var contact = ReducerPlacementGeometry.ComputeWideFaceContactOnHead(
                 joint, 1.0, 0.0, radius);
 
-            if (Math.Abs(insert.X - (radius - wideHalf)) > 1e-9 || Math.Abs(insert.Y) > 1e-9)
+            if (Math.Abs(insert.X - (-radius - wideHalf)) > 1e-9 || Math.Abs(insert.Y) > 1e-9)
                 return false;
-            if (Math.Abs(contact.X - radius) > 1e-9 || Math.Abs(contact.Y) > 1e-9)
+            if (Math.Abs(contact.X - (-radius)) > 1e-9 || Math.Abs(contact.Y) > 1e-9)
                 return false;
 
-            var wideFace = new Point2d(insert.X + wideHalf, insert.Y);
+            var wideFace = ReducerPlacementGeometry.ComputeWideFaceFromInsert(insert, 1.0, 0.0, wideHalf);
             return wideFace.GetDistanceTo(contact) < 1e-9;
         }
 

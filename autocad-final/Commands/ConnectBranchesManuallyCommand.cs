@@ -9,6 +9,7 @@ using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Geometry;
 using Autodesk.AutoCAD.Runtime;
 using autocad_final.AreaWorkflow;
+using autocad_final.Agent;
 using autocad_final.Agent.Planning.Validators;
 using autocad_final.Geometry;
 using AcApp = Autodesk.AutoCAD.ApplicationServices.Application;
@@ -56,6 +57,8 @@ namespace autocad_final.Commands
 
             try { doc.Window.Focus(); }
             catch { /* ignore when host has no MDI window */ }
+
+            AgentLog.Write("CBM", "ConnectBranchesManually entered");
 
             try
             {
@@ -118,6 +121,7 @@ namespace autocad_final.Commands
                 if (psr.Status != PromptStatus.OK || psr.Value == null || psr.Value.Count == 0)
                     return;
 
+                AgentLog.Write("CBM", "selection OK count=" + psr.Value.Count + " — opening transaction");
                 using (doc.LockDocument())
                 using (var tr = db.TransactionManager.StartTransaction())
                 {
@@ -180,6 +184,7 @@ namespace autocad_final.Commands
                             : "\nPicked-feed extension mode: each sprinkler uses the nearest of your selected polylines only (no automatic discovery).\n");
                 }
 
+                AgentLog.Write("CBM", "mains=" + (mains?.Count ?? 0) + " branches=" + (branches?.Count ?? 0) + " feeds=" + feedCandidatesForAttach.Count);
                 var work = new List<ResolvedHeadWork>();
 
                 foreach (SelectedObject so in psr.Value)
@@ -216,9 +221,19 @@ namespace autocad_final.Commands
                     }
 
                     TryResolveZoneForSprinkler(ent, db, tr, out var zoneRing, out var zoneBoundary);
-                    var shaftObstacles = BuildShaftObstaclesForZone(db, zoneBoundary);
                     SprinklerXData.TryGetZoneBoundaryHandle(ent, out string bhx);
                     bhx = bhx ?? string.Empty;
+                    if (zoneRing == null || zoneRing.Count < 3)
+                    {
+                        var hp2Early = new Point2d(headPt.X, headPt.Y);
+                        if (TrySpatialResolveZoneRingAtPoint(db, hp2Early, out List<Point2d> spatialRing, out string spatialHex))
+                        {
+                            zoneRing = spatialRing;
+                            if (!string.IsNullOrEmpty(spatialHex))
+                                bhx = spatialHex;
+                        }
+                    }
+                    var shaftObstacles = BuildShaftObstaclesForZone(db, zoneBoundary);
 
                     PipeCandidate bestFeed = null;
                     Point3d bestAttach = default;
@@ -326,11 +341,48 @@ namespace autocad_final.Commands
                 {
                     if (w == null) continue;
                     var hp2 = new Point2d(w.HeadPt.X, w.HeadPt.Y);
-                    List<Point2d> routingRing = ResolveRoutingRingForHead(
+                    if ((w.ZoneRing == null || w.ZoneRing.Count < 3)
+                        && TrySpatialResolveZoneRingAtPoint(db, hp2, out List<Point2d> spatialRing, out string spatialHex))
+                    {
+                        w.ZoneRing = spatialRing;
+                        if (!string.IsNullOrEmpty(spatialHex))
+                            w.ZoneBoundaryHandleHex = spatialHex;
+                    }
+                    w.RoutingRing = ResolveRoutingRingForHead(
                         floorRoomOwnerships, hp2, w.ZoneBoundaryHandleHex, w.ZoneRing);
-                    if (routingRing != null && routingRing.Count >= 3)
-                        w.ZoneRing = routingRing;
+                    if (!string.IsNullOrEmpty(w.ZoneBoundaryHandleHex))
+                    {
+                        allowedZoneHexes.Add(w.ZoneBoundaryHandleHex);
+                        if (w.ZoneRing != null && w.ZoneRing.Count >= 3)
+                            zoneRingsByHex[w.ZoneBoundaryHandleHex] = w.ZoneRing;
+                    }
                 }
+
+                foreach (string zh in allowedZoneHexes)
+                    TryEnsureZoneRingLoaded(db, tr, zh, zoneRingsByHex);
+
+                foreach (var w in work)
+                {
+                    if (w == null) continue;
+                    if ((w.ZoneRing == null || w.ZoneRing.Count < 3)
+                        && !string.IsNullOrEmpty(w.ZoneBoundaryHandleHex)
+                        && zoneRingsByHex.TryGetValue(w.ZoneBoundaryHandleHex, out List<Point2d> loadedRing)
+                        && loadedRing != null && loadedRing.Count >= 3)
+                        w.ZoneRing = loadedRing;
+                    var hp2 = new Point2d(w.HeadPt.X, w.HeadPt.Y);
+                    if (string.IsNullOrEmpty(w.ZoneBoundaryHandleHex)
+                        && allowedZoneHexes.Count > 0
+                        && TryInferUniqueAllowedZoneAtPoint(hp2, allowedZoneHexes, zoneRingsByHex, out string inferredHex))
+                    {
+                        w.ZoneBoundaryHandleHex = inferredHex;
+                        if (zoneRingsByHex.TryGetValue(inferredHex, out List<Point2d> inferredRing))
+                            w.ZoneRing = inferredRing;
+                        w.RoutingRing = ResolveRoutingRingForHead(
+                            floorRoomOwnerships, hp2, w.ZoneBoundaryHandleHex, w.ZoneRing);
+                    }
+                }
+
+                AgentLog.Write("CBM", "work resolved count=" + work.Count + " zones=" + allowedZoneHexes.Count);
 
                 // Erase existing branch connections to the selected heads.
                 // heads were served by those same polylines — they are orphaned and need new pipes.
@@ -338,16 +390,18 @@ namespace autocad_final.Commands
                 foreach (var w in work)
                     selectedHeadIds.Add(w.EntityId);
 
+                AgentLog.Write("CBM", "EraseExistingBranchConnections start");
                 var orphanedHeadPts = new List<(Point2d pt, double elevZ, string zoneHex)>();
                 int erasedExisting = EraseExistingBranchConnectionsToHeads(
                     tr, ms, db, work, selectedHeadIds, allowedZoneHexes, zoneRingsByHex, orphanedHeadPts);
+                AgentLog.Write("CBM", "EraseExistingBranchConnections done erased=" + erasedExisting + " orphaned=" + orphanedHeadPts.Count);
                 if (erasedExisting > 0)
                     ed.WriteMessage("\nRemoved " + erasedExisting + " existing branch connection(s) to selected sprinkler heads.\n");
 
-                // Wider row bucket in explicit extension mode so slight drafting misalignment still chains on one lateral.
-                double groupTol = explicitFeedExtensionMode
-                    ? GetManualConnectRowBucketSizeDu(db, minTeeSpacingDu)
-                    : Math.Max(minTeeSpacingDu * 0.5, 1e-3);
+                // Row/column bucketing tolerance for grouping heads into a single manual lateral.
+                // Must be wide enough to tolerate drafting drift; route-branches uses a similar bucket via cluster tolerances.
+                double groupTol = GetManualConnectRowBucketSizeDu(db, minTeeSpacingDu);
+                double zoneBoundaryTol = Math.Max(GetBranchHeadConnectionToleranceDu(db), groupTol * 0.5);
                 var groups = new Dictionary<(ObjectId feedId, long rowKey), List<int>>();
                 for (int i = 0; i < work.Count; i++)
                 {
@@ -366,9 +420,13 @@ namespace autocad_final.Commands
                     bucket.Add(i);
                 }
 
+                AgentLog.Write("CBM", "main draw loop start groups=" + groups.Count);
+                int bucketNum = 0;
                 foreach (var rawBucket in groups.Values)
                 {
+                    bucketNum++;
                     var bucket = new List<int>(rawBucket);
+                    AgentLog.Write("CBM", "bucket #" + bucketNum + " size=" + bucket.Count);
                     if (bucket.Count == 0)
                         continue;
 
@@ -382,6 +440,7 @@ namespace autocad_final.Commands
                             continue;
                         }
 
+                        AgentLog.Write("CBM", "bucket #" + bucketNum + " single-head TryDrawSingleHead start");
                         TryDrawSingleHead(
                             tr,
                             ms,
@@ -403,41 +462,26 @@ namespace autocad_final.Commands
                             ref skippedNoAttachToSelectedMain,
                             ref connectedFromMain,
                             ref connectedFromBranch);
+                        AgentLog.Write("CBM", "bucket #" + bucketNum + " single-head done");
                         continue;
                     }
 
+                    AgentLog.Write("CBM", "bucket #" + bucketNum + " multi-head path start");
                     int head0 = bucket[0];
                     var anchor = work[head0];
                     bool feedVertical = PolylineSpanIsVertical(anchor.BestFeed.Polyline);
 
-                    if (!TryGetFloorRoomKeyForPointAnyZone(
-                            floorRoomOwnerships,
-                            new Point2d(anchor.HeadPt.X, anchor.HeadPt.Y),
-                            out long anchorRoomKey,
-                            out List<Point2d> anchorRoomRing,
-                            out _))
-                    {
-                        anchorRoomKey = -1;
-                        anchorRoomRing = null;
-                    }
-
-                    if (anchorRoomKey >= 0)
-                    {
-                        var sameRoom = new List<int>();
-                        foreach (int bi in bucket)
-                        {
-                            var hp = work[bi].HeadPt;
-                            if (TryGetFloorRoomKeyForPointAnyZone(
-                                    floorRoomOwnerships,
-                                    new Point2d(hp.X, hp.Y),
-                                    out long rk,
-                                    out _,
-                                    out _)
-                                && rk == anchorRoomKey)
-                                sameRoom.Add(bi);
-                        }
-                        bucket = sameRoom;
-                    }
+                    // NOTE: Do NOT shrink the bucket by floor-room key here.
+                    // Room resolution can be incomplete/unstable; letting the hop-routing/validation reject cross-room
+                    // legs produces the intended behavior without incorrectly turning a multi-head pick into many
+                    // single-head feeds (which then causes "extra" connections around selected heads).
+                    List<Point2d> anchorRoomRing = null;
+                    TryGetFloorRoomKeyForPointAnyZone(
+                        floorRoomOwnerships,
+                        new Point2d(anchor.HeadPt.X, anchor.HeadPt.Y),
+                        out _,
+                        out anchorRoomRing,
+                        out _);
 
                     if (bucket.Count == 0)
                         continue;
@@ -551,36 +595,77 @@ namespace autocad_final.Commands
                     // Wrong order + collinear merge was dropping the farthest head (middle vertex removed).
                     OrderBucketAlongFeedLateral(bucket, work, feedVertical, attachPt);
 
-                    double rowFixed = feedVertical ? attachPt.Y : attachPt.X;
                     var attach2d = new Point2d(attachPt.X, attachPt.Y);
-                    List<Point2d> chainZoneRing = anchorRoomRing;
-                    if (chainZoneRing == null || chainZoneRing.Count < 3)
-                        chainZoneRing = anchor.ZoneRing;
-                    if ((chainZoneRing == null || chainZoneRing.Count < 3)
+                    List<Point2d> chainParentZoneRing = anchor.ZoneRing;
+                    if ((chainParentZoneRing == null || chainParentZoneRing.Count < 3)
                         && !string.IsNullOrEmpty(anchor.ZoneBoundaryHandleHex)
                         && zoneRingsByHex != null
                         && zoneRingsByHex.TryGetValue(anchor.ZoneBoundaryHandleHex, out List<Point2d> loadedAnchorRing)
                         && loadedAnchorRing != null && loadedAnchorRing.Count >= 3)
-                        chainZoneRing = loadedAnchorRing;
+                        chainParentZoneRing = loadedAnchorRing;
+                    List<Point2d> chainRoutingRing = anchor.RoutingRing;
+                    if (chainRoutingRing == null || chainRoutingRing.Count < 3)
+                        chainRoutingRing = anchorRoomRing;
                     IList<(Point2d min, Point2d max)> chainShaft = anchor.ShaftObs;
 
-                    var verts = new List<Point2d> { attach2d };
+                    if (chainParentZoneRing == null || chainParentZoneRing.Count < 3)
+                    {
+                        FallbackBucketToSingleHeads(tr, ms, db, work, bucket, mains, branches,
+                            explicitFeedExtensionMode,
+                            minTeeSpacingDu, geometryMatchTolDu, usedAttachDistanceAlong, ref allowRedrawWhenDuplicateGeometry,
+                            branchLayerId, ref created, ref skippedErased, ref skippedNoOrthogonalRoute,
+                            ref skippedAlreadyOnSource, ref skippedDeclinedDuplicateBranch, ref skippedNoAttachToSelectedMain,
+                            ref connectedFromMain, ref connectedFromBranch);
+                        continue;
+                    }
+
+                    if (!TryGetPolylineSegmentDirection(anchor.BestFeed.Polyline, attachPt, db, out SegmentAxisKind legAxisKind))
+                        legAxisKind = SegmentAxisKind.Ambiguous;
+
+                    var legPaths = new List<List<Point2d>>();
+                    var dupPath = new List<Point2d> { attach2d };
+                    Point2d prevHop = attach2d;
+                    bool bucketRouteFailed = false;
+
+                    AgentLog.Write("CBM", "bucket #" + bucketNum + " hop-routing start hopCount=" + bucket.Count);
+                    int hopNum = 0;
                     foreach (int idx in bucket)
                     {
+                        hopNum++;
                         var hp = work[idx].HeadPt;
-                        verts.Add(feedVertical
-                            ? new Point2d(hp.X, rowFixed)
-                            : new Point2d(rowFixed, hp.Y));
+                        Point2d curHop = new Point2d(hp.X, hp.Y);
+                        if (prevHop.GetDistanceTo(curHop) <= 1e-6)
+                            continue;
+
+                        AgentLog.Write("CBM", "  hop " + hopNum + " TrySelectBestValidatedOrthogonalPath start");
+                        if (!TrySelectBestValidatedOrthogonalPath(
+                                prevHop,
+                                curHop,
+                                legAxisKind,
+                                chainShaft,
+                                chainParentZoneRing,
+                                chainRoutingRing,
+                                minTeeSpacingDu,
+                                zoneBoundaryTol,
+                                out List<Point2d> legVerts,
+                                out _))
+                        {
+                            AgentLog.Write("CBM", "  hop " + hopNum + " route FAILED — fallback");
+                            bucketRouteFailed = true;
+                            break;
+                        }
+
+                        AgentLog.Write("CBM", "  hop " + hopNum + " route OK verts=" + legVerts.Count);
+                        legPaths.Add(legVerts);
+                        for (int vi = 1; vi < legVerts.Count; vi++)
+                            dupPath.Add(legVerts[vi]);
+                        prevHop = curHop;
                     }
+                    AgentLog.Write("CBM", "bucket #" + bucketNum + " hop-routing done failed=" + bucketRouteFailed + " legs=" + legPaths.Count);
 
-                    double detourTol = Math.Max(minTeeSpacingDu * 0.05, 1e-4);
-                    var expandedChain = ExpandRouteThroughShaftDetours(verts, chainShaft, chainZoneRing, detourTol);
-                    if (expandedChain != null && expandedChain.Count >= 2)
-                        verts = expandedChain;
-
-                    verts = CollapseOrthogonalVertices(verts, mergeCollinearInterior: false);
-                    if (verts == null || verts.Count < 2)
+                    if (bucketRouteFailed || legPaths.Count == 0)
                     {
+                        AgentLog.Write("CBM", "bucket #" + bucketNum + " fallback (route failed or no legs)");
                         FallbackBucketToSingleHeads(tr, ms, db, work, bucket, mains, branches,
                             explicitFeedExtensionMode,
                             minTeeSpacingDu, geometryMatchTolDu, usedAttachDistanceAlong, ref allowRedrawWhenDuplicateGeometry,
@@ -590,8 +675,12 @@ namespace autocad_final.Commands
                         continue;
                     }
 
-                    if (verts[0].GetDistanceTo(verts[verts.Count - 1]) <= 1e-6)
+                    AgentLog.Write("CBM", "bucket #" + bucketNum + " CollapseOrthogonalVertices");
+                    dupPath = CollapseOrthogonalVertices(dupPath, mergeCollinearInterior: false);
+                    if (dupPath == null || dupPath.Count < 2
+                        || dupPath[0].GetDistanceTo(dupPath[dupPath.Count - 1]) <= 1e-6)
                     {
+                        AgentLog.Write("CBM", "bucket #" + bucketNum + " fallback (bad dupPath)");
                         FallbackBucketToSingleHeads(tr, ms, db, work, bucket, mains, branches,
                             explicitFeedExtensionMode,
                             minTeeSpacingDu, geometryMatchTolDu, usedAttachDistanceAlong, ref allowRedrawWhenDuplicateGeometry,
@@ -601,31 +690,24 @@ namespace autocad_final.Commands
                         continue;
                     }
 
-                    if (!ValidateOrthogonalRoute(verts, chainZoneRing, chainShaft))
-                    {
-                        FallbackBucketToSingleHeads(tr, ms, db, work, bucket, mains, branches,
-                            explicitFeedExtensionMode,
-                            minTeeSpacingDu, geometryMatchTolDu, usedAttachDistanceAlong, ref allowRedrawWhenDuplicateGeometry,
-                            branchLayerId, ref created, ref skippedErased, ref skippedNoOrthogonalRoute,
-                            ref skippedAlreadyOnSource, ref skippedDeclinedDuplicateBranch, ref skippedNoAttachToSelectedMain,
-                            ref connectedFromMain, ref connectedFromBranch);
-                        continue;
-                    }
-
+                    AgentLog.Write("CBM", "bucket #" + bucketNum + " ExistingBranchPolylineMatchesResolvedRoute start");
                     var dupProbe = new OrthogonalRouteResult
                     {
-                        Vertices2d = verts,
-                        TotalPathLength = ManhattanPathLength(verts),
+                        Vertices2d = dupPath,
+                        TotalPathLength = ManhattanPathLength(dupPath),
                         SourcePolylineId = anchor.BestFeed.Polyline.ObjectId,
                         FromMain = anchor.BestFeed.FeedIsMainPipeLayer,
                         SourceWidth = anchor.BestFeed.Width,
                         RegisteredDistanceAlong = 0
                     };
 
-                    if (ExistingBranchPolylineMatchesResolvedRoute(tr, ms, dupProbe, anchor.HeadPt, geometryMatchTolDu))
+                    bool isDup = ExistingBranchPolylineMatchesResolvedRoute(tr, ms, dupProbe, anchor.HeadPt, geometryMatchTolDu);
+                    AgentLog.Write("CBM", "bucket #" + bucketNum + " ExistingBranchPolylineMatchesResolvedRoute done isDup=" + isDup);
+                    if (isDup)
                     {
                         if (allowRedrawWhenDuplicateGeometry == null)
                         {
+                            AgentLog.Write("CBM", "bucket #" + bucketNum + " showing MessageBox duplicate dialog");
                             DialogResult dr = MessageBox.Show(
                                 "Selected sprinkler(s) appear to already be connected to the same pipe with an identical branch.\n\n" +
                                 "Do you want to draw duplicate branches anyway?",
@@ -633,6 +715,7 @@ namespace autocad_final.Commands
                                 MessageBoxButtons.YesNo,
                                 MessageBoxIcon.Question);
                             allowRedrawWhenDuplicateGeometry = dr == DialogResult.Yes;
+                            AgentLog.Write("CBM", "bucket #" + bucketNum + " MessageBox result=" + allowRedrawWhenDuplicateGeometry);
                         }
 
                         if (allowRedrawWhenDuplicateGeometry == false)
@@ -642,6 +725,7 @@ namespace autocad_final.Commands
                         }
                     }
 
+                    AgentLog.Write("CBM", "bucket #" + bucketNum + " TryAppendSegmentPairsAlongPath start legs=" + legPaths.Count);
                     double mainRefWidthChain = anchor.BestFeed.Width > 1e-12
                         ? anchor.BestFeed.Width
                         : NfpaBranchPipeSizing.GetMainTrunkPolylineDisplayWidthDu(db);
@@ -649,9 +733,19 @@ namespace autocad_final.Commands
                     if (!(branchWidthChain > 1e-12))
                         branchWidthChain = Math.Max(mainRefWidthChain * 0.66, 1.0);
 
-                    Polyline segChain = CreateOrthogonalBranchPolyline(db, verts, anchor.ElevZ, branchLayerId, branchWidthChain);
-                    if (segChain.NumberOfVertices < 2)
+                    int segmentsInBucket = 0;
+                    foreach (var legVerts in legPaths)
                     {
+                        segmentsInBucket += TryAppendSegmentPairsAlongPath(
+                            tr, ms, db, legVerts, anchor.ElevZ, branchLayerId, branchWidthChain,
+                            chainParentZoneRing, chainRoutingRing, chainShaft, minTeeSpacingDu, zoneBoundaryTol,
+                            anchor.ZoneBoundaryHandleHex);
+                    }
+
+                    AgentLog.Write("CBM", "bucket #" + bucketNum + " TryAppendSegmentPairsAlongPath done segs=" + segmentsInBucket);
+                    if (segmentsInBucket == 0)
+                    {
+                        AgentLog.Write("CBM", "bucket #" + bucketNum + " fallback (0 segments drawn)");
                         FallbackBucketToSingleHeads(tr, ms, db, work, bucket, mains, branches,
                             explicitFeedExtensionMode,
                             minTeeSpacingDu, geometryMatchTolDu, usedAttachDistanceAlong, ref allowRedrawWhenDuplicateGeometry,
@@ -661,28 +755,25 @@ namespace autocad_final.Commands
                         continue;
                     }
 
-                    if (!string.IsNullOrEmpty(anchor.ZoneBoundaryHandleHex))
-                        SprinklerXData.ApplyZoneBoundaryTag(segChain, anchor.ZoneBoundaryHandleHex);
-
-                    ms.AppendEntity(segChain);
-                    tr.AddNewlyCreatedDBObject(segChain, true);
-
                     if (TryGetDistanceAlongPolylineToPoint(anchor.BestFeed.Polyline, attachPt, out double distAlongChain, out _))
                     {
                         RegisterTeeDistanceAlong(usedAttachDistanceAlong, anchor.BestFeed.Polyline.ObjectId, distAlongChain);
                     }
 
-                    created++;
+                    created += segmentsInBucket;
+                    AgentLog.Write("CBM", "bucket #" + bucketNum + " complete created=" + created);
                     if (anchor.BestFeed.FeedIsMainPipeLayer)
                         connectedFromMain++;
                     else
                         connectedFromBranch++;
                 }
 
+                AgentLog.Write("CBM", "main draw done created=" + created + " — entering ReconnectOrphanAdjacentSegments");
                 // Reconnect row/column neighbors with one segment each toward the manually connected head(s).
                 int reconnectedOrphans = ReconnectOrphanAdjacentSegmentsOnManualRows(
                     tr, ms, db,
                     work,
+                    orphanedHeadPts,
                     allowedZoneHexes,
                     zoneRingsByHex,
                     floorRoomOwnerships,
@@ -690,10 +781,12 @@ namespace autocad_final.Commands
                     minTeeSpacingDu,
                     branchLayerId);
 
+                AgentLog.Write("CBM", "ReconnectOrphanAdjacentSegments done reconnected=" + reconnectedOrphans);
                 if (reconnectedOrphans > 0)
                     ed.WriteMessage("\nReconnected " + reconnectedOrphans + " orphan branch segment(s).\n");
 
                 tr.Commit();
+                AgentLog.Write("CBM", "transaction committed");
 
                 ed.WriteMessage(
                     "\nManual branch connect complete. " +
@@ -782,6 +875,46 @@ namespace autocad_final.Commands
             list.Add(distAlong);
         }
 
+        /// <summary>
+        /// Draws one branch polyline per consecutive pair along a path (sprinkler-to-sprinkler segments, not one merged chain).
+        /// </summary>
+        private static int TryAppendSegmentPairsAlongPath(
+            Transaction tr,
+            BlockTableRecord ms,
+            Database db,
+            IList<Point2d> pathVerts,
+            double elevZ,
+            ObjectId branchLayerId,
+            double branchWidth,
+            List<Point2d> parentZoneRing,
+            List<Point2d> routingRing,
+            IList<(Point2d min, Point2d max)> shaftObs,
+            double minTeeSpacingDu,
+            double boundaryTol,
+            string zoneHexTag)
+        {
+            if (tr == null || ms == null || db == null || pathVerts == null || pathVerts.Count < 2)
+                return 0;
+            if (parentZoneRing == null || parentZoneRing.Count < 3)
+                return 0;
+
+            int drawn = 0;
+            for (int i = 0; i < pathVerts.Count - 1; i++)
+            {
+                Point2d a = pathVerts[i];
+                Point2d b = pathVerts[i + 1];
+                if (a.GetDistanceTo(b) <= 1e-6)
+                    continue;
+
+                if (TryAppendValidatedBranchSegment(
+                        tr, ms, db, a, b, elevZ, branchLayerId, branchWidth,
+                        parentZoneRing, routingRing, shaftObs, minTeeSpacingDu, boundaryTol, zoneHexTag))
+                    drawn++;
+            }
+
+            return drawn;
+        }
+
         private static void TryDrawSingleHead(
             Transaction tr,
             BlockTableRecord ms,
@@ -823,6 +956,8 @@ namespace autocad_final.Commands
                     routeBranches,
                     routeUserRestricted,
                     w.ZoneRing,
+                    w.RoutingRing,
+                    Math.Max(GetBranchHeadConnectionToleranceDu(db), minTeeSpacingDu * 0.25),
                     w.ShaftObs,
                     minTeeSpacingDu,
                     usedAttachDistanceAlong,
@@ -863,22 +998,20 @@ namespace autocad_final.Commands
             if (!(branchWidth > 1e-12))
                 branchWidth = Math.Max(mainRefWidth * 0.66, 1.0);
 
-            Polyline seg = CreateOrthogonalBranchPolyline(db, route.Vertices2d, headPt.Z, branchLayerId, branchWidth);
-            if (seg.NumberOfVertices < 2)
+            double boundaryTol = Math.Max(GetBranchHeadConnectionToleranceDu(db), minTeeSpacingDu * 0.25);
+            int segmentsDrawn = TryAppendSegmentPairsAlongPath(
+                tr, ms, db, route.Vertices2d, headPt.Z, branchLayerId, branchWidth,
+                w.ZoneRing, w.RoutingRing, w.ShaftObs, minTeeSpacingDu, boundaryTol,
+                w.ZoneBoundaryHandleHex);
+            if (segmentsDrawn <= 0)
             {
                 skippedNoOrthogonalRoute++;
                 return;
             }
 
-            if (!string.IsNullOrEmpty(w.ZoneBoundaryHandleHex))
-                SprinklerXData.ApplyZoneBoundaryTag(seg, w.ZoneBoundaryHandleHex);
-
-            ms.AppendEntity(seg);
-            tr.AddNewlyCreatedDBObject(seg, true);
-
             RegisterTeeDistanceAlong(usedAttachDistanceAlong, route.SourcePolylineId, route.RegisteredDistanceAlong);
 
-            created++;
+            created += segmentsDrawn;
             if (route.FromMain)
                 connectedFromMain++;
             else
@@ -1534,10 +1667,54 @@ namespace autocad_final.Commands
             if (TryGetFloorRoomKeyForPointInZone(floorRooms, headPt, zoneHex, out _, out List<Point2d> roomRing)
                 && roomRing != null && roomRing.Count >= 3)
                 return roomRing;
-            if (TryGetFloorRoomKeyForPointAnyZone(floorRooms, headPt, out _, out List<Point2d> anyRoomRing, out _)
-                && anyRoomRing != null && anyRoomRing.Count >= 3)
-                return anyRoomRing;
             return parentZoneRing;
+        }
+
+        private static bool TrySpatialResolveZoneRingAtPoint(
+            Database db,
+            Point2d pt,
+            out List<Point2d> zoneRing,
+            out string zoneHex)
+        {
+            zoneRing = null;
+            zoneHex = null;
+            if (db == null)
+                return false;
+            if (!AttachBranchesCommand.TryFindZoneOutlineContainingPoint(db, pt, out _, out Polyline zonePl, out _))
+                return false;
+            try
+            {
+                zoneRing = PolylineClosedBoundaryRingSampler2d.ConvertPolylineToRingPoints(zonePl);
+            }
+            catch
+            {
+                zoneRing = null;
+            }
+            if (zoneRing == null || zoneRing.Count < 3 || !PointInPolygon(zoneRing, pt))
+                return false;
+            SprinklerXData.TryGetZoneBoundaryHandle(zonePl, out zoneHex);
+            return true;
+        }
+
+        private static bool ValidateBranchSegmentZoneConstraints(
+            Point2d a,
+            Point2d b,
+            List<Point2d> parentZoneRing,
+            List<Point2d> routingRing,
+            IList<(Point2d min, Point2d max)> shaftObs,
+            double boundaryTol)
+        {
+            if (parentZoneRing == null || parentZoneRing.Count < 3)
+                return false;
+            if (!SegmentFullyInsideRing(a, b, parentZoneRing, boundaryTol))
+                return false;
+            if (routingRing != null && routingRing.Count >= 3
+                && !ReferenceEquals(routingRing, parentZoneRing)
+                && !SegmentFullyInsideRing(a, b, routingRing, boundaryTol))
+                return false;
+            if (SegmentIntersectsAnyBox(a, b, shaftObs))
+                return false;
+            return true;
         }
 
         private static bool SegmentFullyInsideRing(Point2d a, Point2d b, IList<Point2d> ring, double boundaryTol)
@@ -1554,8 +1731,10 @@ namespace autocad_final.Commands
         private static bool NormalizeAndValidateRowLateralVerts(
             ref List<Point2d> verts,
             IList<(Point2d min, Point2d max)> shaftObs,
-            List<Point2d> zoneRing,
-            double minTeeSpacingDu)
+            List<Point2d> parentZoneRing,
+            List<Point2d> routingRing,
+            double minTeeSpacingDu,
+            double boundaryTol)
         {
             if (verts == null)
                 return false;
@@ -1563,12 +1742,12 @@ namespace autocad_final.Commands
             if (verts == null || verts.Count < 2)
                 return false;
             double detourTol = Math.Max(minTeeSpacingDu * 0.05, 1e-4);
-            var expanded = ExpandRouteThroughShaftDetours(verts, shaftObs, zoneRing, detourTol);
+            var expanded = ExpandRouteThroughShaftDetours(verts, shaftObs, parentZoneRing, detourTol);
             if (expanded != null && expanded.Count >= 2)
                 verts = CollapseOrthogonalVertices(expanded, mergeCollinearInterior: false);
             if (verts == null || verts.Count < 2)
                 return false;
-            return ValidateOrthogonalRoute(verts, zoneRing, shaftObs);
+            return ValidateOrthogonalRoute(verts, parentZoneRing, routingRing, shaftObs, boundaryTol);
         }
 
         private static void MergeMainsLinkedThroughShaftAssignments(
@@ -1775,6 +1954,358 @@ namespace autocad_final.Commands
         private const int MinBranchSegmentsPerSprinkler = 2;
 
         /// <summary>
+        /// In the given zone, draw one lateral branch segment between adjacent interior sprinklers that only
+        /// have one branch connection. Terminal (edge) sprinklers at row/column ends are skipped.
+        /// </summary>
+        internal static bool TryFixOrphansForZone(
+            Document doc,
+            Database db,
+            string zoneBoundaryHex,
+            List<Point2d> zoneRing,
+            out string resultMessage,
+            out int segmentsDrawn)
+        {
+            resultMessage = null;
+            segmentsDrawn = 0;
+
+            if (doc == null || db == null || zoneRing == null || zoneRing.Count < 3)
+            {
+                resultMessage = "Invalid zone boundary.";
+                return false;
+            }
+
+            try
+            {
+                using (var tr = db.TransactionManager.StartTransaction())
+                {
+                    SprinklerXData.EnsureRegApp(tr, db);
+                    var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                    var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+
+                    ObjectId branchLayerId = SprinklerLayers.EnsureBranchPipeLayer(tr, db);
+                    double minTeeSpacingDu = GetMinTeeSpacingDrawingUnits(db);
+                    double bucket = GetManualConnectRowBucketSizeDu(db, minTeeSpacingDu);
+                    double headTol = GetBranchHeadConnectionToleranceDu(db);
+                    double boundaryTol = Math.Max(headTol, bucket * 0.5);
+
+                    var allowedZoneHexes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    if (!string.IsNullOrEmpty(zoneBoundaryHex))
+                        allowedZoneHexes.Add(zoneBoundaryHex);
+
+                    var zoneRingsByHex = new Dictionary<string, List<Point2d>>(StringComparer.OrdinalIgnoreCase);
+                    if (!string.IsNullOrEmpty(zoneBoundaryHex))
+                        zoneRingsByHex[zoneBoundaryHex] = zoneRing;
+
+                    IList<(Point2d min, Point2d max)> shaftObs = BuildShaftObstaclesForZoneBoundaryHex(
+                        tr, db, zoneBoundaryHex, string.IsNullOrEmpty(zoneBoundaryHex));
+
+                    double mainRefWidth = NfpaBranchPipeSizing.GetMainTrunkPolylineDisplayWidthDu(db);
+                    double branchWidth = NfpaBranchPipeSizing.GetBranchPolylineDisplayWidthDu(db, nominalMm: 25, mainRefWidth);
+                    if (!(branchWidth > 1e-12))
+                        branchWidth = Math.Max(mainRefWidth * 0.66, 1.0);
+
+                    var rowGroups = BuildZoneWideHeadLineGroups(
+                        tr, ms, zoneBoundaryHex, zoneRing, bucket, headTol, chainAlongX: true);
+                    var colGroups = BuildZoneWideHeadLineGroups(
+                        tr, ms, zoneBoundaryHex, zoneRing, bucket, headTol, chainAlongX: false);
+
+                    int orphansFound = 0;
+                    segmentsDrawn += FixOrphansOnLineGroups(
+                        tr, ms, db, rowGroups, zoneRing, chainAlongX: true, bucket, headTol,
+                        branchLayerId, branchWidth, minTeeSpacingDu, zoneBoundaryHex, shaftObs, boundaryTol, ref orphansFound);
+                    segmentsDrawn += FixOrphansOnLineGroups(
+                        tr, ms, db, colGroups, zoneRing, chainAlongX: false, bucket, headTol,
+                        branchLayerId, branchWidth, minTeeSpacingDu, zoneBoundaryHex, shaftObs, boundaryTol, ref orphansFound);
+
+                    tr.Commit();
+
+                    resultMessage = "Fix orphans complete. Orphans found: " + orphansFound
+                        + ", new branch segment(s): " + segmentsDrawn + ".";
+                    return true;
+                }
+            }
+            catch (Autodesk.AutoCAD.Runtime.Exception ex)
+            {
+                resultMessage = "Fix orphans failed: " + ex.ErrorStatus + " / " + ex.Message;
+                return false;
+            }
+            catch (System.Exception ex)
+            {
+                resultMessage = "Fix orphans failed: " + ex.Message;
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Groups sprinklers on the same row/column across the whole zone (not split by floor-room cell).
+        /// </summary>
+        private static Dictionary<long, List<(Point2d pt, double elevZ)>> BuildZoneWideHeadLineGroups(
+            Transaction tr,
+            BlockTableRecord ms,
+            string zoneBoundaryHex,
+            List<Point2d> zoneRing,
+            double bucket,
+            double headTol,
+            bool chainAlongX)
+        {
+            var groups = new Dictionary<long, List<(Point2d pt, double elevZ)>>();
+            if (tr == null || ms == null || zoneRing == null || zoneRing.Count < 3)
+                return groups;
+
+            foreach (ObjectId hid in ms)
+            {
+                if (hid.IsErased) continue;
+                Entity ent = null;
+                try { ent = tr.GetObject(hid, OpenMode.ForRead, false) as Entity; }
+                catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                if (ent == null || !SprinklerLayers.IsSprinklerHeadEntity(tr, ent))
+                    continue;
+                if (!TryGetHeadPoint(ent, out Point3d hp3))
+                    continue;
+
+                var hp2 = new Point2d(hp3.X, hp3.Y);
+                if (!PointInPolygon(zoneRing, hp2))
+                    continue;
+
+                SprinklerXData.TryGetZoneBoundaryHandle(ent, out string zHex);
+                if (!string.IsNullOrEmpty(zoneBoundaryHex) && !string.IsNullOrEmpty(zHex)
+                    && !string.Equals(zHex, zoneBoundaryHex, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                long lineBucket = chainAlongX
+                    ? (long)Math.Round(hp3.Y / bucket)
+                    : (long)Math.Round(hp3.X / bucket);
+
+                if (!groups.TryGetValue(lineBucket, out List<(Point2d pt, double elevZ)> bucketList))
+                {
+                    bucketList = new List<(Point2d pt, double elevZ)>();
+                    groups[lineBucket] = bucketList;
+                }
+
+                bool dup = false;
+                foreach (var (ep, _) in bucketList)
+                {
+                    if (ep.GetDistanceTo(hp2) <= headTol) { dup = true; break; }
+                }
+                if (!dup)
+                    bucketList.Add((hp2, hp3.Z));
+            }
+
+            return groups;
+        }
+
+        private static int FixOrphansOnLineGroups(
+            Transaction tr,
+            BlockTableRecord ms,
+            Database db,
+            Dictionary<long, List<(Point2d pt, double elevZ)>> lineGroups,
+            List<Point2d> zoneRing,
+            bool chainAlongX,
+            double bucket,
+            double headTol,
+            ObjectId branchLayerId,
+            double branchWidth,
+            double minTeeSpacingDu,
+            string zoneHexTag,
+            IList<(Point2d min, Point2d max)> shaftObs,
+            double boundaryTol,
+            ref int orphansFound)
+        {
+            if (lineGroups == null || lineGroups.Count == 0)
+                return 0;
+
+            int drawn = 0;
+            var countedOrphans = new HashSet<(long qx, long qy)>();
+            foreach (var kv in lineGroups)
+            {
+                var heads = kv.Value;
+                if (heads == null || heads.Count < 2)
+                    continue;
+
+                if (chainAlongX)
+                    heads.Sort((a, b) => a.pt.X.CompareTo(b.pt.X));
+                else
+                    heads.Sort((a, b) => a.pt.Y.CompareTo(b.pt.Y));
+
+                double lineFixed = chainAlongX ? heads[0].pt.Y : heads[0].pt.X;
+                if (!TryResolveRowLateralFixedFromManualOrBranch(tr, ms, null, heads, headTol, bucket, out lineFixed, out _))
+                {
+                    double sum = 0;
+                    foreach (var (pt, _) in heads)
+                        sum += chainAlongX ? pt.Y : pt.X;
+                    lineFixed = sum / heads.Count;
+                }
+
+                int runCount = heads.Count;
+                for (int i = 0; i < runCount - 1; i++)
+                {
+                    var leftPt = heads[i].pt;
+                    var rightPt = heads[i + 1].pt;
+
+                    if (HasRowLateralConnection(tr, ms, leftPt, rightPt, chainAlongX, lineFixed, headTol))
+                        continue;
+
+                    int leftCount = CountIncidentBranchSegmentsAtHead(tr, ms, leftPt, headTol);
+                    int rightCount = CountIncidentBranchSegmentsAtHead(tr, ms, rightPt, headTol);
+                    if (leftCount >= MinBranchSegmentsPerSprinkler && rightCount >= MinBranchSegmentsPerSprinkler)
+                        continue;
+
+                    bool leftOrphan = IsFixOrphanCandidate(leftCount, i, runCount);
+                    bool rightOrphan = IsFixOrphanCandidate(rightCount, i + 1, runCount);
+                    if (!leftOrphan && !rightOrphan)
+                        continue;
+
+                    if (leftOrphan)
+                    {
+                        var key = ((long)Math.Round(leftPt.X / headTol), (long)Math.Round(leftPt.Y / headTol));
+                        if (countedOrphans.Add(key)) orphansFound++;
+                    }
+                    if (rightOrphan)
+                    {
+                        var key = ((long)Math.Round(rightPt.X / headTol), (long)Math.Round(rightPt.Y / headTol));
+                        if (countedOrphans.Add(key)) orphansFound++;
+                    }
+
+                    Point2d a = chainAlongX
+                        ? new Point2d(leftPt.X, lineFixed)
+                        : new Point2d(lineFixed, leftPt.Y);
+                    Point2d b = chainAlongX
+                        ? new Point2d(rightPt.X, lineFixed)
+                        : new Point2d(lineFixed, rightPt.Y);
+
+                    if (a.GetDistanceTo(b) <= headTol)
+                        continue;
+
+                    if (TryAppendOrphanBranchSegment(
+                            tr, ms, db, a, b, heads[i].elevZ, branchLayerId, branchWidth,
+                            zoneRing, null, shaftObs, minTeeSpacingDu, boundaryTol, zoneHexTag))
+                        drawn++;
+                }
+            }
+
+            return drawn;
+        }
+
+        /// <summary>
+        /// True when a branch polyline already links two adjacent heads along the row/column lateral.
+        /// </summary>
+        private static bool HasRowLateralConnection(
+            Transaction tr,
+            BlockTableRecord ms,
+            Point2d leftPt,
+            Point2d rightPt,
+            bool chainAlongX,
+            double lineFixed,
+            double tol)
+        {
+            Point2d la = chainAlongX
+                ? new Point2d(leftPt.X, lineFixed)
+                : new Point2d(lineFixed, leftPt.Y);
+            Point2d lb = chainAlongX
+                ? new Point2d(rightPt.X, lineFixed)
+                : new Point2d(lineFixed, rightPt.Y);
+
+            if (BranchSegmentExistsBetween(tr, ms, la, lb, tol))
+                return true;
+            if (BranchSegmentExistsBetween(tr, ms, leftPt, rightPt, tol))
+                return true;
+
+            return RowAxisBranchConnectsHeads(tr, ms, leftPt, rightPt, chainAlongX, lineFixed, tol);
+        }
+
+        private static bool RowAxisBranchConnectsHeads(
+            Transaction tr,
+            BlockTableRecord ms,
+            Point2d leftPt,
+            Point2d rightPt,
+            bool chainAlongX,
+            double lineFixed,
+            double tol)
+        {
+            if (tr == null || ms == null)
+                return false;
+
+            double spanMin = chainAlongX ? Math.Min(leftPt.X, rightPt.X) : Math.Min(leftPt.Y, rightPt.Y);
+            double spanMax = chainAlongX ? Math.Max(leftPt.X, rightPt.X) : Math.Max(leftPt.Y, rightPt.Y);
+            if (spanMax - spanMin <= tol)
+                return false;
+
+            double axisTol = Math.Max(tol, 1e-6);
+            foreach (ObjectId id in ms)
+            {
+                if (id.IsErased) continue;
+                Polyline pl = null;
+                try { pl = tr.GetObject(id, OpenMode.ForRead, false) as Polyline; }
+                catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                if (pl == null || pl.Closed || !IsBranchPipeLayerName(pl.Layer))
+                    continue;
+
+                try
+                {
+                    int nv = pl.NumberOfVertices;
+                    for (int i = 0; i < nv - 1; i++)
+                    {
+                        var p0 = pl.GetPoint2dAt(i);
+                        var p1 = pl.GetPoint2dAt(i + 1);
+                        if (chainAlongX)
+                        {
+                            if (Math.Abs(p0.Y - p1.Y) > axisTol)
+                                continue;
+                            double segY = (p0.Y + p1.Y) * 0.5;
+                            if (Math.Abs(segY - lineFixed) > axisTol * 3.0)
+                                continue;
+                            double segMin = Math.Min(p0.X, p1.X);
+                            double segMax = Math.Max(p0.X, p1.X);
+                            if (segMin <= spanMin + axisTol && segMax >= spanMax - axisTol)
+                                return true;
+                        }
+                        else
+                        {
+                            if (Math.Abs(p0.X - p1.X) > axisTol)
+                                continue;
+                            double segX = (p0.X + p1.X) * 0.5;
+                            if (Math.Abs(segX - lineFixed) > axisTol * 3.0)
+                                continue;
+                            double segMin = Math.Min(p0.Y, p1.Y);
+                            double segMax = Math.Max(p0.Y, p1.Y);
+                            if (segMin <= spanMin + axisTol && segMax >= spanMax - axisTol)
+                                return true;
+                        }
+                    }
+                }
+                catch { /* ignore */ }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Interior sprinkler with exactly one branch connection. Row/column ends are excluded when the run has 3+ heads.
+        /// </summary>
+        private static bool IsFixOrphanCandidate(int segmentCount, int indexInRun, int runCount)
+        {
+            if (segmentCount >= MinBranchSegmentsPerSprinkler)
+                return false;
+            if (runCount >= 3 && (indexInRun == 0 || indexInRun == runCount - 1))
+                return false;
+            return true;
+        }
+
+        private static bool IsFixOrphanCandidate(
+            Transaction tr,
+            BlockTableRecord ms,
+            Point2d headPt,
+            int indexInRun,
+            int runCount,
+            double headTol)
+        {
+            return IsFixOrphanCandidate(
+                CountIncidentBranchSegmentsAtHead(tr, ms, headPt, headTol),
+                indexInRun,
+                runCount);
+        }
+
+        /// <summary>
         /// After manual connect, any sprinkler with fewer than two branch segments on the same row/column
         /// as a selected head is treated as an orphan candidate.
         /// </summary>
@@ -1946,6 +2477,7 @@ namespace autocad_final.Commands
             BlockTableRecord ms,
             Database db,
             List<ResolvedHeadWork> manualWork,
+            List<(Point2d pt, double elevZ, string zoneHex)> orphanedHeadPts,
             HashSet<string> allowedZoneHexes,
             Dictionary<string, List<Point2d>> zoneRingsByHex,
             List<SprinklerHeadReader2d.FloorRoomOwnership> floorRoomOwnerships,
@@ -1953,18 +2485,50 @@ namespace autocad_final.Commands
             double minTeeSpacingDu,
             ObjectId branchLayerId)
         {
+            AgentLog.Write("Reconnect", "enter manualWork=" + (manualWork?.Count ?? 0));
             if (tr == null || ms == null || db == null || manualWork == null || manualWork.Count == 0)
                 return 0;
 
             double headTol = GetBranchHeadConnectionToleranceDu(db);
             double bucket = Math.Max(groupTol, 1e-6);
+            double boundaryTol = Math.Max(headTol, bucket * 0.5);
             double mainRefWidth = NfpaBranchPipeSizing.GetMainTrunkPolylineDisplayWidthDu(db);
             double branchWidth = NfpaBranchPipeSizing.GetBranchPolylineDisplayWidthDu(db, nominalMm: 25, mainRefWidth);
             if (!(branchWidth > 1e-12))
                 branchWidth = Math.Max(mainRefWidth * 0.66, 1.0);
 
-            var processedLines = new HashSet<(string zone, long roomKey, bool chainAlongX, long lineBucket)>();
+            var processedLines = new HashSet<(string zone, bool chainAlongX, long lineBucket)>();
             int drawn = 0;
+
+            // Build a fast lookup set for heads that were actually orphaned by the erase step.
+            // This prevents "reconnect" from preferentially adding segments around selected heads while
+            // missing the real orphans further down the line.
+            double keyBucket = Math.Max(headTol, 1e-3);
+            (long qx, long qy) KeyOf(Point2d p) => ((long)Math.Round(p.X / keyBucket), (long)Math.Round(p.Y / keyBucket));
+
+            var selectedKeys = new HashSet<(long qx, long qy)>();
+            foreach (var w in manualWork)
+            {
+                if (w == null) continue;
+                selectedKeys.Add(KeyOf(new Point2d(w.HeadPt.X, w.HeadPt.Y)));
+            }
+
+            var orphanKeysByZone = new Dictionary<string, HashSet<(long qx, long qy)>>(StringComparer.OrdinalIgnoreCase);
+            if (orphanedHeadPts != null)
+            {
+                foreach (var (pt, _, zh) in orphanedHeadPts)
+                {
+                    if (selectedKeys.Contains(KeyOf(pt)))
+                        continue; // Never treat selected heads as orphans.
+                    var key = zh ?? string.Empty;
+                    if (!orphanKeysByZone.TryGetValue(key, out var set))
+                    {
+                        set = new HashSet<(long qx, long qy)>();
+                        orphanKeysByZone[key] = set;
+                    }
+                    set.Add(KeyOf(pt));
+                }
+            }
 
             foreach (var anchor in manualWork)
             {
@@ -1977,98 +2541,88 @@ namespace autocad_final.Commands
                     && !string.IsNullOrEmpty(zoneHex) && !allowedZoneHexes.Contains(zoneHex))
                     continue;
 
-                if (!TryGetFloorRoomKeyForPointAnyZone(
-                        floorRoomOwnerships, anchorPt, out long roomKey, out List<Point2d> roomRing, out _))
-                    roomKey = -1;
-
                 bool feedVertical = PolylineSpanIsVertical(anchor.BestFeed.Polyline);
                 bool chainAlongX = feedVertical;
                 long lineBucket = chainAlongX
                     ? (long)Math.Round(anchor.HeadPt.Y / bucket)
                     : (long)Math.Round(anchor.HeadPt.X / bucket);
 
-                var lineKey = (zoneHex ?? string.Empty, roomKey, chainAlongX, lineBucket);
+                var lineKey = (zoneHex ?? string.Empty, chainAlongX, lineBucket);
                 if (!processedLines.Add(lineKey))
                     continue;
 
-                List<Point2d> routingRing = roomRing;
-                if (routingRing == null || routingRing.Count < 3)
-                {
-                    routingRing = ResolveRoutingRingForHead(
-                        floorRoomOwnerships, anchorPt, zoneHex, anchor.ZoneRing);
-                    if ((routingRing == null || routingRing.Count < 3)
-                        && !string.IsNullOrEmpty(zoneHex)
-                        && zoneRingsByHex != null
-                        && zoneRingsByHex.TryGetValue(zoneHex, out List<Point2d> parentRing))
-                        routingRing = parentRing;
-                }
+                AgentLog.Write("Reconnect", "processing zone=" + zoneHex + " chainAlongX=" + chainAlongX + " bucket=" + lineBucket);
+                List<Point2d> parentZoneRing = null;
+                if (!string.IsNullOrEmpty(zoneHex)
+                    && zoneRingsByHex != null
+                    && zoneRingsByHex.TryGetValue(zoneHex, out List<Point2d> loadedParentRing)
+                    && loadedParentRing != null && loadedParentRing.Count >= 3)
+                    parentZoneRing = loadedParentRing;
+                if (parentZoneRing == null && anchor.ZoneRing != null && anchor.ZoneRing.Count >= 3)
+                    parentZoneRing = anchor.ZoneRing;
+                if (parentZoneRing == null || parentZoneRing.Count < 3)
+                    continue;
 
                 IList<(Point2d min, Point2d max)> shaftObs = BuildShaftObstaclesForZoneBoundaryHex(
                     tr, db, zoneHex, string.IsNullOrEmpty(zoneHex));
 
+                AgentLog.Write("Reconnect", "CollectSprinklersOnManualLine start");
                 var rowHeads = CollectSprinklersOnManualLine(
-                    tr, ms, anchorPt, zoneHex, roomKey, chainAlongX, lineBucket, bucket, headTol,
-                    allowedZoneHexes, zoneRingsByHex, floorRoomOwnerships, routingRing);
+                    tr, ms, anchorPt, zoneHex, -1, chainAlongX, lineBucket, bucket, headTol,
+                    allowedZoneHexes, zoneRingsByHex, floorRoomOwnerships, parentZoneRing, null);
+                AgentLog.Write("Reconnect", "CollectSprinklersOnManualLine done rowHeads=" + rowHeads.Count);
                 if (rowHeads.Count < 2)
                     continue;
 
-                double lineFixed = chainAlongX ? anchor.AttachOnFeedPreview.Y : anchor.AttachOnFeedPreview.X;
-                if (double.IsNaN(lineFixed) || double.IsInfinity(lineFixed))
-                    lineFixed = chainAlongX ? anchorPt.Y : anchorPt.X;
-
-                var manualIndices = new HashSet<int>();
-                foreach (var w in manualWork)
+                // Use the observed head coordinates (not attach previews) to pick the fixed coordinate.
+                // This keeps ladder segments aligned to the actual sprinkler row/column even when the tap is offset.
+                double lineFixed = 0;
+                if (chainAlongX)
                 {
-                    if (w?.BestFeed?.Polyline == null)
-                        continue;
-                    var wPt = new Point2d(w.HeadPt.X, w.HeadPt.Y);
-                    if (!string.Equals(w.ZoneBoundaryHandleHex ?? string.Empty, zoneHex, StringComparison.OrdinalIgnoreCase))
-                        continue;
-                    bool wFeedVertical = PolylineSpanIsVertical(w.BestFeed.Polyline);
-                    if (wFeedVertical != feedVertical)
-                        continue;
-                    long wLineBucket = chainAlongX
-                        ? (long)Math.Round(w.HeadPt.Y / bucket)
-                        : (long)Math.Round(w.HeadPt.X / bucket);
-                    if (wLineBucket != lineBucket)
-                        continue;
-                    if (roomKey >= 0
-                        && (!TryGetFloorRoomKeyForPointAnyZone(
-                                floorRoomOwnerships, wPt, out long wRoomKey, out _, out _)
-                            || wRoomKey != roomKey))
-                        continue;
-                    int idx = FindClosestHeadIndex(rowHeads, wPt, headTol);
-                    if (idx >= 0)
-                        manualIndices.Add(idx);
+                    double sum = 0;
+                    for (int i = 0; i < rowHeads.Count; i++) sum += rowHeads[i].pt.Y;
+                    lineFixed = sum / rowHeads.Count;
+                }
+                else
+                {
+                    double sum = 0;
+                    for (int i = 0; i < rowHeads.Count; i++) sum += rowHeads[i].pt.X;
+                    lineFixed = sum / rowHeads.Count;
                 }
 
-                if (manualIndices.Count == 0)
-                    continue;
+                orphanKeysByZone.TryGetValue(zoneHex ?? string.Empty, out var orphanKeysThisZone);
 
-                foreach (int manualIdx in manualIndices)
+                // Scan the ENTIRE line and only draw segments that touch an actually-orphaned head.
+                // Do not stop at the first existing segment; orphan gaps may be further away than the selected head.
+                int drawnThisLine = 0;
+                for (int i = 0; i + 1 < rowHeads.Count; i++)
                 {
-                    for (int j = manualIdx - 1; j >= 0; j--)
-                    {
-                        if (CountIncidentBranchSegmentsAtHead(tr, ms, rowHeads[j].pt, headTol) >= MinBranchSegmentsPerSprinkler)
-                            continue;
-                        if (TryDrawAdjacentOrphanSegment(
-                                tr, ms, db, rowHeads[j], rowHeads[j + 1], chainAlongX, lineFixed,
-                                branchLayerId, branchWidth, routingRing, shaftObs, minTeeSpacingDu, zoneHex))
-                            drawn++;
-                    }
+                    var aHead = rowHeads[i];
+                    var bHead = rowHeads[i + 1];
 
-                    for (int j = manualIdx + 1; j < rowHeads.Count; j++)
-                    {
-                        if (CountIncidentBranchSegmentsAtHead(tr, ms, rowHeads[j].pt, headTol) >= MinBranchSegmentsPerSprinkler)
-                            continue;
-                        if (TryDrawAdjacentOrphanSegment(
-                                tr, ms, db, rowHeads[j - 1], rowHeads[j], chainAlongX, lineFixed,
-                                branchLayerId, branchWidth, routingRing, shaftObs, minTeeSpacingDu, zoneHex))
-                            drawn++;
-                    }
+                    bool aWasOrphaned = orphanKeysThisZone != null && orphanKeysThisZone.Contains(KeyOf(aHead.pt));
+                    bool bWasOrphaned = orphanKeysThisZone != null && orphanKeysThisZone.Contains(KeyOf(bHead.pt));
+                    if (!aWasOrphaned && !bWasOrphaned)
+                        continue;
+
+                    // Only draw when at least one endpoint still looks underserved.
+                    if (CountIncidentBranchSegmentsAtHead(tr, ms, aHead.pt, headTol) >= MinBranchSegmentsPerSprinkler
+                        && CountIncidentBranchSegmentsAtHead(tr, ms, bHead.pt, headTol) >= MinBranchSegmentsPerSprinkler)
+                        continue;
+
+                    if (TryDrawAdjacentOrphanSegment(
+                            tr, ms, db, aHead, bHead, chainAlongX, lineFixed,
+                            branchLayerId, branchWidth, parentZoneRing, null, shaftObs,
+                            minTeeSpacingDu, boundaryTol, zoneHex))
+                        drawnThisLine++;
                 }
+
+                if (drawnThisLine > 0)
+                    AgentLog.Write("Reconnect", "line done drew=" + drawnThisLine);
+                drawn += drawnThisLine;
             }
 
+            AgentLog.Write("Reconnect", "return drawn=" + drawn);
             return drawn;
         }
 
@@ -2085,9 +2639,11 @@ namespace autocad_final.Commands
             HashSet<string> allowedZoneHexes,
             Dictionary<string, List<Point2d>> zoneRingsByHex,
             List<SprinklerHeadReader2d.FloorRoomOwnership> floorRoomOwnerships,
+            List<Point2d> parentZoneRing,
             List<Point2d> routingRing)
         {
             var heads = new List<(Point2d pt, double elevZ)>();
+            int totalSprinklers = 0, rejZone = 0, rejBucket = 0, rejZoneHex = 0;
             foreach (ObjectId hid in ms)
             {
                 if (hid.IsErased) continue;
@@ -2099,21 +2655,31 @@ namespace autocad_final.Commands
                 if (!TryGetHeadPoint(ent, out Point3d hp3))
                     continue;
 
+                totalSprinklers++;
                 var hp2 = new Point2d(hp3.X, hp3.Y);
+                if (parentZoneRing != null && parentZoneRing.Count >= 3 && !PointInPolygon(parentZoneRing, hp2))
+                { rejZone++; continue; }
                 long headLineBucket = chainAlongX
                     ? (long)Math.Round(hp3.Y / bucket)
                     : (long)Math.Round(hp3.X / bucket);
                 if (headLineBucket != lineBucket)
-                    continue;
+                { rejBucket++; continue; }
 
-                SprinklerXData.TryGetZoneBoundaryHandle(ent, out string zHex);
-                if (!string.IsNullOrEmpty(zoneHex)
-                    && !string.IsNullOrEmpty(zHex)
-                    && !string.Equals(zHex, zoneHex, StringComparison.OrdinalIgnoreCase))
-                    continue;
-                if (allowedZoneHexes != null && allowedZoneHexes.Count > 0 && !string.IsNullOrEmpty(zHex)
-                    && !allowedZoneHexes.Contains(zHex))
-                    continue;
+                // Zone hex check: only applied when zone ring containment is NOT already providing
+                // the spatial gate. When parentZoneRing is present, containment is authoritative and
+                // zone hex tags may be stale/wrong (e.g. heads re-tagged to shaft sub-zone).
+                bool ringGating = parentZoneRing != null && parentZoneRing.Count >= 3;
+                if (!ringGating)
+                {
+                    SprinklerXData.TryGetZoneBoundaryHandle(ent, out string zHex);
+                    if (!string.IsNullOrEmpty(zoneHex)
+                        && !string.IsNullOrEmpty(zHex)
+                        && !string.Equals(zHex, zoneHex, StringComparison.OrdinalIgnoreCase))
+                    { rejZoneHex++; continue; }
+                    if (allowedZoneHexes != null && allowedZoneHexes.Count > 0 && !string.IsNullOrEmpty(zHex)
+                        && !allowedZoneHexes.Contains(zHex))
+                    { rejZoneHex++; continue; }
+                }
 
                 if (roomKey >= 0)
                 {
@@ -2134,6 +2700,8 @@ namespace autocad_final.Commands
                 if (!dup)
                     heads.Add((hp2, hp3.Z));
             }
+
+            AgentLog.Write("CollectLine", "total=" + totalSprinklers + " rejZoneRing=" + rejZone + " rejBucket=" + rejBucket + " rejZoneHex=" + rejZoneHex + " accepted=" + heads.Count + " lineBucket=" + lineBucket + " bucket=" + bucket.ToString("G4"));
 
             if (chainAlongX)
                 heads.Sort((a, b) => a.pt.X.CompareTo(b.pt.X));
@@ -2171,9 +2739,11 @@ namespace autocad_final.Commands
             double lineFixed,
             ObjectId branchLayerId,
             double branchWidth,
+            List<Point2d> parentZoneRing,
             List<Point2d> routingRing,
             IList<(Point2d min, Point2d max)> shaftObs,
             double minTeeSpacingDu,
+            double boundaryTol,
             string zoneHexTag)
         {
             Point2d a = chainAlongX
@@ -2189,7 +2759,7 @@ namespace autocad_final.Commands
             double elevZ = aHead.elevZ;
             return TryAppendOrphanBranchSegment(
                 tr, ms, db, a, b, elevZ, branchLayerId, branchWidth,
-                routingRing, shaftObs, minTeeSpacingDu, zoneHexTag);
+                parentZoneRing, routingRing, shaftObs, minTeeSpacingDu, boundaryTol, zoneHexTag);
         }
 
         private static bool TryGetFloorRoomRingByKey(
@@ -2378,7 +2948,7 @@ namespace autocad_final.Commands
 
                         if (TryAppendOrphanBranchSegment(
                                 tr, ms, db, a, b, elevZ, branchLayerId, branchWidth,
-                                routingRing, shaftObs, minTeeSpacingDu, reconnectNoZone ? null : zoneHexKey))
+                                zoneRing, routingRing, shaftObs, minTeeSpacingDu, boundaryTol, reconnectNoZone ? null : zoneHexKey))
                             drawn++;
                     }
 
@@ -2393,7 +2963,7 @@ namespace autocad_final.Commands
 
                         if (TryAppendOrphanBranchSegment(
                                 tr, ms, db, latPt, headPt, elevZ, branchLayerId, branchWidth,
-                                routingRing, shaftObs, minTeeSpacingDu, reconnectNoZone ? null : zoneHexKey))
+                                zoneRing, routingRing, shaftObs, minTeeSpacingDu, boundaryTol, reconnectNoZone ? null : zoneHexKey))
                             drawn++;
                     }
 
@@ -2626,9 +3196,11 @@ namespace autocad_final.Commands
             double elevZ,
             ObjectId branchLayerId,
             double branchWidth,
-            List<Point2d> zoneRing,
+            List<Point2d> parentZoneRing,
+            List<Point2d> routingRing,
             IList<(Point2d min, Point2d max)> shaftObs,
             double minTeeSpacingDu,
+            double boundaryTol,
             string zoneHexTag)
         {
             if (tr == null || ms == null || db == null)
@@ -2637,18 +3209,11 @@ namespace autocad_final.Commands
                 return false;
 
             var verts = new List<Point2d> { a, b };
-            if (!NormalizeAndValidateRowLateralVerts(ref verts, shaftObs, zoneRing, minTeeSpacingDu))
+            if (!NormalizeAndValidateRowLateralVerts(
+                    ref verts, shaftObs, parentZoneRing, routingRing, minTeeSpacingDu, boundaryTol))
                 return false;
 
-            Polyline seg = CreateOrthogonalBranchPolyline(db, verts, elevZ, branchLayerId, branchWidth);
-            if (seg.NumberOfVertices < 2)
-                return false;
-
-            if (!string.IsNullOrEmpty(zoneHexTag))
-                SprinklerXData.ApplyZoneBoundaryTag(seg, zoneHexTag);
-            ms.AppendEntity(seg);
-            tr.AddNewlyCreatedDBObject(seg, true);
-            return true;
+            return DrawBranchSegmentPairs(tr, ms, db, verts, elevZ, branchLayerId, branchWidth, zoneHexTag);
         }
 
         private static bool TryAppendValidatedBranchSegment(
@@ -2660,9 +3225,11 @@ namespace autocad_final.Commands
             double elevZ,
             ObjectId branchLayerId,
             double branchWidth,
-            List<Point2d> zoneRing,
+            List<Point2d> parentZoneRing,
+            List<Point2d> routingRing,
             IList<(Point2d min, Point2d max)> shaftObs,
             double minTeeSpacingDu,
+            double boundaryTol,
             string zoneHexTag)
         {
             if (tr == null || ms == null || db == null)
@@ -2671,18 +3238,48 @@ namespace autocad_final.Commands
                 return false;
 
             var verts = new List<Point2d> { a, b };
-            if (!NormalizeAndValidateRowLateralVerts(ref verts, shaftObs, zoneRing, minTeeSpacingDu))
+            if (!NormalizeAndValidateRowLateralVerts(
+                    ref verts, shaftObs, parentZoneRing, routingRing, minTeeSpacingDu, boundaryTol))
                 return false;
 
-            Polyline seg = CreateOrthogonalBranchPolyline(db, verts, elevZ, branchLayerId, branchWidth);
-            if (seg.NumberOfVertices < 2)
-                return false;
+            return DrawBranchSegmentPairs(tr, ms, db, verts, elevZ, branchLayerId, branchWidth, zoneHexTag);
+        }
 
-            if (!string.IsNullOrEmpty(zoneHexTag))
-                SprinklerXData.ApplyZoneBoundaryTag(seg, zoneHexTag);
-            ms.AppendEntity(seg);
-            tr.AddNewlyCreatedDBObject(seg, true);
-            return true;
+        /// <summary>
+        /// Draws consecutive vertex pairs from <paramref name="verts"/> as separate 2-vertex branch polylines.
+        /// This is the leaf drawing function — it never recurses into segment-pair or validation helpers.
+        /// </summary>
+        private static bool DrawBranchSegmentPairs(
+            Transaction tr,
+            BlockTableRecord ms,
+            Database db,
+            IList<Point2d> verts,
+            double elevZ,
+            ObjectId branchLayerId,
+            double branchWidth,
+            string zoneHexTag)
+        {
+            if (verts == null || verts.Count < 2)
+                return false;
+            double headTol = GetBranchHeadConnectionToleranceDu(db);
+            bool anyDrawn = false;
+            for (int i = 0; i < verts.Count - 1; i++)
+            {
+                var p0 = verts[i];
+                var p1 = verts[i + 1];
+                if (p0.GetDistanceTo(p1) <= 1e-9)
+                    continue;
+                if (BranchSegmentExistsBetween(tr, ms, p0, p1, headTol))
+                    continue;
+                var seg = CreateOrthogonalBranchPolyline(db, new List<Point2d> { p0, p1 }, elevZ, branchLayerId, branchWidth);
+                if (seg.NumberOfVertices < 2) { seg.Dispose(); continue; }
+                if (!string.IsNullOrEmpty(zoneHexTag))
+                    SprinklerXData.ApplyZoneBoundaryTag(seg, zoneHexTag);
+                ms.AppendEntity(seg);
+                tr.AddNewlyCreatedDBObject(seg, true);
+                anyDrawn = true;
+            }
+            return anyDrawn;
         }
 
         /// <summary>
@@ -2766,7 +3363,7 @@ namespace autocad_final.Commands
                 {
                     if (TryAppendOrphanBranchSegment(
                             tr, ms, db, outwardLateralAnchor, chainEnd, elevZ, branchLayerId, branchWidth,
-                            zoneRing, shaftObs, minTeeSpacingDu, zoneHexTag))
+                            zoneRing, null, shaftObs, minTeeSpacingDu, boundaryTol, zoneHexTag))
                         drawn = 1;
                 }
                 else
@@ -2826,7 +3423,7 @@ namespace autocad_final.Commands
             {
                 if (TryAppendOrphanBranchSegment(
                         tr, ms, db, bestTap, corner, elevZ, branchLayerId, branchWidth,
-                        zoneRing, shaftObs, minTeeSpacingDu, zoneHexTag))
+                        zoneRing, null, shaftObs, minTeeSpacingDu, boundaryTol, zoneHexTag))
                     segmentsDrawn++;
             }
 
@@ -2834,7 +3431,7 @@ namespace autocad_final.Commands
             {
                 if (TryAppendOrphanBranchSegment(
                         tr, ms, db, corner, chainEnd, elevZ, branchLayerId, branchWidth,
-                        zoneRing, shaftObs, minTeeSpacingDu, zoneHexTag))
+                        zoneRing, null, shaftObs, minTeeSpacingDu, boundaryTol, zoneHexTag))
                     segmentsDrawn++;
             }
 
@@ -3024,7 +3621,9 @@ namespace autocad_final.Commands
                         zoneMains,
                         branches: null,
                         userRestrictedMains: false,
+                        parentRing,
                         routingRing,
+                        boundaryTol,
                         shaftObs,
                         minTeeSpacingDu,
                         usedAttachDistanceAlong,
@@ -3032,17 +3631,14 @@ namespace autocad_final.Commands
                         out OrthogonalRouteResult route))
                     continue;
 
-                Polyline seg = CreateOrthogonalBranchPolyline(db, route.Vertices2d, elevZ, branchLayerId, branchWidth);
-                if (seg.NumberOfVertices < 2)
+                int routeSegments = TryAppendSegmentPairsAlongPath(
+                    tr, ms, db, route.Vertices2d, elevZ, branchLayerId, branchWidth,
+                    parentRing, routingRing, shaftObs, minTeeSpacingDu, boundaryTol, zoneHex);
+                if (routeSegments <= 0)
                     continue;
 
-                if (!string.IsNullOrEmpty(zoneHex))
-                    SprinklerXData.ApplyZoneBoundaryTag(seg, zoneHex);
-
-                ms.AppendEntity(seg);
-                tr.AddNewlyCreatedDBObject(seg, true);
                 RegisterTeeDistanceAlong(usedAttachDistanceAlong, route.SourcePolylineId, route.RegisteredDistanceAlong);
-                drawn++;
+                drawn += routeSegments;
             }
 
             return drawn;
@@ -3536,7 +4132,10 @@ namespace autocad_final.Commands
             public Point3d HeadPt;
             public PipeCandidate BestFeed;
             public Point3d AttachOnFeedPreview;
+            /// <summary>Parent zone boundary (green outline).</summary>
             public List<Point2d> ZoneRing;
+            /// <summary>Floor-room cell ring when present; tighter routing clip than <see cref="ZoneRing"/>.</summary>
+            public List<Point2d> RoutingRing;
             public IList<(Point2d min, Point2d max)> ShaftObs;
             public string ZoneBoundaryHandleHex;
             public double ElevZ;
@@ -3806,7 +4405,9 @@ namespace autocad_final.Commands
             List<PipeCandidate> mains,
             List<PipeCandidate> branches,
             bool userRestrictedMains,
-            List<Point2d> zoneRing,
+            List<Point2d> parentZoneRing,
+            List<Point2d> routingRing,
+            double boundaryTol,
             IList<(Point2d min, Point2d max)> shaftObstacles,
             double minTeeSpacingDu,
             Dictionary<ObjectId, List<double>> usedAttachDistanceAlong,
@@ -3815,6 +4416,8 @@ namespace autocad_final.Commands
         {
             route = null;
             if (mains == null || mains.Count == 0)
+                return false;
+            if (parentZoneRing == null || parentZoneRing.Count < 3)
                 return false;
 
             var queue = BuildOrderedPipeQueue(headPt, mains, branches, userRestrictedMains);
@@ -3847,7 +4450,7 @@ namespace autocad_final.Commands
                     if (ring == 0)
                     {
                         if (TryOrthogonalRouteFromPipeAtDistance(
-                                pl, entry, distAlongRaw, head2, zoneRing, shaftObstacles,
+                                pl, entry, distAlongRaw, head2, parentZoneRing, routingRing, boundaryTol, shaftObstacles,
                                 minTeeSpacingDu, usedOnThisPoly, db, out route))
                             placed = true;
                     }
@@ -3855,14 +4458,14 @@ namespace autocad_final.Commands
                     {
                         double up = distAlongRaw + ring * minTeeSpacingDu;
                         if (TryOrthogonalRouteFromPipeAtDistance(
-                                pl, entry, up, head2, zoneRing, shaftObstacles,
+                                pl, entry, up, head2, parentZoneRing, routingRing, boundaryTol, shaftObstacles,
                                 minTeeSpacingDu, usedOnThisPoly, db, out route))
                             placed = true;
                         else
                         {
                             double dn = distAlongRaw - ring * minTeeSpacingDu;
                             if (TryOrthogonalRouteFromPipeAtDistance(
-                                    pl, entry, dn, head2, zoneRing, shaftObstacles,
+                                    pl, entry, dn, head2, parentZoneRing, routingRing, boundaryTol, shaftObstacles,
                                     minTeeSpacingDu, usedOnThisPoly, db, out route))
                                 placed = true;
                         }
@@ -3881,7 +4484,9 @@ namespace autocad_final.Commands
             PipeQueueEntry entry,
             double distanceAlong,
             Point2d head2,
-            List<Point2d> zoneRing,
+            List<Point2d> parentZoneRing,
+            List<Point2d> routingRing,
+            double boundaryTol,
             IList<(Point2d min, Point2d max)> shaftObstacles,
             double minTeeSpacingDu,
             IList<double> usedOnThisPoly,
@@ -3890,6 +4495,8 @@ namespace autocad_final.Commands
         {
             route = null;
             if (pl == null || pl.IsErased)
+                return false;
+            if (parentZoneRing == null || parentZoneRing.Count < 3)
                 return false;
 
             if (!TryGetTotalPolylineLength(pl, out double totalLen) || totalLen <= 1e-9)
@@ -3925,29 +4532,15 @@ namespace autocad_final.Commands
                 minTeeSpacingDu,
                 candidates);
 
-            double detourTol = Math.Max(minTeeSpacingDu * 0.05, 1e-4);
-            List<Point2d> bestVerts = null;
-            double bestLen = double.MaxValue;
-
-            for (int ci = 0; ci < candidates.Count; ci++)
-            {
-                var expanded = ExpandRouteThroughShaftDetours(candidates[ci], shaftObstacles, zoneRing, detourTol);
-                if (expanded == null || expanded.Count < 2)
-                    continue;
-                var verts = CollapseOrthogonalVertices(expanded);
-                if (verts == null || verts.Count < 2)
-                    continue;
-                if (!ValidateOrthogonalRoute(verts, zoneRing, shaftObstacles))
-                    continue;
-                double len = ManhattanPathLength(verts);
-                if (len < bestLen)
-                {
-                    bestLen = len;
-                    bestVerts = verts;
-                }
-            }
-
-            if (bestVerts == null)
+            if (!TrySelectBestValidatedOrthogonalPath(
+                    candidates,
+                    shaftObstacles,
+                    parentZoneRing,
+                    routingRing,
+                    minTeeSpacingDu,
+                    boundaryTol,
+                    out List<Point2d> bestVerts,
+                    out double bestLen))
                 return false;
 
             route = new OrthogonalRouteResult
@@ -4142,6 +4735,89 @@ namespace autocad_final.Commands
         }
 
         /// <summary>
+        /// Picks the shortest shaft-aware orthogonal path between two points (same candidate search as feed routing).
+        /// </summary>
+        private static bool TrySelectBestValidatedOrthogonalPath(
+            Point2d from,
+            Point2d to,
+            SegmentAxisKind axisKind,
+            IList<(Point2d min, Point2d max)> shaftObs,
+            List<Point2d> parentZoneRing,
+            List<Point2d> routingRing,
+            double minTeeSpacingDu,
+            double boundaryTol,
+            out List<Point2d> bestVerts,
+            out double bestLen)
+        {
+            bestVerts = null;
+            bestLen = 0;
+            if (from.GetDistanceTo(to) <= 1e-9)
+                return false;
+
+            var candidates = new List<List<Point2d>>();
+            var from3 = new Point3d(from.X, from.Y, 0);
+            if (TryBuildOrthogonalCandidates(from3, to, axisKind, out List<List<Point2d>> baseCandidates))
+            {
+                for (int i = 0; i < baseCandidates.Count; i++)
+                    candidates.Add(baseCandidates[i]);
+            }
+
+            if (Math.Abs(from.X - to.X) < 1e-9 || Math.Abs(from.Y - to.Y) < 1e-9)
+                candidates.Add(new List<Point2d> { from, to });
+
+            AppendStairStepOrthogonalCandidates(from, to, minTeeSpacingDu, candidates);
+            if (candidates.Count == 0)
+                return false;
+
+            return TrySelectBestValidatedOrthogonalPath(
+                candidates,
+                shaftObs,
+                parentZoneRing,
+                routingRing,
+                minTeeSpacingDu,
+                boundaryTol,
+                out bestVerts,
+                out bestLen);
+        }
+
+        private static bool TrySelectBestValidatedOrthogonalPath(
+            List<List<Point2d>> candidates,
+            IList<(Point2d min, Point2d max)> shaftObs,
+            List<Point2d> parentZoneRing,
+            List<Point2d> routingRing,
+            double minTeeSpacingDu,
+            double boundaryTol,
+            out List<Point2d> bestVerts,
+            out double bestLen)
+        {
+            bestVerts = null;
+            bestLen = double.MaxValue;
+            if (candidates == null || candidates.Count == 0)
+                return false;
+
+            double detourTol = Math.Max(minTeeSpacingDu * 0.05, 1e-4);
+            for (int ci = 0; ci < candidates.Count; ci++)
+            {
+                var expanded = ExpandRouteThroughShaftDetours(candidates[ci], shaftObs, parentZoneRing, detourTol);
+                if (expanded == null || expanded.Count < 2)
+                    continue;
+                var verts = CollapseOrthogonalVertices(expanded);
+                if (verts == null || verts.Count < 2)
+                    continue;
+                if (!ValidateOrthogonalRoute(verts, parentZoneRing, routingRing, shaftObs, boundaryTol))
+                    continue;
+                double len = ManhattanPathLength(verts);
+                if (len < bestLen)
+                {
+                    bestLen = len;
+                    bestVerts = verts;
+                }
+            }
+
+            return bestVerts != null;
+        }
+
+        /// <summary>
         /// Adds double-corner (Z-shaped) Manhattan routes between attach and head so routing can jog off-axis
         /// while staying orthogonal — used when a simple L fails validation or shaft detours need extra corners.
         /// </summary>
@@ -4269,14 +4945,15 @@ namespace autocad_final.Commands
             if (bucket == null || bucket.Count <= 1 || work == null)
                 return;
 
-            // Sort all heads by their lateral coordinate in one monotonic sweep (left → right or bottom → top).
-            // This avoids the backtracking that occurred when concatenating near→far left with near→far right:
-            // the chain crossed back past the tee after reaching the far-left end.
+            // Sort nearest-to-farthest from the tee so the chain always extends outward:
+            // attach → head₁ (nearest) → head₂ → … (farthest).
+            // A raw coordinate sort (ascending X or Y) causes the farthest head to appear first
+            // when heads sit on the side of the main opposite to the ascending direction.
             bucket.Sort((a, b) =>
             {
-                double la = feedVertical ? work[a].HeadPt.X : work[a].HeadPt.Y;
-                double lb = feedVertical ? work[b].HeadPt.X : work[b].HeadPt.Y;
-                return la.CompareTo(lb);
+                double da = work[a].HeadPt.DistanceTo(attachPt);
+                double db = work[b].HeadPt.DistanceTo(attachPt);
+                return da.CompareTo(db);
             });
         }
 
@@ -4316,8 +4993,10 @@ namespace autocad_final.Commands
 
         private static bool ValidateOrthogonalRoute(
             IList<Point2d> verts,
-            List<Point2d> zoneRing,
-            IList<(Point2d min, Point2d max)> shaftObstacles)
+            List<Point2d> parentZoneRing,
+            List<Point2d> routingRing,
+            IList<(Point2d min, Point2d max)> shaftObstacles,
+            double boundaryTol)
         {
             if (verts == null || verts.Count < 2)
                 return false;
@@ -4334,11 +5013,7 @@ namespace autocad_final.Commands
                 if (dx > 1e-9 && dy > 1e-9)
                     return false;
 
-                var a3 = new Point3d(a.X, a.Y, 0);
-                var b3 = new Point3d(b.X, b.Y, 0);
-                if (!ConnectionInsideZone(a3, b3, zoneRing))
-                    return false;
-                if (SegmentIntersectsAnyBox(a, b, shaftObstacles))
+                if (!ValidateBranchSegmentZoneConstraints(a, b, parentZoneRing, routingRing, shaftObstacles, boundaryTol))
                     return false;
             }
 

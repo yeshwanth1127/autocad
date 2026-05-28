@@ -130,6 +130,7 @@
     <Compile Include="Commands\AttachBranchesCommand.cs" />
     <Compile Include="Commands\RoutingRegressionCommand.cs" />
     <Compile Include="Commands\ConnectBranchesManuallyCommand.cs" />
+    <Compile Include="Commands\FixOrphansCommand.cs" />
     <Compile Include="Commands\DeleteAllOnLayerCommand.cs" />
     <Compile Include="Commands\RebuildFromTrunkCommand.cs" />
     <Compile Include="Commands\RedesignFromTrunkCommand.cs" />

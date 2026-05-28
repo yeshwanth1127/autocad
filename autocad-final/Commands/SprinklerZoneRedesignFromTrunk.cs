@@ -159,8 +159,6 @@ namespace autocad_final.Commands
                     }
                 }
 
-                TryDrawTrunkEndCaps(tr, db, ms, trunkId, zone.Elevation, zone.Normal, boundaryHandleHex);
-
                 tr.Commit();
                 if (zoneTaggedErased > 0 || capsErased > 0 || erased > 0 || outsideSprinklersErased > 0 || outsideBranchErased > 0)
                     ed.WriteMessage(
@@ -1147,94 +1145,6 @@ namespace autocad_final.Commands
             return btr.Name;
         }
 
-        private static void TryDrawTrunkEndCaps(
-            Transaction tr,
-            Database db,
-            BlockTableRecord ms,
-            ObjectId trunkId,
-            double elevation,
-            Vector3d normal,
-            string zoneBoundaryHandleHex)
-        {
-            if (tr == null || db == null || ms == null || trunkId.IsNull)
-                return;
-
-            if (!DbObjectSafeAccess.TryGetObject(tr, trunkId, OpenMode.ForRead, out Polyline trunk))
-                return;
-            if (trunk == null)
-                return;
-
-            int nv = trunk.NumberOfVertices;
-            if (nv < 2)
-                return;
-
-            var trunkPath = new List<Point2d>(nv);
-            for (int i = 0; i < nv; i++)
-            {
-                var p = trunk.GetPoint3dAt(i);
-                trunkPath.Add(new Point2d(p.X, p.Y));
-            }
-
-            double w = 0;
-            try { w = trunk.ConstantWidth; } catch { w = 0; }
-            if (!(w > 1e-12))
-                w = NfpaBranchPipeSizing.GetMainTrunkPolylineDisplayWidthDu(db);
-            if (!(w > 0)) w = 1.0;
-
-            double capLen = 1.0;
-            try
-            {
-                if (DrawingUnitsHelper.TryMetersToDrawingLength(db.Insunits, 0.30, out double du) && du > 0)
-                    capLen = du;
-            }
-            catch { /* ignore */ }
-            double h = 0.5 * capLen;
-
-            SprinklerXData.EnsureRegApp(tr, db);
-            ObjectId mainPipeLayerId = SprinklerLayers.EnsureMainPipeLayer(tr, db);
-
-            int last = trunkPath.Count - 1;
-            var a = trunkPath[0];
-            var b = trunkPath[last];
-            var aNext = trunkPath[1];
-            var bPrev = trunkPath[last - 1];
-
-            DrawCapAt(a, new Vector2d(aNext.X - a.X, aNext.Y - a.Y));
-            DrawCapAt(b, new Vector2d(b.X - bPrev.X, b.Y - bPrev.Y));
-
-            void DrawCapAt(Point2d p, Vector2d along)
-            {
-                double aLen = Math.Sqrt(along.X * along.X + along.Y * along.Y);
-                double nx, ny;
-                if (aLen < 1e-9)
-                {
-                    nx = 0;
-                    ny = 1;
-                }
-                else
-                {
-                    nx = -along.Y / aLen;
-                    ny =  along.X / aLen;
-                }
-
-                var cap = new Polyline();
-                cap.SetDatabaseDefaults(db);
-                cap.LayerId = mainPipeLayerId;
-                cap.Color = Color.FromColorIndex(ColorMethod.ByLayer, 256);
-                cap.ConstantWidth = w;
-                cap.Elevation = elevation;
-                cap.Normal = normal;
-                cap.AddVertexAt(0, new Point2d(p.X - nx * h, p.Y - ny * h), 0, 0, 0);
-                cap.AddVertexAt(1, new Point2d(p.X + nx * h, p.Y + ny * h), 0, 0, 0);
-                cap.Closed = false;
-                SprinklerXData.TagAsTrunkCap(cap);
-                if (!string.IsNullOrEmpty(zoneBoundaryHandleHex))
-                    SprinklerXData.ApplyZoneBoundaryTag(cap, zoneBoundaryHandleHex);
-                ms.AppendEntity(cap);
-                tr.AddNewlyCreatedDBObject(cap, true);
-            }
-        }
-
         private static void TryTrimTrunkIfTouchingBoundary(Transaction tr, Database db, ObjectId trunkId, List<Point2d> zoneRing)
         {
             if (tr == null || db == null || trunkId.IsNull || zoneRing == null || zoneRing.Count < 3)
@@ -2059,6 +1969,8 @@ namespace autocad_final.Commands
                 return false;
             if (!BranchPathValidForRouting(ctx, path))
                 return false;
+            if (WouldCreateGridLikeCrossing(tr, ms, ctx, path[0], path[1]))
+                return false;
             var pl = CreateHeadBranchPolyline(ctx.Db, path[0], path[1], elevation, branchLayerId, branchW);
             if (pl == null)
                 return false;
@@ -2067,6 +1979,95 @@ namespace autocad_final.Commands
             tr.AddNewlyCreatedDBObject(pl, true);
             drawnCount++;
             return true;
+        }
+
+        private static bool WouldCreateGridLikeCrossing(
+            Transaction tr,
+            BlockTableRecord ms,
+            BranchRouteContext ctx,
+            Point2d a,
+            Point2d b)
+        {
+            var existing = CollectZoneBranchSegments(tr, ms, ctx);
+            if (existing == null || existing.Count == 0)
+                return false;
+
+            for (int i = 0; i < existing.Count; i++)
+            {
+                if (SegmentIntersectsAtNonEndpoint(a, b, existing[i].A, existing[i].B, BranchAxisSnapEps))
+                    return true;
+            }
+            return false;
+        }
+
+        private static bool SegmentIntersectsAtNonEndpoint(
+            Point2d a1,
+            Point2d a2,
+            Point2d b1,
+            Point2d b2,
+            double tol)
+        {
+            bool aVertical = Math.Abs(a1.X - a2.X) <= tol;
+            bool aHorizontal = Math.Abs(a1.Y - a2.Y) <= tol;
+            bool bVertical = Math.Abs(b1.X - b2.X) <= tol;
+            bool bHorizontal = Math.Abs(b1.Y - b2.Y) <= tol;
+            if ((!aVertical && !aHorizontal) || (!bVertical && !bHorizontal))
+                return false;
+
+            bool samePoint(Point2d p, Point2d q) => p.GetDistanceTo(q) <= tol;
+            bool isNewEndpoint(Point2d p) => samePoint(p, a1) || samePoint(p, a2);
+            bool inRange(double v, double lo, double hi) => v >= lo - tol && v <= hi + tol;
+
+            // Orthogonal crossing.
+            if ((aVertical && bHorizontal) || (aHorizontal && bVertical))
+            {
+                Point2d ip = aVertical
+                    ? new Point2d(a1.X, b1.Y)
+                    : new Point2d(b1.X, a1.Y);
+
+                double aMinX = Math.Min(a1.X, a2.X), aMaxX = Math.Max(a1.X, a2.X);
+                double aMinY = Math.Min(a1.Y, a2.Y), aMaxY = Math.Max(a1.Y, a2.Y);
+                double bMinX = Math.Min(b1.X, b2.X), bMaxX = Math.Max(b1.X, b2.X);
+                double bMinY = Math.Min(b1.Y, b2.Y), bMaxY = Math.Max(b1.Y, b2.Y);
+                if (!inRange(ip.X, aMinX, aMaxX) || !inRange(ip.Y, aMinY, aMaxY) ||
+                    !inRange(ip.X, bMinX, bMaxX) || !inRange(ip.Y, bMinY, bMaxY))
+                    return false;
+
+                // Allow only if crossing is exactly at a new-segment endpoint (tap/head connection).
+                return !isNewEndpoint(ip);
+            }
+
+            // Parallel/collinear overlap.
+            if (aVertical && bVertical && Math.Abs(a1.X - b1.X) <= tol)
+            {
+                double lo = Math.Max(Math.Min(a1.Y, a2.Y), Math.Min(b1.Y, b2.Y));
+                double hi = Math.Min(Math.Max(a1.Y, a2.Y), Math.Max(b1.Y, b2.Y));
+                if (hi < lo - tol)
+                    return false;
+
+                // More than a single-point touch means overlap -> reject.
+                if (hi > lo + tol)
+                    return true;
+
+                Point2d touch = new Point2d(a1.X, (lo + hi) * 0.5);
+                return !isNewEndpoint(touch);
+            }
+
+            if (aHorizontal && bHorizontal && Math.Abs(a1.Y - b1.Y) <= tol)
+            {
+                double lo = Math.Max(Math.Min(a1.X, a2.X), Math.Min(b1.X, b2.X));
+                double hi = Math.Min(Math.Max(a1.X, a2.X), Math.Max(b1.X, b2.X));
+                if (hi < lo - tol)
+                    return false;
+
+                if (hi > lo + tol)
+                    return true;
+
+                Point2d touch = new Point2d((lo + hi) * 0.5, a1.Y);
+                return !isNewEndpoint(touch);
+            }
+
+            return false;
         }
 
         /// <summary>Labelling requires exactly one segment (two vertices): supply tap and one sprinkler.</summary>
@@ -2313,6 +2314,265 @@ namespace autocad_final.Commands
             return true;
         }
 
+        /// <summary>
+        /// Find an attach point on an existing orthogonal branch segment such that the connect segment is a single
+        /// straight perpendicular leg (no L-shapes). For vertical segments, attach at (segX, sprY) if sprY lies
+        /// within the segment Y-range; for horizontal segments, attach at (sprX, segY) if sprX lies within X-range.
+        /// </summary>
+        private static bool TryFindPerpendicularAttachPointOnBranchSegments(
+            Point2d spr,
+            List<BranchSegmentRef> segments,
+            double maxAttachDist,
+            out Point2d attachPoint,
+            out double distance)
+        {
+            attachPoint = default;
+            distance = double.MaxValue;
+            if (segments == null || segments.Count == 0)
+                return false;
+
+            bool enforceMax = !(double.IsNaN(maxAttachDist) || double.IsInfinity(maxAttachDist) || maxAttachDist <= 0);
+
+            for (int i = 0; i < segments.Count; i++)
+            {
+                Point2d a = segments[i].A;
+                Point2d b = segments[i].B;
+
+                // Vertical segment: perpendicular is horizontal at spr.Y.
+                if (Math.Abs(a.X - b.X) <= BranchAxisSnapEps)
+                {
+                    double minY = Math.Min(a.Y, b.Y) - BranchAxisSnapEps;
+                    double maxY = Math.Max(a.Y, b.Y) + BranchAxisSnapEps;
+                    if (spr.Y < minY || spr.Y > maxY)
+                        continue;
+
+                    Point2d cand = new Point2d(a.X, spr.Y);
+                    double d = Math.Abs(spr.X - a.X);
+                    if (cand.GetDistanceTo(spr) < BranchAxisSnapEps)
+                        continue;
+                    if (enforceMax && d > maxAttachDist)
+                        continue;
+                    if (d < distance)
+                    {
+                        distance = d;
+                        attachPoint = cand;
+                    }
+                    continue;
+                }
+
+                // Horizontal segment: perpendicular is vertical at spr.X.
+                if (Math.Abs(a.Y - b.Y) <= BranchAxisSnapEps)
+                {
+                    double minX = Math.Min(a.X, b.X) - BranchAxisSnapEps;
+                    double maxX = Math.Max(a.X, b.X) + BranchAxisSnapEps;
+                    if (spr.X < minX || spr.X > maxX)
+                        continue;
+
+                    Point2d cand = new Point2d(spr.X, a.Y);
+                    double d = Math.Abs(spr.Y - a.Y);
+                    if (cand.GetDistanceTo(spr) < BranchAxisSnapEps)
+                        continue;
+                    if (enforceMax && d > maxAttachDist)
+                        continue;
+                    if (d < distance)
+                    {
+                        distance = d;
+                        attachPoint = cand;
+                    }
+                    continue;
+                }
+            }
+
+            if (distance >= double.MaxValue)
+                return false;
+            return true;
+        }
+
+        private static List<List<int>> BuildIndexGroupsByCoord(
+            List<Point2d> sprinklers,
+            List<int> indices,
+            bool clusterByX,
+            double clusterTol)
+        {
+            var groups = new List<List<int>>();
+            if (sprinklers == null || indices == null || indices.Count == 0)
+                return groups;
+
+            var order = new List<int>(indices);
+            order.Sort((a, b) =>
+            {
+                double ka = clusterByX ? sprinklers[a].X : sprinklers[a].Y;
+                double kb = clusterByX ? sprinklers[b].X : sprinklers[b].Y;
+                return ka.CompareTo(kb);
+            });
+
+            List<int> cur = null;
+            double curCoord = double.MinValue;
+            for (int i = 0; i < order.Count; i++)
+            {
+                int idx = order[i];
+                double coord = clusterByX ? sprinklers[idx].X : sprinklers[idx].Y;
+                if (cur == null || coord - curCoord > clusterTol)
+                {
+                    cur = new List<int> { idx };
+                    groups.Add(cur);
+                    curCoord = coord;
+                }
+                else
+                    cur.Add(idx);
+            }
+
+            return groups;
+        }
+
+        private static bool TryPickBestPerpendicularAttachForGroup(
+            List<Point2d> sprinklers,
+            List<int> group,
+            List<BranchSegmentRef> segments,
+            double maxAttachDist,
+            out int bestIndex,
+            out Point2d bestAttach)
+        {
+            bestIndex = -1;
+            bestAttach = default;
+            if (sprinklers == null || group == null || group.Count == 0 || segments == null || segments.Count == 0)
+                return false;
+
+            double bestDist = double.MaxValue;
+            for (int i = 0; i < group.Count; i++)
+            {
+                int si = group[i];
+                if (TryFindPerpendicularAttachPointOnBranchSegments(sprinklers[si], segments, maxAttachDist, out Point2d a, out double d))
+                {
+                    if (d < bestDist)
+                    {
+                        bestDist = d;
+                        bestIndex = si;
+                        bestAttach = a;
+                    }
+                }
+            }
+
+            return bestIndex >= 0;
+        }
+
+        private static int TryRouteGroupAsSegmentChain(
+            Transaction tr,
+            BlockTableRecord ms,
+            BranchRouteContext ctx,
+            List<Point2d> sprinklers,
+            List<BranchSegmentRef> segments,
+            HashSet<int> served,
+            List<int> group,
+            ObjectId branchLayerId,
+            double branchW,
+            double elevation,
+            bool useVerticalBranches,
+            double maxAttachDist,
+            ref int drawnCount)
+        {
+            if (group == null || group.Count == 0 || sprinklers == null || segments == null || segments.Count == 0)
+                return 0;
+
+            var candidates = new List<int>(group.Count);
+            for (int i = 0; i < group.Count; i++)
+            {
+                int si = group[i];
+                if (served != null && served.Contains(si)) continue;
+                candidates.Add(si);
+            }
+            if (candidates.Count == 0)
+                return 0;
+
+            // Prevent "box" ladders: only chain within true rows/columns (same X for vertical runs, same Y for horizontal runs).
+            // Never pivot the chain "prev" to a sprinkler that was connected via an independent takeoff.
+            double lineTol = BranchAxisSnapEps * 5;
+
+            candidates.Sort((a, b) =>
+            {
+                double ka = useVerticalBranches ? sprinklers[a].X : sprinklers[a].Y;
+                double kb = useVerticalBranches ? sprinklers[b].X : sprinklers[b].Y;
+                return ka.CompareTo(kb);
+            });
+
+            var lineGroups = new List<List<int>>();
+            List<int> cur = null;
+            double curCoord = double.MinValue;
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                int idx = candidates[i];
+                double coord = useVerticalBranches ? sprinklers[idx].X : sprinklers[idx].Y;
+                if (cur == null || Math.Abs(coord - curCoord) > lineTol)
+                {
+                    cur = new List<int> { idx };
+                    lineGroups.Add(cur);
+                    curCoord = coord;
+                }
+                else
+                    cur.Add(idx);
+            }
+
+            int routed = 0;
+
+            for (int lg = 0; lg < lineGroups.Count; lg++)
+            {
+                var line = lineGroups[lg];
+                if (line == null || line.Count == 0)
+                    continue;
+
+                // Choose the line sprinkler that has the shortest perpendicular takeoff to an existing branch segment.
+                if (!TryPickBestPerpendicularAttachForGroup(sprinklers, line, segments, maxAttachDist, out int startIndex, out Point2d attach))
+                    continue;
+
+                var order = new List<int>(line);
+                SortSprinklerIndicesAlongBranch(order, sprinklers, useVerticalBranches);
+                int startPos = order.IndexOf(startIndex);
+                if (startPos < 0) startPos = 0;
+
+                // First leg: branch segment → start sprinkler (single perpendicular segment only).
+                if ((served == null || !served.Contains(startIndex)) &&
+                    TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, attach, sprinklers[startIndex], ref drawnCount))
+                {
+                    served?.Add(startIndex);
+                    routed++;
+                }
+
+                // Chain down.
+                Point2d prev = sprinklers[startIndex];
+                for (int p = startPos - 1; p >= 0; p--)
+                {
+                    int si = order[p];
+                    if (served != null && served.Contains(si))
+                        continue;
+                    if (!TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, prev, sprinklers[si], ref drawnCount))
+                        break;
+                    served?.Add(si);
+                    routed++;
+                    prev = sprinklers[si];
+                }
+
+                // Chain up.
+                prev = sprinklers[startIndex];
+                for (int p = startPos + 1; p < order.Count; p++)
+                {
+                    int si = order[p];
+                    if (served != null && served.Contains(si))
+                        continue;
+                    if (!TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, prev, sprinklers[si], ref drawnCount))
+                        break;
+                    served?.Add(si);
+                    routed++;
+                    prev = sprinklers[si];
+                }
+                // STRICT NO-GRID RULE:
+                // Do NOT add additional independent takeoffs for leftovers on the same row/column.
+                // Multiple takeoffs + chaining creates rectangles/grids. If a head can't be reached by the chain,
+                // we intentionally leave it unserved for manual fix.
+            }
+
+            return routed;
+        }
+
         private static bool TryBuildOrthogonalPathForRouting(
             BranchRouteContext ctx,
             Point2d from,
@@ -2412,9 +2672,13 @@ namespace autocad_final.Commands
 
             double snapTol = GetBranchSnapToleranceDu(ctx.Db);
             double maxAttachDist = GetMaxSubBranchAttachDistanceDu(ctx.Db, sprinklerSpacingM);
-            bool verticalFirst = mainRunsAlongX;
+            bool clusterByX = mainRunsAlongX;
+            bool useVerticalBranches = mainRunsAlongX;
+            double clusterTol = ColumnClusterToleranceM(sprinklerSpacingM);
 
-            for (int pass = 0; pass < 2; pass++)
+            // STRICT NO-GRID RULE: single pass only. Multiple passes can create multiple takeoffs into the same
+            // row/column after geometry changes within the transaction, which can form rectangular grids.
+            for (int pass = 0; pass < 1; pass++)
             {
                 var segments = CollectZoneBranchSegments(tr, ms, ctx);
                 if (segments.Count == 0)
@@ -2424,39 +2688,20 @@ namespace autocad_final.Commands
                 if (unserved.Count == 0)
                     break;
 
-                var order = new List<(int index, double dist)>(unserved.Count);
-                for (int u = 0; u < unserved.Count; u++)
-                {
-                    int si = unserved[u];
-                    if (TryFindClosestPointOnBranchSegments(sprinklers[si], segments, maxAttachDist, out _, out double d))
-                        order.Add((si, d));
-                    else
-                        order.Add((si, double.MaxValue));
-                }
-                order.Sort((a, b) => a.dist.CompareTo(b.dist));
-
                 int servedThisPass = 0;
-                for (int u = 0; u < order.Count; u++)
+                var groups = BuildIndexGroupsByCoord(sprinklers, unserved, clusterByX, clusterTol);
+                for (int g = 0; g < groups.Count; g++)
                 {
-                    int si = order[u].index;
-                    if (served.Contains(si))
-                        continue;
-                    if (IsSprinklerServedByGeometry(sprinklers[si], segments, snapTol))
-                    {
-                        served.Add(si);
-                        servedThisPass++;
-                        continue;
-                    }
-
-                    if (!TryFindClosestPointOnBranchSegments(sprinklers[si], segments, maxAttachDist, out Point2d attach, out _))
-                        continue;
-
                     int before = drawnCount;
-                    if (TryDrawOrthogonalSubBranchToHead(
-                        tr, ms, ctx, branchLayerId, branchW, elevation, attach, sprinklers[si], verticalFirst, ref drawnCount))
+                    int routed = TryRouteGroupAsSegmentChain(
+                        tr, ms, ctx, sprinklers, segments, served, groups[g],
+                        branchLayerId, branchW, elevation,
+                        useVerticalBranches,
+                        maxAttachDist,
+                        ref drawnCount);
+                    if (routed > 0)
                     {
-                        served.Add(si);
-                        servedThisPass++;
+                        servedThisPass += routed;
                         subDrawn += drawnCount - before;
                     }
                 }
@@ -2561,23 +2806,6 @@ namespace autocad_final.Commands
                     tapPerc, sprinklers, unserved, useVerticalBranches, served, ref drawnCount);
             }
 
-            var pileNearStart = new List<int>();
-            var pileNearEnd = new List<int>();
-            for (int g = 0; g < columnGroups.Count; g++)
-            {
-                if (columnAux[g] == 0)
-                    pileNearStart.AddRange(columnGroups[g].Indices);
-                else if (columnAux[g] == 1)
-                    pileNearEnd.AddRange(columnGroups[g].Indices);
-            }
-
-            DrawAuxiliaryFromEndVertexAndPerpendicularFeeds(
-                tr, ms, ctx, branchLayerId, branchW, elevation,
-                mainPipePts, mainPipePts[0], sprinklers, pileNearStart, useVerticalBranches, ref drawnCount, served);
-            DrawAuxiliaryFromEndVertexAndPerpendicularFeeds(
-                tr, ms, ctx, branchLayerId, branchW, elevation,
-                mainPipePts, mainPipePts[mainPipePts.Count - 1], sprinklers, pileNearEnd, useVerticalBranches, ref drawnCount, served);
-
             for (int i = 0; i < sprinklers.Count; i++)
             {
                 if (served.Contains(i))
@@ -2603,25 +2831,6 @@ namespace autocad_final.Commands
                     }
                 }
 
-                if (g >= 0 && (columnAux[g] == 0 || columnAux[g] == 1))
-                {
-                    Point2d endVertex = columnAux[g] == 0 ? mainPipePts[0] : mainPipePts[mainPipePts.Count - 1];
-                    Point2d spr = sprinklers[i];
-                    double barCoord = useVerticalBranches ? endVertex.Y : endVertex.X;
-                    double outwardSign = useVerticalBranches
-                        ? TrunkEndOutwardSign(mainPipePts, endVertex, axisIsX: true)
-                        : TrunkEndOutwardSign(mainPipePts, endVertex, axisIsX: false);
-                    double headCoord = useVerticalBranches ? spr.X : spr.Y;
-                    double anchorCoord = useVerticalBranches ? endVertex.X : endVertex.Y;
-                    if (IsOutwardAlongAxis(headCoord, anchorCoord, outwardSign))
-                    {
-                        if (TryDrawChainedPileFromAuxiliaryBar(
-                                tr, ms, ctx, branchLayerId, branchW, elevation,
-                                sprinklers, new List<int> { i }, useVerticalBranches, barCoord, served, ref drawnCount) > 0)
-                            continue;
-                    }
-                }
-
                 if (TryDrawStraightBranchFromMainForHead(
                     tr, ms, ctx, mainPipePts, sprinklers[i], branchLayerId, branchW, elevation,
                     useVerticalBranches, ref drawnCount))
@@ -2631,8 +2840,75 @@ namespace autocad_final.Commands
             subBranchDrawn = RouteSubBranchesFromNearestBranchPipe(
                 tr, ms, ctx, sprinklers, served, branchLayerId, branchW, elevation, mainRunsAlongX, sprinklerSpacingM, ref drawnCount);
 
+            subBranchDrawn += RouteOrphanedSprinklers(
+                tr, ms, ctx, sprinklers, served, branchLayerId, branchW, elevation, mainRunsAlongX, sprinklerSpacingM, ref drawnCount);
+
             servedHeadCount = served.Count;
             return drawnCount;
+        }
+
+        /// <summary>
+        /// Final-pass orphan rescue: any sprinkler still unserved by branch geometry is connected to the
+        /// nearest existing branch segment (no distance limit). Sprinklers in the same row or column are
+        /// chained: nearest-branch → first sprinkler → second → … so label runs stay linear.
+        /// </summary>
+        private static int RouteOrphanedSprinklers(
+            Transaction tr,
+            BlockTableRecord ms,
+            BranchRouteContext ctx,
+            List<Point2d> sprinklers,
+            HashSet<int> served,
+            ObjectId branchLayerId,
+            double branchW,
+            double elevation,
+            bool mainRunsAlongX,
+            double sprinklerSpacingM,
+            ref int drawnCount)
+        {
+            if (sprinklers == null || sprinklers.Count == 0 || ctx == null)
+                return 0;
+
+            double snapTol = GetBranchSnapToleranceDu(ctx.Db);
+
+            // Re-collect segments so anything drawn in this transaction is included.
+            var segments = CollectZoneBranchSegments(tr, ms, ctx);
+            if (segments.Count == 0)
+                return 0;
+
+            // Mark geometrically-served sprinklers that the served set may not know about yet.
+            var orphanIndices = new List<int>();
+            for (int i = 0; i < sprinklers.Count; i++)
+            {
+                if (served.Contains(i))
+                    continue;
+                if (IsSprinklerServedByGeometry(sprinklers[i], segments, snapTol))
+                {
+                    served.Add(i);
+                    continue;
+                }
+                orphanIndices.Add(i);
+            }
+
+            if (orphanIndices.Count == 0)
+                return 0;
+
+            bool clusterByX = mainRunsAlongX;
+            bool useVerticalBranches = mainRunsAlongX;
+            double clusterTol = ColumnClusterToleranceM(sprinklerSpacingM);
+
+            int orphanRouted = 0;
+            var groups = BuildIndexGroupsByCoord(sprinklers, orphanIndices, clusterByX, clusterTol);
+            for (int g = 0; g < groups.Count; g++)
+            {
+                orphanRouted += TryRouteGroupAsSegmentChain(
+                    tr, ms, ctx, sprinklers, segments, served, groups[g],
+                    branchLayerId, branchW, elevation,
+                    useVerticalBranches,
+                    double.PositiveInfinity,
+                    ref drawnCount);
+            }
+
+            return orphanRouted;
         }
 
         private static bool TryCombRouteBranchesForZone(

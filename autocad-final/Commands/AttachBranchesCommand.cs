@@ -2706,15 +2706,16 @@ namespace autocad_final.Commands
                     return false;
                 }
 
-                double sprinklerRadiusDu = ReducerPlacementGeometry.ResolveSprinklerSymbolRadiusDu(tr, db);
+                var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+
+                double sprinklerRadiusDu = ReducerPlacementGeometry.ResolveSprinklerSymbolRadiusDu(
+                    tr, db, ms, zoneRing, zoneBoundaryHandleHex);
                 ReducerPlacementGeometry.ResolveReducerHalfExtentsDu(
                     tr,
                     reducerBlockDefId,
                     out _,
                     out double reducerWideHalfDu);
-
-                var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
-                var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
 
                 int reducersDrawn = 0;
 
@@ -2765,7 +2766,8 @@ namespace autocad_final.Commands
                         double halfOutPlaceForWedgeLen,
                         bool teeFiberPlacement,
                         Point2d prevPt,
-                        Point2d curPt)
+                        Point2d curPt,
+                        bool placeWideFaceOnHeadCircle = false)
                     {
                         bool smallerIsAfter = afterW < beforeW;
                         var axisDir = smallerIsAfter
@@ -2793,7 +2795,16 @@ namespace autocad_final.Commands
                         }
 
                         Point2d center = wedgeCenterNonTee;
-                        if (teeFiberPlacement)
+                        if (placeWideFaceOnHeadCircle)
+                        {
+                            center = ReducerPlacementGeometry.ComputeBranchReducerInsertAtHead(
+                                curPt,
+                                suxL,
+                                suyL,
+                                sprinklerRadiusDu,
+                                reducerWideHalfDu);
+                        }
+                        else if (teeFiberPlacement)
                         {
                             Point2d fiber = OffsetReducerToMainOuterFiber(prevPt, curPt, trunkHorizontal, trunkAxis, halfOutPlaceForWedgeLen);
                             center = ReducerPlacementGeometry.ComputeMainTeeReducerInsertFromFiber(
@@ -2863,55 +2874,16 @@ namespace autocad_final.Commands
                         double beforeWj = NfpaBranchPipeSizing.GetBranchPolylineDisplayWidthDu(db, nomIn[j], mainW);
                         double afterWj = NfpaBranchPipeSizing.GetBranchPolylineDisplayWidthDu(db, nomIn[j + 1], mainW);
 
-                        double dxAlong = joint.X - upstreamPt.X;
-                        double dyAlong = joint.Y - upstreamPt.Y;
-                        double lenAlong = Math.Sqrt(dxAlong * dxAlong + dyAlong * dyAlong);
-                        double ux = lenAlong > 1e-9 ? dxAlong / lenAlong : 1.0;
-                        double uy = lenAlong > 1e-9 ? dyAlong / lenAlong : 0.0;
-
-                        bool smallerDownstream = nomIn[j + 1] < nomIn[j];
-                        double svx;
-                        double svy;
-                        if (smallerDownstream)
-                        {
-                            var nxt = lat.Sprinklers[j + 1];
-                            svx = nxt.X - joint.X;
-                            svy = nxt.Y - joint.Y;
-                        }
-                        else
-                        {
-                            svx = upstreamPt.X - joint.X;
-                            svy = upstreamPt.Y - joint.Y;
-                        }
-
-                        double slen = Math.Sqrt(svx * svx + svy * svy);
-                        if (slen > 1e-9)
-                        {
-                            svx /= slen;
-                            svy /= slen;
-                        }
-                        else
-                        {
-                            svx = ux;
-                            svy = uy;
-                        }
-
-                        // Wide face on head circle toward smaller pipe; block center toward larger pipe.
-                        Point2d wedgeJoint = ReducerPlacementGeometry.ComputeBranchReducerInsertAtHead(
-                            joint,
-                            svx,
-                            svy,
-                            sprinklerRadiusDu,
-                            reducerWideHalfDu);
-
+                        // Wide face on head circle; insert uses same branch axis as block rotation.
                         PlaceOneReducer(
-                            wedgeJoint,
+                            default,
                             beforeWj,
                             afterWj,
                             halfOutPlaceForWedgeLen: 0,
                             teeFiberPlacement: false,
                             upstreamPt,
-                            joint);
+                            joint,
+                            placeWideFaceOnHeadCircle: true);
                     }
                 }
 
@@ -5775,10 +5747,10 @@ namespace autocad_final.Commands
             return SprinklerHeadReader2d.TryReadSprinklerHeadPointsForZoneRouting(db, zoneRing, zoneBoundaryHandleHex, dedupeTol, out sprinklers, out errorMessage);
         }
 
-        private static bool TrySelectShaftBlock(Editor ed, Database db, out Point3d shaftPoint, out string errorMessage)
+        internal static bool TrySelectShaftBlock(Editor ed, Database db, out Point3d shaftPoint, out string errorMessage)
             => TrySelectShaftBlock(ed, db, out shaftPoint, out _, out errorMessage);
 
-        private static bool TrySelectShaftBlock(Editor ed, Database db, out Point3d shaftPoint, out ObjectId shaftEntityId, out string errorMessage)
+        internal static bool TrySelectShaftBlock(Editor ed, Database db, out Point3d shaftPoint, out ObjectId shaftEntityId, out string errorMessage)
         {
             shaftPoint = default;
             shaftEntityId = ObjectId.Null;
@@ -5828,7 +5800,7 @@ namespace autocad_final.Commands
             }
         }
 
-        private static bool TryFindZoneOutlineContainingPoint(
+        internal static bool TryFindZoneOutlineContainingPoint(
             Database db,
             Point2d point,
             out ObjectId zoneBoundaryEntityId,

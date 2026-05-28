@@ -405,10 +405,6 @@ namespace autocad_final.Commands
                 ms.AppendEntity(conn);
                 tr.AddNewlyCreatedDBObject(conn, true);
 
-                TryDrawTrunkEndCaps(
-                    tr, db, pipeLayerId, w, zone.Elevation, zone.Normal,
-                    route.TrunkIsHorizontal, trimmedTrunkPath, ms, boundaryHandleHex);
-
                 tr.Commit();
             }
 
@@ -726,76 +722,6 @@ namespace autocad_final.Commands
                 if (intersect) inside = !inside;
             }
             return inside;
-        }
-
-        private static void TryDrawTrunkEndCaps(
-            Transaction tr,
-            Database db,
-            ObjectId pipeLayerId,
-            double width,
-            double elevation,
-            Vector3d normal,
-            bool trunkHorizontal,
-            List<Point2d> trunkPath,
-            BlockTableRecord ms,
-            string zoneBoundaryHandleHex)
-        {
-            if (tr == null || db == null || ms == null || trunkPath == null || trunkPath.Count < 2)
-                return;
-
-            double capLen = 1.0;
-            try
-            {
-                if (DrawingUnitsHelper.TryMetersToDrawingLength(db.Insunits, 0.30, out double du) && du > 0)
-                    capLen = du;
-            }
-            catch { /* ignore */ }
-
-            double h = 0.5 * capLen;
-            int last = trunkPath.Count - 1;
-            var a = trunkPath[0];
-            var b = trunkPath[last];
-
-            // Direction of the first/last segment — works for both axis-aligned single-segment
-            // trunks and multi-vertex skeleton paths.
-            var aNext = trunkPath[1];
-            var bPrev = trunkPath[last - 1];
-
-            DrawCapAt(a, new Vector2d(aNext.X - a.X, aNext.Y - a.Y));
-            DrawCapAt(b, new Vector2d(b.X - bPrev.X, b.Y - bPrev.Y));
-
-            void DrawCapAt(Point2d p, Vector2d along)
-            {
-                // Perpendicular (rotate 90°): (x, y) → (-y, x).
-                double aLen = Math.Sqrt(along.X * along.X + along.Y * along.Y);
-                double nx, ny;
-                if (aLen < 1e-9)
-                {
-                    // Fallback to trunkHorizontal flag.
-                    if (trunkHorizontal) { nx = 0; ny = 1; }
-                    else { nx = 1; ny = 0; }
-                }
-                else
-                {
-                    nx = -along.Y / aLen;
-                    ny =  along.X / aLen;
-                }
-
-                var cap = new Polyline();
-                cap.SetDatabaseDefaults(db);
-                cap.LayerId = pipeLayerId;
-                cap.Color = Color.FromColorIndex(ColorMethod.ByLayer, 256);
-                cap.ConstantWidth = width;
-                cap.Elevation = elevation;
-                cap.Normal = normal;
-                cap.AddVertexAt(0, new Point2d(p.X - nx * h, p.Y - ny * h), 0, 0, 0);
-                cap.AddVertexAt(1, new Point2d(p.X + nx * h, p.Y + ny * h), 0, 0, 0);
-                cap.Closed = false;
-                SprinklerXData.TagAsTrunkCap(cap);
-                SprinklerXData.ApplyZoneBoundaryTag(cap, zoneBoundaryHandleHex);
-                ms.AppendEntity(cap);
-                tr.AddNewlyCreatedDBObject(cap, true);
-            }
         }
 
         /// <summary>

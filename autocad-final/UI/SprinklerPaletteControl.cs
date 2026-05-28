@@ -133,6 +133,7 @@ namespace autocad_final.UI
                 ("Label branches",             RunLabelBranches),
                 ("Place reducers",             RunPlaceReducers),
                 ("Connect branches manually to a main pipe or a branch pipe",  RunConnectBranchesManually),
+                ("Fix orphans",                RunFixOrphans),
                 ("Delete all on layer",        RunDeleteAllOnLayer),
             };
 
@@ -661,6 +662,35 @@ namespace autocad_final.UI
                     try
                     {
                         doc.SendStringToExecute("._SPRINKLERCONNECTBRANCHESMANUALLY ", true, false, false);
+                    }
+                    catch (Exception ex)
+                    {
+                        PaletteCommandErrorUi.Show(ex, doc);
+                    }
+                }));
+            }
+            catch (Exception ex)
+            {
+                PaletteCommandErrorUi.Show(ex, doc);
+            }
+        }
+
+        private void RunFixOrphans()
+        {
+            var doc = AcApp.DocumentManager.MdiActiveDocument;
+            if (doc == null)
+            {
+                MessageBox.Show("No active drawing. Open or create a drawing first.",
+                    "autocad-final", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            try
+            {
+                BeginInvoke(new Action(() =>
+                {
+                    try
+                    {
+                        doc.SendStringToExecute("._SPRINKLERFIXORPHANS ", true, false, false);
                     }
                     catch (Exception ex)
                     {
