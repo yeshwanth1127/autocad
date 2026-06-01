@@ -147,6 +147,7 @@
     <Compile Include="AreaWorkflow\SprinklerZoneAutomationCleanup.cs" />
     <Compile Include="AreaWorkflow\SelectPolygonBoundaryOnSprinklerWorkLayer.cs" />
     <Compile Include="AreaWorkflow\SelectBoundaryByPoints.cs" />
+    <Compile Include="AreaWorkflow\GridBranchPlanner.cs" />
     <Compile Include="AreaWorkflow\SprinklerLayers.cs" />
     <Compile Include="AreaWorkflow\SprinklerHeadReader2d.cs" />
     <Compile Include="AreaWorkflow\NfpaBranchPipeSizing.cs" />
