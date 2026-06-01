@@ -2642,6 +2642,143 @@ namespace autocad_final.Commands
             }
         }
 
+        /// <summary>
+        /// Builds reducer laterals from the GridBranchPlanner (the "Route branches" geometry) so
+        /// reducers sit on, and align with, the actually-drawn branch segments. Mirrors the
+        /// out-params the reducer placement loop consumes from <see cref="TryComputeLateralsForZone"/>.
+        /// Trunk span is reported degenerate and the trunk axis NaN so the main-nominal cap falls
+        /// back to the safe total-load nominal and reducers are placed straight at the branch attach.
+        /// </summary>
+        private static bool TryComputeLateralsFromGridPlan(
+            Document doc,
+            Database db,
+            Polyline zone,
+            List<Point2d> zoneRing,
+            string zoneBoundaryHandleHex,
+            out List<Lateral> laterals,
+            out bool trunkHorizontal,
+            out double trunkAxis,
+            out double trunkMin,
+            out double trunkMax,
+            out bool downstreamPositive,
+            out double mainW,
+            out double clusterTol,
+            out int skippedOutsideTrunkSpan,
+            out string errorMessage)
+        {
+            laterals = new List<Lateral>();
+            trunkHorizontal = true;
+            trunkAxis = double.NaN;
+            trunkMin = 0.0;
+            trunkMax = 0.0;
+            downstreamPositive = true;
+            mainW = NfpaBranchPipeSizing.GetMainTrunkPolylineDisplayWidthDu(db);
+            if (!(mainW > 0)) mainW = 1.0;
+            clusterTol = 1.0;
+            skippedOutsideTrunkSpan = 0;
+            errorMessage = null;
+
+            if (db == null || zoneRing == null || zoneRing.Count < 3)
+            {
+                errorMessage = "Invalid zone for reducer laterals.";
+                return false;
+            }
+
+            double spacingDu = 1.0;
+            try
+            {
+                if (DrawingUnitsHelper.TryMetersToDrawingLength(db.Insunits, RuntimeSettings.Load().SprinklerSpacingM, out double s) && s > 0)
+                    spacingDu = s;
+            }
+            catch { /* ignore */ }
+            clusterTol = Math.Max(spacingDu * 0.35, mainW);
+
+            List<Point2d> sprinklers = new List<Point2d>();
+            List<(Point2d A, Point2d B)> mainSegments;
+
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+
+                foreach (ObjectId id in ms)
+                {
+                    if (id.IsErased) continue;
+                    Entity ent = null;
+                    try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
+                    catch { continue; }
+                    if (ent == null || !SprinklerLayers.IsSprinklerHeadEntity(tr, ent)) continue;
+
+                    Point2d p;
+                    if (ent is Circle c) p = new Point2d(c.Center.X, c.Center.Y);
+                    else if (ent is BlockReference br) p = new Point2d(br.Position.X, br.Position.Y);
+                    else continue;
+                    if (!PolygonUtils.PointInPolygon(zoneRing, p)) continue;
+                    sprinklers.Add(p);
+                }
+
+                mainSegments = SprinklerZoneRedesignFromTrunk.CollectMainSegmentsInZone(tr, db, ms, zoneRing, zoneBoundaryHandleHex);
+                tr.Commit();
+            }
+
+            if (sprinklers.Count == 0)
+            {
+                errorMessage = "No sprinklers found in zone.";
+                return false;
+            }
+            if (mainSegments == null || mainSegments.Count == 0)
+            {
+                errorMessage = "No main pipe found in zone.";
+                return false;
+            }
+
+            double minX = double.MaxValue, maxX = double.MinValue, minY = double.MaxValue, maxY = double.MinValue;
+            foreach (var seg in mainSegments)
+            {
+                if (seg.A.X < minX) minX = seg.A.X;
+                if (seg.A.X > maxX) maxX = seg.A.X;
+                if (seg.A.Y < minY) minY = seg.A.Y;
+                if (seg.A.Y > maxY) maxY = seg.A.Y;
+                if (seg.B.X < minX) minX = seg.B.X;
+                if (seg.B.X > maxX) maxX = seg.B.X;
+                if (seg.B.Y < minY) minY = seg.B.Y;
+                if (seg.B.Y > maxY) maxY = seg.B.Y;
+            }
+            trunkHorizontal = (maxX - minX) >= (maxY - minY);
+
+            var plan = GridBranchPlanner.Plan(zoneRing, sprinklers, mainSegments);
+            if (plan == null || plan.Laterals == null || plan.Laterals.Count == 0)
+            {
+                errorMessage = "Branch planner produced no laterals for reducers.";
+                return false;
+            }
+
+            foreach (var pl in plan.Laterals)
+            {
+                if (pl.Heads == null || pl.Heads.Count == 0) continue;
+                laterals.Add(new Lateral
+                {
+                    AttachPoint = pl.Attach,
+                    Sprinklers = new List<Point2d>(pl.Heads),
+                    SubSprinklers = new List<Point2d>(),
+                    BranchAxis = pl.Axis,
+                    // Feeder (main/spine) direction at the tap, so the branch-to-main reducer aligns
+                    // with the run it sits on rather than the perpendicular branch.
+                    TrunkTangent = pl.FeedAxis.Length > 1e-9 ? pl.FeedAxis : pl.Axis,
+                    FromConnectorFeed = false,
+                    IsSubMainSpine = false,
+                    Role = BranchRole.PrimaryBranch,
+                });
+            }
+
+            if (laterals.Count == 0)
+            {
+                errorMessage = "No branch laterals to place reducers on.";
+                return false;
+            }
+            return true;
+        }
+
         internal static bool TryPlaceReducersForZone(
             Document doc,
             Database db,
@@ -2659,14 +2796,14 @@ namespace autocad_final.Commands
                 return false;
             }
 
-            if (!TryComputeLateralsForZone(
+            // Reducers follow the GridBranchPlanner branches (the "Route branches" geometry) so each
+            // reducer sits on a real drawn segment and is oriented along it.
+            if (!TryComputeLateralsFromGridPlan(
                     doc,
                     db,
                     zone,
                     zoneRing,
                     zoneBoundaryHandleHex,
-                    routeBranchPipesFromConnectorFirst,
-                    explicitMainPipePolylineId,
                     out List<Lateral> laterals,
                     out bool trunkHorizontal,
                     out double trunkAxis,
@@ -2851,6 +2988,14 @@ namespace autocad_final.Commands
                             double halfOutTee = ReducerPlacementHalfOutFromCenterline(db, tickLen, mainW);
                             Point2d cur0 = lat.Sprinklers[0];
                             Point2d wedgeTee = new Point2d(attach.X, attach.Y);
+                            // Orient the branch-to-main reducer along the feeder run it sits on (the
+                            // main/spine tangent), not the perpendicular branch. Falls back to the
+                            // branch direction if no feeder tangent is known.
+                            Vector2d feedDir = lat.TrunkTangent;
+                            double feedLen = feedDir.Length;
+                            Point2d feedPt = feedLen > 1e-9
+                                ? new Point2d(attach.X + feedDir.X / feedLen, attach.Y + feedDir.Y / feedLen)
+                                : cur0;
                             PlaceOneReducer(
                                 wedgeTee,
                                 mainW,
@@ -2858,7 +3003,7 @@ namespace autocad_final.Commands
                                 halfOutTee,
                                 teeFiberPlacement: allowMainOuterFiberPlacement,
                                 attach,
-                                cur0);
+                                feedPt);
                         }
                     }
 

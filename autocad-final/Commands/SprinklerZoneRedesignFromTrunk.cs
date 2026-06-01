@@ -1444,6 +1444,14 @@ namespace autocad_final.Commands
                         mainPipePts.Add(new Point2d(pt3.X, pt3.Y));
                     }
 
+                    // The branch planner taps the WHOLE in-zone main network (trunk + connector +
+                    // any other main-layer runs such as a slanted extension), not just the trunk,
+                    // so branches can connect to the nearest main pipe rather than inventing a spine.
+                    var mainSegments = CollectMainSegmentsInZone(tr, db, ms, zoneRing, zoneBoundaryHex);
+                    if (mainSegments.Count == 0)
+                        for (int i = 0; i + 1 < mainPipePts.Count; i++)
+                            mainSegments.Add((mainPipePts[i], mainPipePts[i + 1]));
+
                     var sprinklers = new List<Point2d>();
                     foreach (ObjectId id in ms)
                     {
@@ -1480,7 +1488,7 @@ namespace autocad_final.Commands
                     double branchW = Math.Max(mainW * 0.66, 1.0);
                     double elevation = zone.Elevation;
 
-                    int drawnCount = RouteMinimalSpanningTree(tr, ms, mainPipePts, sprinklers, zoneRing, db, zoneBoundaryHex, zone, branchLayerId, branchW, elevation, trunkHorizontal);
+                    int drawnCount = RouteMinimalSpanningTree(tr, ms, mainSegments, sprinklers, zoneRing, db, zoneBoundaryHex, zone, branchLayerId, branchW, elevation, trunkHorizontal);
 
                     tr.Commit();
                     errorMessage = $"Minimal spanning tree: {drawnCount} branch segments to serve {sprinklers.Count} sprinklers.";
@@ -1794,13 +1802,13 @@ namespace autocad_final.Commands
             return drawnCount;
         }
 
-        private static int RouteMinimalSpanningTree(Transaction tr, BlockTableRecord ms, List<Point2d> mainPipePts, List<Point2d> sprinklers, List<Point2d> zoneRing, Database db, string zoneBoundaryHex, Polyline zone, ObjectId branchLayerId, double branchW, double elevation, bool trunkHorizontal)
+        private static int RouteMinimalSpanningTree(Transaction tr, BlockTableRecord ms, List<(Point2d A, Point2d B)> mainSegments, List<Point2d> sprinklers, List<Point2d> zoneRing, Database db, string zoneBoundaryHex, Polyline zone, ObjectId branchLayerId, double branchW, double elevation, bool trunkHorizontal)
         {
             if (sprinklers == null || sprinklers.Count == 0) return 0;
 
             // Grid-aligned planner: one straight branch per row/column tapped once where the main
             // crosses it, with a single sub-main spine serving any region the main doesn't reach.
-            var plan = GridBranchPlanner.Plan(zoneRing, sprinklers, mainPipePts);
+            var plan = GridBranchPlanner.Plan(zoneRing, sprinklers, mainSegments);
             if (plan == null) return 0;
 
             double spineW = Math.Max(branchW, EstimatePipeWidth(db));
@@ -1825,6 +1833,63 @@ namespace autocad_final.Commands
                 drawn++;
             }
             return drawn;
+        }
+
+        /// <summary>
+        /// Collects every main-pipe-layer run inside the zone (trunk + connector + any extension
+        /// such as a slanted right-side run) as world-space segments, so the branch planner can
+        /// tap whichever main pipe is nearest rather than only the trunk. Trunk end caps and main
+        /// pipe explicitly tagged for a different zone are excluded.
+        /// </summary>
+        internal static List<(Point2d A, Point2d B)> CollectMainSegmentsInZone(Transaction tr, Database db, BlockTableRecord ms, List<Point2d> zoneRing, string zoneBoundaryHex)
+        {
+            var segs = new List<(Point2d A, Point2d B)>();
+            if (tr == null || ms == null || zoneRing == null || zoneRing.Count < 3) return segs;
+
+            string zoneHex = string.IsNullOrWhiteSpace(zoneBoundaryHex) ? null : zoneBoundaryHex.Trim();
+
+            foreach (ObjectId id in ms)
+            {
+                if (id.IsErased) continue;
+                Entity ent = null;
+                try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
+                catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                if (ent == null) continue;
+
+                if (!SprinklerLayers.IsMainPipeLayerName(ent.Layer)) continue;
+                if (SprinklerXData.IsTaggedTrunkCap(ent)) continue;
+
+                if (zoneHex != null &&
+                    SprinklerXData.TryGetZoneBoundaryHandle(ent, out string zh) &&
+                    !string.IsNullOrWhiteSpace(zh) &&
+                    !string.Equals(zh.Trim(), zoneHex, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (ent is Polyline pl)
+                {
+                    if (!PolylineHasSampleInsideZone(pl, zoneRing)) continue;
+                    int nv = pl.NumberOfVertices;
+                    for (int i = 0; i + 1 < nv; i++)
+                        AddMainSeg(segs, pl.GetPoint2dAt(i), pl.GetPoint2dAt(i + 1));
+                    if (pl.Closed && nv > 1)
+                        AddMainSeg(segs, pl.GetPoint2dAt(nv - 1), pl.GetPoint2dAt(0));
+                }
+                else if (ent is Line ln)
+                {
+                    var a = new Point2d(ln.StartPoint.X, ln.StartPoint.Y);
+                    var b = new Point2d(ln.EndPoint.X, ln.EndPoint.Y);
+                    var mid = new Point2d((a.X + b.X) * 0.5, (a.Y + b.Y) * 0.5);
+                    if (PointInPolygon(zoneRing, a) || PointInPolygon(zoneRing, b) || PointInPolygon(zoneRing, mid))
+                        AddMainSeg(segs, a, b);
+                }
+            }
+
+            return segs;
+        }
+
+        private static void AddMainSeg(List<(Point2d A, Point2d B)> segs, Point2d a, Point2d b)
+        {
+            if (a.GetDistanceTo(b) > 1e-6) segs.Add((a, b));
         }
 
         private static Polyline FindMainPipeInZoneByLayer(Transaction tr, Database db, List<Point2d> zoneRing)

@@ -941,3 +941,43 @@ SESSION START  2026-06-01 13:29:37.245  pid=12624
 [13:29:39.476] #0002 T001 [PlaceReducers] shaft selected id=(2131529300800)
 [13:29:39.487] #0003 T001 [PlaceReducers] zone handle=4EDC4 ringVerts=4
 [13:29:39.611] #0004 T001 [PlaceReducers] DONE: Reducers placed: 147.
+
+══════════════════════════════════════════════════════
+SESSION START  2026-06-01 16:05:29.647  pid=31840
+══════════════════════════════════════════════════════
+[16:05:29.648] #0001 T001 [TryRouteMainPipeForZone] MainPipeRouting2d.TryRoute attempt strategy=center_l
+[16:05:29.652] #0002 T001 [TryRoute] GetRingForPlanarClipping
+[16:05:29.653] #0003 T001 [TryRoute] extent=103 duPerMeter=1 spacingDu=3 offsetDu=2
+[16:05:29.654] #0004 T001 [TryRoute] sprinklersOverride count=260
+[16:05:29.656] #0005 T001 [TryRoute] strategy=sprinkler_driven initial horiz=True
+[16:05:29.656] #0006 T001 [TryRoute] TryPickBestTrunkSegment start horizontal=True
+[16:05:29.664] #0007 T001 [TryPickMidpointBasedCoveringTrunk] mid=(806555.8,552788.4) H=1226.7 V=4846.0 pick=H
+[16:05:29.665] #0008 T001 [TryRoute] TryPickBestTrunkSegment done
+[16:05:29.666] #0009 T001 [TryRoute] TryOrthogonalConnectInside start
+[16:05:29.668] #0010 T001 [TryRoute] TryOrthogonalConnectInside done
+[16:05:29.669] #0011 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
+[16:05:29.684] #0012 T001 [TryRouteMainPipeForZone] entities committed, done
+[16:08:22.167] #0013 T001 [PlaceReducers] command start log=C:\Users\admin\source\repos\autocad-final\autocad-final\bin\Debug\AgentDebug.log
+[16:08:24.018] #0014 T001 [PlaceReducers] shaft selected id=(3373647836864)
+[16:08:24.030] #0015 T001 [PlaceReducers] zone handle=50359 ringVerts=5
+[16:08:24.166] #0016 T001 [PlaceReducers] DONE: Reducers placed: 149.
+
+══════════════════════════════════════════════════════
+SESSION START  2026-06-01 16:35:16.279  pid=16224
+══════════════════════════════════════════════════════
+[16:35:16.280] #0001 T001 [PlaceReducers] command start log=C:\Users\admin\source\repos\autocad-final\autocad-final\bin\Debug\AgentDebug.log
+[16:35:17.405] #0002 T001 [PlaceReducers] shaft selected id=(1948360081840)
+[16:35:17.411] #0003 T001 [PlaceReducers] zone handle=4EDC4 ringVerts=4
+[16:35:17.456] #0004 T001 [PlaceReducers] DONE: Reducers placed: 145.
+[16:35:41.902] #0005 T001 [PlaceReducers] command start log=C:\Users\admin\source\repos\autocad-final\autocad-final\bin\Debug\AgentDebug.log
+[16:35:44.125] #0006 T001 [PlaceReducers] shaft selected id=(1948166528832)
+[16:35:44.132] #0007 T001 [PlaceReducers] zone handle=50357 ringVerts=4
+[16:35:44.165] #0008 T001 [PlaceReducers] DONE: Reducers placed: 119.
+
+══════════════════════════════════════════════════════
+SESSION START  2026-06-01 16:53:24.263  pid=28028
+══════════════════════════════════════════════════════
+[16:53:24.265] #0001 T001 [PlaceReducers] command start log=C:\Users\admin\source\repos\autocad-final\autocad-final\bin\Debug\AgentDebug.log
+[16:53:26.064] #0002 T001 [PlaceReducers] shaft selected id=(1792447467328)
+[16:53:26.072] #0003 T001 [PlaceReducers] zone handle=50357 ringVerts=4
+[16:53:26.117] #0004 T001 [PlaceReducers] DONE: Reducers placed: 119.
