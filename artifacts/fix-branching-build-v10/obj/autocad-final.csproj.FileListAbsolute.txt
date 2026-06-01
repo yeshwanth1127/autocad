@@ -1,0 +1,8 @@
+C:\Users\admin\source\repos\autocad-final\artifacts\fix-branching-build-v10\obj\autocad-final.csproj.AssemblyReference.cache
+C:\Users\admin\source\repos\autocad-final\artifacts\fix-branching-build-v10\obj\autocad-final.csproj.CoreCompileInputs.cache
+C:\Users\admin\source\repos\autocad-final\artifacts\fix-branching-build-v10\obj\autocad-.604953D9.Up2Date
+C:\Users\admin\source\repos\autocad-final\artifacts\fix-branching-build-v10\Properties.config
+C:\Users\admin\source\repos\autocad-final\artifacts\fix-branching-build-v10\obj\autocad-final.dll
+C:\Users\admin\source\repos\autocad-final\artifacts\fix-branching-build-v10\obj\autocad-final.pdb
+C:\Users\admin\source\repos\autocad-final\artifacts\fix-branching-build-v10\autocad-final.dll
+C:\Users\admin\source\repos\autocad-final\artifacts\fix-branching-build-v10\autocad-final.pdb

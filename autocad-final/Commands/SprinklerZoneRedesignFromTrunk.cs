@@ -159,6 +159,8 @@ namespace autocad_final.Commands
                     }
                 }
 
+                TryDrawTrunkEndCaps(tr, db, ms, trunkId, zone.Elevation, zone.Normal, boundaryHandleHex);
+
                 tr.Commit();
                 if (zoneTaggedErased > 0 || capsErased > 0 || erased > 0 || outsideSprinklersErased > 0 || outsideBranchErased > 0)
                     ed.WriteMessage(
@@ -249,7 +251,7 @@ namespace autocad_final.Commands
                     ed.WriteMessage("\nBoundary snap adjusted " + movedExisting.ToString() + " existing sprinkler heads inward.\n");
             }
 
-            if (!TryCombRouteBranchesForZone(db, zone, zoneRing, boundaryHandleHex, trunkId, floorRoomOwnerships, out string branchMsg))
+            if (!TryCombRouteBranchesForZone(db, zone, zoneRing, boundaryHandleHex, trunkId, out string branchMsg))
             {
                 errorMessage = branchMsg ?? "Branch routing failed.";
                 return false;
@@ -1145,6 +1147,94 @@ namespace autocad_final.Commands
             return btr.Name;
         }
 
+        private static void TryDrawTrunkEndCaps(
+            Transaction tr,
+            Database db,
+            BlockTableRecord ms,
+            ObjectId trunkId,
+            double elevation,
+            Vector3d normal,
+            string zoneBoundaryHandleHex)
+        {
+            if (tr == null || db == null || ms == null || trunkId.IsNull)
+                return;
+
+            if (!DbObjectSafeAccess.TryGetObject(tr, trunkId, OpenMode.ForRead, out Polyline trunk))
+                return;
+            if (trunk == null)
+                return;
+
+            int nv = trunk.NumberOfVertices;
+            if (nv < 2)
+                return;
+
+            var trunkPath = new List<Point2d>(nv);
+            for (int i = 0; i < nv; i++)
+            {
+                var p = trunk.GetPoint3dAt(i);
+                trunkPath.Add(new Point2d(p.X, p.Y));
+            }
+
+            double w = 0;
+            try { w = trunk.ConstantWidth; } catch { w = 0; }
+            if (!(w > 1e-12))
+                w = NfpaBranchPipeSizing.GetMainTrunkPolylineDisplayWidthDu(db);
+            if (!(w > 0)) w = 1.0;
+
+            double capLen = 1.0;
+            try
+            {
+                if (DrawingUnitsHelper.TryMetersToDrawingLength(db.Insunits, 0.30, out double du) && du > 0)
+                    capLen = du;
+            }
+            catch { /* ignore */ }
+            double h = 0.5 * capLen;
+
+            SprinklerXData.EnsureRegApp(tr, db);
+            ObjectId mainPipeLayerId = SprinklerLayers.EnsureMainPipeLayer(tr, db);
+
+            int last = trunkPath.Count - 1;
+            var a = trunkPath[0];
+            var b = trunkPath[last];
+            var aNext = trunkPath[1];
+            var bPrev = trunkPath[last - 1];
+
+            DrawCapAt(a, new Vector2d(aNext.X - a.X, aNext.Y - a.Y));
+            DrawCapAt(b, new Vector2d(b.X - bPrev.X, b.Y - bPrev.Y));
+
+            void DrawCapAt(Point2d p, Vector2d along)
+            {
+                double aLen = Math.Sqrt(along.X * along.X + along.Y * along.Y);
+                double nx, ny;
+                if (aLen < 1e-9)
+                {
+                    nx = 0;
+                    ny = 1;
+                }
+                else
+                {
+                    nx = -along.Y / aLen;
+                    ny =  along.X / aLen;
+                }
+
+                var cap = new Polyline();
+                cap.SetDatabaseDefaults(db);
+                cap.LayerId = mainPipeLayerId;
+                cap.Color = Color.FromColorIndex(ColorMethod.ByLayer, 256);
+                cap.ConstantWidth = w;
+                cap.Elevation = elevation;
+                cap.Normal = normal;
+                cap.AddVertexAt(0, new Point2d(p.X - nx * h, p.Y - ny * h), 0, 0, 0);
+                cap.AddVertexAt(1, new Point2d(p.X + nx * h, p.Y + ny * h), 0, 0, 0);
+                cap.Closed = false;
+                SprinklerXData.TagAsTrunkCap(cap);
+                if (!string.IsNullOrEmpty(zoneBoundaryHandleHex))
+                    SprinklerXData.ApplyZoneBoundaryTag(cap, zoneBoundaryHandleHex);
+                ms.AppendEntity(cap);
+                tr.AddNewlyCreatedDBObject(cap, true);
+            }
+        }
+
         private static void TryTrimTrunkIfTouchingBoundary(Transaction tr, Database db, ObjectId trunkId, List<Point2d> zoneRing)
         {
             if (tr == null || db == null || trunkId.IsNull || zoneRing == null || zoneRing.Count < 3)
@@ -1300,1625 +1390,21 @@ namespace autocad_final.Commands
             return inside;
         }
 
-        private const double MainLineIntersectEps = 1e-9;
-        private const double BranchAxisSnapEps = 1e-4;
-        /// <summary>Legacy tolerance for auxiliary column ordering (not merged geometry).</summary>
-        private const double AuxColumnGroupingEps = 1e-2;
-        /// <summary>Fraction of trunk length from start/end; heads whose closest foot lies in these bands route only via end auxiliary (not the diagonal).</summary>
-        private const double TrunkAuxEndZoneArcFrac = 0.15;
-
-        /// <summary>Wider-than-tall main bbox → trunk runs broadly along +X → use vertical branch drops (+Y / −Y). Otherwise use horizontal feeders.</summary>
-        private static bool MainRunsPrimarilyAlongX(List<Point2d> pts)
+        private class RoutingPlan
         {
-            if (pts == null || pts.Count < 2) return true;
-            double minX = double.MaxValue, minY = double.MaxValue, maxX = double.MinValue, maxY = double.MinValue;
-            for (int i = 0; i < pts.Count; i++)
+            public string Name;
+            public List<(Point2d tapPt, List<Point2d> sprinklersInGroup)> TapGroups;
+            public int TapCount => TapGroups?.Count ?? 0;
+            public double TotalBranchLength;
+            public int ComplexityScore;
+
+            public double ComputeCost(double tapWeight = 1.0, double lengthWeight = 0.1, double complexityWeight = 0.05)
             {
-                var p = pts[i];
-                if (p.X < minX) minX = p.X;
-                if (p.X > maxX) maxX = p.X;
-                if (p.Y < minY) minY = p.Y;
-                if (p.Y > maxY) maxY = p.Y;
-            }
-            return (maxX - minX) >= (maxY - minY);
-        }
-
-        private static List<Point2d> DedupeNearbyIntersections(List<Point2d> input, double tol)
-        {
-            var res = new List<Point2d>();
-            foreach (var p in input)
-            {
-                bool dup = false;
-                for (int i = 0; i < res.Count; i++)
-                {
-                    if (res[i].GetDistanceTo(p) <= tol) { dup = true; break; }
-                }
-                if (!dup) res.Add(p);
-            }
-            return res;
-        }
-
-        private sealed class BranchRouteContext
-        {
-            public Database Db;
-            public List<Point2d> ZoneRing;
-            public string BoundaryHex;
-            public List<SprinklerHeadReader2d.FloorRoomOwnership> FloorRooms;
-        }
-
-        private sealed class SprinklerColumnGroup
-        {
-            public List<int> Indices = new List<int>();
-            public double ColumnCoord;
-        }
-
-        private sealed class BranchSegmentRef
-        {
-            public Point2d A;
-            public Point2d B;
-        }
-
-        private static double ColumnClusterToleranceM(double sprinklerSpacingM)
-        {
-            double spacing = sprinklerSpacingM > 1e-9 ? sprinklerSpacingM : 1.0;
-            return Math.Max(AuxColumnGroupingEps, 0.35 * spacing);
-        }
-
-        private static List<SprinklerColumnGroup> BuildSprinklerColumnGroups(
-            List<Point2d> sprinklers,
-            bool clusterByX,
-            double clusterTol)
-        {
-            var groups = new List<SprinklerColumnGroup>();
-            if (sprinklers == null || sprinklers.Count == 0)
-                return groups;
-
-            var order = new List<int>(sprinklers.Count);
-            for (int i = 0; i < sprinklers.Count; i++)
-                order.Add(i);
-            order.Sort((a, b) =>
-            {
-                double ka = clusterByX ? sprinklers[a].X : sprinklers[a].Y;
-                double kb = clusterByX ? sprinklers[b].X : sprinklers[b].Y;
-                return ka.CompareTo(kb);
-            });
-
-            SprinklerColumnGroup cur = null;
-            for (int i = 0; i < order.Count; i++)
-            {
-                int idx = order[i];
-                double coord = clusterByX ? sprinklers[idx].X : sprinklers[idx].Y;
-                if (cur == null)
-                {
-                    cur = new SprinklerColumnGroup { ColumnCoord = coord };
-                    cur.Indices.Add(idx);
-                    groups.Add(cur);
-                    continue;
-                }
-                if (coord - cur.ColumnCoord > clusterTol)
-                {
-                    cur = new SprinklerColumnGroup { ColumnCoord = coord };
-                    cur.Indices.Add(idx);
-                    groups.Add(cur);
-                }
-                else
-                    cur.Indices.Add(idx);
-            }
-            return groups;
-        }
-
-        private static void CollectVerticalCutsWithMain(List<Point2d> mainPts, double xLine, List<Point2d> hitsOut)
-        {
-            for (int i = 0; i + 1 < mainPts.Count; i++)
-            {
-                Point2d a = mainPts[i];
-                Point2d b = mainPts[i + 1];
-                double dx = b.X - a.X;
-                if (Math.Abs(dx) < MainLineIntersectEps)
-                {
-                    double xSeg = 0.5 * (a.X + b.X);
-                    if (Math.Abs(xLine - xSeg) <= BranchAxisSnapEps)
-                    {
-                        Point2d close = ClosestPointOnSegment(a, b, new Point2d(xLine, 0.5 * (a.Y + b.Y)));
-                        hitsOut.Add(new Point2d(xLine, close.Y));
-                    }
-                    continue;
-                }
-                double t = (xLine - a.X) / dx;
-                if (t < -MainLineIntersectEps || t > 1.0 + MainLineIntersectEps) continue;
-                t = Math.Max(0, Math.Min(1, t));
-                hitsOut.Add(new Point2d(xLine, a.Y + t * (b.Y - a.Y)));
+                return tapWeight * TapCount + lengthWeight * TotalBranchLength + complexityWeight * ComplexityScore;
             }
         }
 
-        private static void CollectHorizontalCutsWithMain(List<Point2d> mainPts, double yLine, List<Point2d> hitsOut)
-        {
-            for (int i = 0; i + 1 < mainPts.Count; i++)
-            {
-                Point2d a = mainPts[i];
-                Point2d b = mainPts[i + 1];
-                double dy = b.Y - a.Y;
-                if (Math.Abs(dy) < MainLineIntersectEps)
-                {
-                    double ySeg = 0.5 * (a.Y + b.Y);
-                    if (Math.Abs(yLine - ySeg) <= BranchAxisSnapEps)
-                    {
-                        Point2d close = ClosestPointOnSegment(a, b, new Point2d(0.5 * (a.X + b.X), yLine));
-                        hitsOut.Add(new Point2d(close.X, yLine));
-                    }
-                    continue;
-                }
-                double t = (yLine - a.Y) / dy;
-                if (t < -MainLineIntersectEps || t > 1.0 + MainLineIntersectEps) continue;
-                t = Math.Max(0, Math.Min(1, t));
-                hitsOut.Add(new Point2d(a.X + t * (b.X - a.X), yLine));
-            }
-        }
-
-        private static bool TryPickPerpendicularTapOnMain(List<Point2d> mainPts, Point2d sprinkler, bool useVerticalBranches, out Point2d tapOnMain)
-        {
-            tapOnMain = default;
-            var hits = new List<Point2d>();
-            if (useVerticalBranches)
-                CollectVerticalCutsWithMain(mainPts, sprinkler.X, hits);
-            else
-                CollectHorizontalCutsWithMain(mainPts, sprinkler.Y, hits);
-            hits = DedupeNearbyIntersections(hits, BranchAxisSnapEps);
-            if (hits.Count == 0) return false;
-
-            tapOnMain = hits[0];
-            double bd = sprinkler.GetDistanceTo(tapOnMain);
-            for (int i = 1; i < hits.Count; i++)
-            {
-                double d = sprinkler.GetDistanceTo(hits[i]);
-                if (d < bd)
-                {
-                    bd = d;
-                    tapOnMain = hits[i];
-                }
-            }
-            return true;
-        }
-
-        private static bool TryPickColumnTapOnMain(
-            List<Point2d> mainPts,
-            double columnCoord,
-            bool useVerticalBranches,
-            List<Point2d> sprinklers,
-            IReadOnlyList<int> headIndices,
-            out Point2d tapOnMain)
-        {
-            tapOnMain = default;
-            if (headIndices == null || headIndices.Count == 0)
-                return false;
-
-            double targetAlong = useVerticalBranches
-                ? MedianCoordInBucket(sprinklers, new List<int>(headIndices), useX: false)
-                : MedianCoordInBucket(sprinklers, new List<int>(headIndices), useX: true);
-
-            var hits = CollectMainCutsAtCoord(mainPts, columnCoord, useVerticalBranches);
-            if (hits.Count == 0)
-            {
-                for (int k = 0; k < headIndices.Count; k++)
-                {
-                    double headCoord = useVerticalBranches
-                        ? sprinklers[headIndices[k]].X
-                        : sprinklers[headIndices[k]].Y;
-                    hits.AddRange(CollectMainCutsAtCoord(mainPts, headCoord, useVerticalBranches));
-                }
-                hits = DedupeNearbyIntersections(hits, BranchAxisSnapEps);
-            }
-
-            if (hits.Count == 0)
-                return false;
-
-            tapOnMain = hits[0];
-            double best = useVerticalBranches
-                ? Math.Abs(tapOnMain.Y - targetAlong)
-                : Math.Abs(tapOnMain.X - targetAlong);
-            for (int i = 1; i < hits.Count; i++)
-            {
-                double d = useVerticalBranches
-                    ? Math.Abs(hits[i].Y - targetAlong)
-                    : Math.Abs(hits[i].X - targetAlong);
-                if (d < best)
-                {
-                    best = d;
-                    tapOnMain = hits[i];
-                }
-            }
-            return true;
-        }
-
-        private static List<Point2d> CollectMainCutsAtCoord(List<Point2d> mainPts, double coord, bool useVerticalBranches)
-        {
-            var hits = new List<Point2d>();
-            if (useVerticalBranches)
-                CollectVerticalCutsWithMain(mainPts, coord, hits);
-            else
-                CollectHorizontalCutsWithMain(mainPts, coord, hits);
-            return DedupeNearbyIntersections(hits, BranchAxisSnapEps);
-        }
-
-        private static int ClassifyColumnAuxPile(
-            List<Point2d> mainPipePts,
-            List<Point2d> sprinklers,
-            SprinklerColumnGroup group,
-            bool useVerticalBranches)
-        {
-            if (group?.Indices == null || group.Indices.Count == 0)
-                return -1;
-            int rep = group.Indices[group.Indices.Count / 2];
-            int pile = ClassifyAuxPile(mainPipePts, sprinklers[rep], useVerticalBranches, out _);
-            if (pile != 0 && pile != 1)
-                return -1;
-
-            Point2d endVertex = pile == 0
-                ? mainPipePts[0]
-                : mainPipePts[mainPipePts.Count - 1];
-            double outwardSign = TrunkEndOutwardSign(mainPipePts, endVertex, useVerticalBranches);
-            double columnCoord = useVerticalBranches
-                ? MedianCoordInBucket(sprinklers, group.Indices, useX: true)
-                : MedianCoordInBucket(sprinklers, group.Indices, useX: false);
-            double anchor = useVerticalBranches ? endVertex.X : endVertex.Y;
-            if (!IsOutwardAlongAxis(columnCoord, anchor, outwardSign))
-                return -1;
-            return pile;
-        }
-
-        private static bool BranchPathFullyInZone(List<Point2d> zoneRing, List<Point2d> verts)
-        {
-            if (zoneRing == null || verts == null || verts.Count < 2) return false;
-            foreach (var v in verts)
-                if (!PointInPolygon(zoneRing, v))
-                    return false;
-            for (int i = 1; i < verts.Count; i++)
-                if (!SegmentInsideRing(zoneRing, verts[i - 1], verts[i]))
-                    return false;
-            return true;
-        }
-
-        private static bool BranchPathValidForRouting(BranchRouteContext ctx, List<Point2d> verts)
-        {
-            if (ctx?.ZoneRing == null || verts == null || verts.Count < 2)
-                return false;
-            string hex = ctx.BoundaryHex?.Trim() ?? "";
-            foreach (var v in verts)
-            {
-                if (!SprinklerHeadReader2d.IsPointInZoneOrParentedFloorRoomForRouting(
-                    ctx.Db, ctx.ZoneRing, hex, v, ctx.FloorRooms))
-                    return false;
-            }
-            for (int i = 1; i < verts.Count; i++)
-            {
-                if (!BranchSegmentValidForRouting(ctx, verts[i - 1], verts[i]))
-                    return false;
-            }
-            return true;
-        }
-
-        private static bool BranchSegmentValidForRouting(BranchRouteContext ctx, Point2d p0, Point2d p1)
-        {
-            const int samples = 14;
-            string hex = ctx.BoundaryHex?.Trim() ?? "";
-            for (int i = 0; i <= samples; i++)
-            {
-                double t = i / (double)samples;
-                var p = new Point2d(p0.X + (p1.X - p0.X) * t, p0.Y + (p1.Y - p0.Y) * t);
-                if (!SprinklerHeadReader2d.IsPointInZoneOrParentedFloorRoomForRouting(
-                    ctx.Db, ctx.ZoneRing, hex, p, ctx.FloorRooms))
-                    return false;
-            }
-            return true;
-        }
-
-        /// <summary>Active pile indices sorted by coordinate; split when gap &gt; tol along that axis.</summary>
-        private static List<List<int>> ClusterPileIndicesByAxis(
-            List<Point2d> sprinklers,
-            List<int> pileIndices,
-            HashSet<int> servedIndices,
-            bool sortByX)
-        {
-            var active = new List<int>();
-            for (int i = 0; i < pileIndices.Count; i++)
-            {
-                int si = pileIndices[i];
-                if (!servedIndices.Contains(si))
-                    active.Add(si);
-            }
-            if (active.Count == 0)
-                return new List<List<int>>();
-
-            active.Sort((a, b) =>
-            {
-                double ka = sortByX ? sprinklers[a].X : sprinklers[a].Y;
-                double kb = sortByX ? sprinklers[b].X : sprinklers[b].Y;
-                return ka.CompareTo(kb);
-            });
-
-            var buckets = new List<List<int>>();
-            for (int i = 0; i < active.Count; i++)
-            {
-                int idx = active[i];
-                double coord = sortByX ? sprinklers[idx].X : sprinklers[idx].Y;
-                if (buckets.Count == 0)
-                {
-                    buckets.Add(new List<int> { idx });
-                    continue;
-                }
-                var cur = buckets[buckets.Count - 1];
-                int lastIdx = cur[cur.Count - 1];
-                double lastCoord = sortByX ? sprinklers[lastIdx].X : sprinklers[lastIdx].Y;
-                if (coord - lastCoord > AuxColumnGroupingEps)
-                    buckets.Add(new List<int> { idx });
-                else
-                    cur.Add(idx);
-            }
-            return buckets;
-        }
-
-        private static double MedianCoordInBucket(List<Point2d> sprinklers, List<int> bucket, bool useX)
-        {
-            if (bucket == null || bucket.Count == 0) return 0;
-            var vals = new List<double>(bucket.Count);
-            for (int i = 0; i < bucket.Count; i++)
-                vals.Add(useX ? sprinklers[bucket[i]].X : sprinklers[bucket[i]].Y);
-            vals.Sort();
-            int n = vals.Count;
-            if (n % 2 == 1)
-                return vals[n / 2];
-            return 0.5 * (vals[n / 2 - 1] + vals[n / 2]);
-        }
-
-        /// <summary>+1 / −1 along the auxiliary run axis pointing from the trunk end vertex away from the pipe interior.</summary>
-        private static double TrunkEndOutwardSign(List<Point2d> mainPipePts, Point2d endVertex, bool axisIsX)
-        {
-            if (mainPipePts == null || mainPipePts.Count < 2)
-                return 1;
-
-            bool atStart = endVertex.GetDistanceTo(mainPipePts[0])
-                <= endVertex.GetDistanceTo(mainPipePts[mainPipePts.Count - 1]);
-            Point2d towardCenter = atStart ? mainPipePts[1] : mainPipePts[mainPipePts.Count - 2];
-
-            double sign = axisIsX
-                ? Math.Sign(endVertex.X - towardCenter.X)
-                : Math.Sign(endVertex.Y - towardCenter.Y);
-            if (Math.Abs(sign) < 1e-9)
-                sign = atStart ? -1 : 1;
-            return sign;
-        }
-
-        private static bool IsOutwardAlongAxis(double coord, double anchor, double outwardSign)
-        {
-            if (outwardSign > 0)
-                return coord >= anchor - BranchAxisSnapEps;
-            return coord <= anchor + BranchAxisSnapEps;
-        }
-
-        private static bool TryDrawTaggedBranchSegment(
-            Transaction tr,
-            BlockTableRecord ms,
-            BranchRouteContext ctx,
-            ObjectId branchLayerId,
-            double branchW,
-            double elevation,
-            List<Point2d> path,
-            ref int drawnCount)
-        {
-            path = CollapseCollinear(path ?? new List<Point2d>());
-            if (path.Count < 2 || !BranchPathValidForRouting(ctx, path))
-                return false;
-            var pl = CreateBranchPolyline(ctx.Db, path, elevation, branchLayerId, branchW);
-            if (pl == null) return false;
-            SprinklerXData.ApplyZoneBoundaryTag(pl, ctx.BoundaryHex?.Trim() ?? "");
-            ms.AppendEntity(pl);
-            tr.AddNewlyCreatedDBObject(pl, true);
-            drawnCount++;
-            return true;
-        }
-
-        private static Point2d AlignColumnTapToHead(Point2d columnTap, Point2d spr, bool useVerticalBranches)
-        {
-            return useVerticalBranches
-                ? new Point2d(spr.X, columnTap.Y)
-                : new Point2d(columnTap.X, spr.Y);
-        }
-
-        /// <summary>Order heads along the branch run (column = ±Y, row = ±X).</summary>
-        private static void SortSprinklerIndicesAlongBranch(
-            List<int> indices,
-            List<Point2d> sprinklers,
-            bool useVerticalBranches)
-        {
-            if (indices == null || indices.Count < 2 || sprinklers == null)
-                return;
-            indices.Sort((a, b) =>
-            {
-                double va = useVerticalBranches ? sprinklers[a].Y : sprinklers[a].X;
-                double vb = useVerticalBranches ? sprinklers[b].Y : sprinklers[b].X;
-                return va.CompareTo(vb);
-            });
-        }
-
-        /// <summary>
-        /// Split column/row heads into the two sides of the main (e.g. above/below a horizontal main).
-        /// Matches <see cref="AttachBranchesCommand"/> top/bottom lateral split.
-        /// </summary>
-        private static void SplitSprinklerIndicesBySideOfMain(
-            List<Point2d> sprinklers,
-            List<int> indices,
-            Point2d feedOnMain,
-            bool useVerticalBranches,
-            double tol,
-            out List<int> positiveSide,
-            out List<int> negativeSide)
-        {
-            positiveSide = new List<int>();
-            negativeSide = new List<int>();
-            if (indices == null || sprinklers == null)
-                return;
-
-            double axis = useVerticalBranches ? feedOnMain.Y : feedOnMain.X;
-            double t = tol > 0 ? tol : BranchAxisSnapEps;
-            for (int i = 0; i < indices.Count; i++)
-            {
-                int si = indices[i];
-                double coord = useVerticalBranches ? sprinklers[si].Y : sprinklers[si].X;
-                if (coord >= axis - t)
-                    positiveSide.Add(si);
-                if (coord <= axis + t)
-                    negativeSide.Add(si);
-            }
-        }
-
-        /// <summary>
-        /// Chain from main on one side only: main → nearest head → next head → … (never across the main).
-        /// </summary>
-        private static int TryDrawChainedBranchRunOnOneSideOfMain(
-            Transaction tr,
-            BlockTableRecord ms,
-            BranchRouteContext ctx,
-            ObjectId branchLayerId,
-            double branchW,
-            double elevation,
-            Point2d feedOnMain,
-            List<Point2d> sprinklers,
-            List<int> sideIndices,
-            bool useVerticalBranches,
-            HashSet<int> served,
-            ref int drawnCount)
-        {
-            if (sideIndices == null || sideIndices.Count == 0 || sprinklers == null)
-                return 0;
-
-            var drawOrder = new List<int>();
-            for (int i = 0; i < sideIndices.Count; i++)
-            {
-                int si = sideIndices[i];
-                if (served != null && served.Contains(si))
-                    continue;
-                drawOrder.Add(si);
-            }
-            if (drawOrder.Count == 0)
-                return 0;
-
-            drawOrder.Sort((a, b) =>
-            {
-                double da = useVerticalBranches
-                    ? Math.Abs(sprinklers[a].Y - feedOnMain.Y)
-                    : Math.Abs(sprinklers[a].X - feedOnMain.X);
-                double db = useVerticalBranches
-                    ? Math.Abs(sprinklers[b].Y - feedOnMain.Y)
-                    : Math.Abs(sprinklers[b].X - feedOnMain.X);
-                return da.CompareTo(db);
-            });
-
-            int servedHere = 0;
-            Point2d prev = feedOnMain;
-            for (int k = 0; k < drawOrder.Count; k++)
-            {
-                int si = drawOrder[k];
-                Point2d spr = sprinklers[si];
-                Point2d from = k == 0
-                    ? AlignColumnTapToHead(prev, spr, useVerticalBranches)
-                    : prev;
-
-                if (!TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, from, spr, ref drawnCount))
-                {
-                    if (k == 0)
-                        break;
-                    continue;
-                }
-
-                served?.Add(si);
-                servedHere++;
-                prev = spr;
-            }
-
-            return servedHere;
-        }
-
-        /// <summary>
-        /// Draw one straight segment per leg on each side of the main: feed → first head → second head → …
-        /// Heads on opposite sides of the main never share one continuous branch through the trunk.
-        /// </summary>
-        private static int TryDrawChainedStraightBranchesFromFeed(
-            Transaction tr,
-            BlockTableRecord ms,
-            BranchRouteContext ctx,
-            ObjectId branchLayerId,
-            double branchW,
-            double elevation,
-            Point2d feedOnMain,
-            List<Point2d> sprinklers,
-            List<int> indicesInOrder,
-            bool useVerticalBranches,
-            HashSet<int> served,
-            ref int drawnCount)
-        {
-            if (indicesInOrder == null || indicesInOrder.Count == 0 || sprinklers == null)
-                return 0;
-
-            SplitSprinklerIndicesBySideOfMain(
-                sprinklers,
-                indicesInOrder,
-                feedOnMain,
-                useVerticalBranches,
-                BranchAxisSnapEps,
-                out List<int> positiveSide,
-                out List<int> negativeSide);
-
-            int servedHere = 0;
-            servedHere += TryDrawChainedBranchRunOnOneSideOfMain(
-                tr, ms, ctx, branchLayerId, branchW, elevation,
-                feedOnMain, sprinklers, positiveSide, useVerticalBranches, served, ref drawnCount);
-            servedHere += TryDrawChainedBranchRunOnOneSideOfMain(
-                tr, ms, ctx, branchLayerId, branchW, elevation,
-                feedOnMain, sprinklers, negativeSide, useVerticalBranches, served, ref drawnCount);
-
-            return servedHere;
-        }
-
-        /// <summary>
-        /// After an auxiliary bar at a trunk end, chain heads along the bar then drop to each sprinkler.
-        /// </summary>
-        private static int TryDrawChainedPileFromAuxiliaryBar(
-            Transaction tr,
-            BlockTableRecord ms,
-            BranchRouteContext ctx,
-            ObjectId branchLayerId,
-            double branchW,
-            double elevation,
-            List<Point2d> sprinklers,
-            List<int> pileIndices,
-            bool useVerticalBranches,
-            double barFixedCoord,
-            HashSet<int> servedIndices,
-            ref int drawnCount)
-        {
-            if (pileIndices == null || pileIndices.Count == 0 || sprinklers == null)
-                return 0;
-
-            var order = new List<int>(pileIndices);
-            SortSprinklerIndicesAlongBranch(order, sprinklers, useVerticalBranches);
-
-            int servedHere = 0;
-            Point2d? prevSpr = null;
-            for (int k = 0; k < order.Count; k++)
-            {
-                int si = order[k];
-                if (servedIndices != null && servedIndices.Contains(si))
-                    continue;
-
-                Point2d spr = sprinklers[si];
-                Point2d junction = useVerticalBranches
-                    ? new Point2d(spr.X, barFixedCoord)
-                    : new Point2d(barFixedCoord, spr.Y);
-
-                bool ok;
-                if (!prevSpr.HasValue)
-                {
-                    ok = TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, junction, spr, ref drawnCount);
-                }
-                else
-                {
-                    Point2d prev = prevSpr.Value;
-                    bool sameColumn = useVerticalBranches
-                        ? Math.Abs(spr.X - prev.X) <= BranchAxisSnapEps
-                        : Math.Abs(spr.Y - prev.Y) <= BranchAxisSnapEps;
-
-                    if (sameColumn)
-                    {
-                        ok = TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, prev, spr, ref drawnCount);
-                    }
-                    else
-                    {
-                        Point2d prevJunction = useVerticalBranches
-                            ? new Point2d(prev.X, barFixedCoord)
-                            : new Point2d(barFixedCoord, prev.Y);
-                        ok = TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, prevJunction, junction, ref drawnCount)
-                            && TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, junction, spr, ref drawnCount);
-                    }
-                }
-
-                if (!ok)
-                    continue;
-
-                servedIndices?.Add(si);
-                servedHere++;
-                prevSpr = spr;
-            }
-
-            return servedHere;
-        }
-
-        private static bool TryDrawPerHeadBranch(
-            Transaction tr,
-            BlockTableRecord ms,
-            BranchRouteContext ctx,
-            ObjectId branchLayerId,
-            double branchW,
-            double elevation,
-            Point2d tap,
-            Point2d spr,
-            ref int drawnCount)
-        {
-            if (!TryBuildStraightBranchPath(tap, spr, out List<Point2d> path))
-                return false;
-            if (path.Count != 2)
-                return false;
-            if (!BranchPathValidForRouting(ctx, path))
-                return false;
-            if (WouldCreateGridLikeCrossing(tr, ms, ctx, path[0], path[1]))
-                return false;
-            var pl = CreateHeadBranchPolyline(ctx.Db, path[0], path[1], elevation, branchLayerId, branchW);
-            if (pl == null)
-                return false;
-            SprinklerXData.ApplyZoneBoundaryTag(pl, ctx.BoundaryHex?.Trim() ?? "");
-            ms.AppendEntity(pl);
-            tr.AddNewlyCreatedDBObject(pl, true);
-            drawnCount++;
-            return true;
-        }
-
-        private static bool WouldCreateGridLikeCrossing(
-            Transaction tr,
-            BlockTableRecord ms,
-            BranchRouteContext ctx,
-            Point2d a,
-            Point2d b)
-        {
-            var existing = CollectZoneBranchSegments(tr, ms, ctx);
-            if (existing == null || existing.Count == 0)
-                return false;
-
-            for (int i = 0; i < existing.Count; i++)
-            {
-                if (SegmentIntersectsAtNonEndpoint(a, b, existing[i].A, existing[i].B, BranchAxisSnapEps))
-                    return true;
-            }
-            return false;
-        }
-
-        private static bool SegmentIntersectsAtNonEndpoint(
-            Point2d a1,
-            Point2d a2,
-            Point2d b1,
-            Point2d b2,
-            double tol)
-        {
-            bool aVertical = Math.Abs(a1.X - a2.X) <= tol;
-            bool aHorizontal = Math.Abs(a1.Y - a2.Y) <= tol;
-            bool bVertical = Math.Abs(b1.X - b2.X) <= tol;
-            bool bHorizontal = Math.Abs(b1.Y - b2.Y) <= tol;
-            if ((!aVertical && !aHorizontal) || (!bVertical && !bHorizontal))
-                return false;
-
-            bool samePoint(Point2d p, Point2d q) => p.GetDistanceTo(q) <= tol;
-            bool isNewEndpoint(Point2d p) => samePoint(p, a1) || samePoint(p, a2);
-            bool inRange(double v, double lo, double hi) => v >= lo - tol && v <= hi + tol;
-
-            // Orthogonal crossing.
-            if ((aVertical && bHorizontal) || (aHorizontal && bVertical))
-            {
-                Point2d ip = aVertical
-                    ? new Point2d(a1.X, b1.Y)
-                    : new Point2d(b1.X, a1.Y);
-
-                double aMinX = Math.Min(a1.X, a2.X), aMaxX = Math.Max(a1.X, a2.X);
-                double aMinY = Math.Min(a1.Y, a2.Y), aMaxY = Math.Max(a1.Y, a2.Y);
-                double bMinX = Math.Min(b1.X, b2.X), bMaxX = Math.Max(b1.X, b2.X);
-                double bMinY = Math.Min(b1.Y, b2.Y), bMaxY = Math.Max(b1.Y, b2.Y);
-                if (!inRange(ip.X, aMinX, aMaxX) || !inRange(ip.Y, aMinY, aMaxY) ||
-                    !inRange(ip.X, bMinX, bMaxX) || !inRange(ip.Y, bMinY, bMaxY))
-                    return false;
-
-                // Allow only if crossing is exactly at a new-segment endpoint (tap/head connection).
-                return !isNewEndpoint(ip);
-            }
-
-            // Parallel/collinear overlap.
-            if (aVertical && bVertical && Math.Abs(a1.X - b1.X) <= tol)
-            {
-                double lo = Math.Max(Math.Min(a1.Y, a2.Y), Math.Min(b1.Y, b2.Y));
-                double hi = Math.Min(Math.Max(a1.Y, a2.Y), Math.Max(b1.Y, b2.Y));
-                if (hi < lo - tol)
-                    return false;
-
-                // More than a single-point touch means overlap -> reject.
-                if (hi > lo + tol)
-                    return true;
-
-                Point2d touch = new Point2d(a1.X, (lo + hi) * 0.5);
-                return !isNewEndpoint(touch);
-            }
-
-            if (aHorizontal && bHorizontal && Math.Abs(a1.Y - b1.Y) <= tol)
-            {
-                double lo = Math.Max(Math.Min(a1.X, a2.X), Math.Min(b1.X, b2.X));
-                double hi = Math.Min(Math.Max(a1.X, a2.X), Math.Max(b1.X, b2.X));
-                if (hi < lo - tol)
-                    return false;
-
-                if (hi > lo + tol)
-                    return true;
-
-                Point2d touch = new Point2d((lo + hi) * 0.5, a1.Y);
-                return !isNewEndpoint(touch);
-            }
-
-            return false;
-        }
-
-        /// <summary>Labelling requires exactly one segment (two vertices): supply tap and one sprinkler.</summary>
-        private static Polyline CreateHeadBranchPolyline(
-            Database db,
-            Point2d tap,
-            Point2d head,
-            double elevation,
-            ObjectId layerId,
-            double width)
-        {
-            if (tap.GetDistanceTo(head) < 1e-9)
-                return null;
-            return CreateBranchPolyline(db, new List<Point2d> { tap, head }, elevation, layerId, width);
-        }
-
-        /// <summary>
-        /// Stub-end heads: auxiliary bar from trunk end, then chained drops along the bar to each head.
-        /// </summary>
-        private static void DrawAuxiliaryFromEndVertexAndPerpendicularFeeds(
-            Transaction tr,
-            BlockTableRecord ms,
-            BranchRouteContext ctx,
-            ObjectId branchLayerId,
-            double branchW,
-            double elevation,
-            List<Point2d> mainPipePts,
-            Point2d endVertex,
-            List<Point2d> sprinklers,
-            List<int> pileIndices,
-            bool useVerticalBranchDropsFromZoneMain,
-            ref int drawnCount,
-            HashSet<int> servedIndices)
-        {
-            if (pileIndices == null || pileIndices.Count == 0)
-                return;
-
-            if (useVerticalBranchDropsFromZoneMain)
-            {
-                double yBar = endVertex.Y;
-                double outwardX = TrunkEndOutwardSign(mainPipePts, endVertex, axisIsX: true);
-                double barEnd = endVertex.X;
-                bool hasOutward = false;
-                for (int p = 0; p < pileIndices.Count; p++)
-                {
-                    int si = pileIndices[p];
-                    if (!IsOutwardAlongAxis(sprinklers[si].X, endVertex.X, outwardX))
-                        continue;
-                    hasOutward = true;
-                    barEnd = outwardX > 0
-                        ? Math.Max(barEnd, sprinklers[si].X)
-                        : Math.Min(barEnd, sprinklers[si].X);
-                }
-                if (hasOutward && Math.Abs(barEnd - endVertex.X) > BranchAxisSnapEps)
-                {
-                    TryDrawTaggedBranchSegment(tr, ms, ctx, branchLayerId, branchW, elevation,
-                        new List<Point2d> { new Point2d(endVertex.X, yBar), new Point2d(barEnd, yBar) }, ref drawnCount);
-                }
-
-                var outwardPile = new List<int>();
-                for (int p = 0; p < pileIndices.Count; p++)
-                {
-                    int si = pileIndices[p];
-                    if (servedIndices.Contains(si))
-                        continue;
-                    if (!IsOutwardAlongAxis(sprinklers[si].X, endVertex.X, outwardX))
-                        continue;
-                    outwardPile.Add(si);
-                }
-                TryDrawChainedPileFromAuxiliaryBar(
-                    tr, ms, ctx, branchLayerId, branchW, elevation,
-                    sprinklers, outwardPile, useVerticalBranchDropsFromZoneMain, yBar, servedIndices, ref drawnCount);
-            }
-            else
-            {
-                double xBar = endVertex.X;
-                double outwardY = TrunkEndOutwardSign(mainPipePts, endVertex, axisIsX: false);
-                double barEndY = endVertex.Y;
-                bool hasOutward = false;
-                for (int p = 0; p < pileIndices.Count; p++)
-                {
-                    int si = pileIndices[p];
-                    if (!IsOutwardAlongAxis(sprinklers[si].Y, endVertex.Y, outwardY))
-                        continue;
-                    hasOutward = true;
-                    barEndY = outwardY > 0
-                        ? Math.Max(barEndY, sprinklers[si].Y)
-                        : Math.Min(barEndY, sprinklers[si].Y);
-                }
-                if (hasOutward && Math.Abs(barEndY - endVertex.Y) > BranchAxisSnapEps)
-                {
-                    TryDrawTaggedBranchSegment(tr, ms, ctx, branchLayerId, branchW, elevation,
-                        new List<Point2d> { new Point2d(xBar, endVertex.Y), new Point2d(xBar, barEndY) }, ref drawnCount);
-                }
-
-                var outwardPile = new List<int>();
-                for (int p = 0; p < pileIndices.Count; p++)
-                {
-                    int si = pileIndices[p];
-                    if (servedIndices.Contains(si))
-                        continue;
-                    if (!IsOutwardAlongAxis(sprinklers[si].Y, endVertex.Y, outwardY))
-                        continue;
-                    outwardPile.Add(si);
-                }
-                TryDrawChainedPileFromAuxiliaryBar(
-                    tr, ms, ctx, branchLayerId, branchW, elevation,
-                    sprinklers, outwardPile, useVerticalBranchDropsFromZoneMain, xBar, servedIndices, ref drawnCount);
-            }
-        }
-
-        private static double GetBranchSnapToleranceDu(Database db)
-        {
-            if (DrawingUnitsHelper.TryMetersToDrawingLength(db.Insunits, 0.05, out double snapTol) && snapTol > 0)
-                return snapTol;
-            return 50.0;
-        }
-
-        private static double GetMaxSubBranchAttachDistanceDu(Database db, double sprinklerSpacingM)
-        {
-            double spacingM = sprinklerSpacingM > 1e-9 ? sprinklerSpacingM : 1.0;
-            double meters = Math.Max(0.35 * spacingM, 1.5);
-            if (DrawingUnitsHelper.TryMetersToDrawingLength(db.Insunits, meters, out double du) && du > 0)
-                return du;
-            return Math.Max(0.35 * spacingM, 1.5);
-        }
-
-        private static bool IsBranchPipeLayerName(string layer)
-        {
-            return string.Equals(layer, SprinklerLayers.BranchPipeLayer, StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(layer, SprinklerLayers.McdBranchPipeLayer, StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static List<BranchSegmentRef> CollectZoneBranchSegments(
-            Transaction tr,
-            BlockTableRecord ms,
-            BranchRouteContext ctx)
-        {
-            var segments = new List<BranchSegmentRef>();
-            if (tr == null || ms == null || ctx == null)
-                return segments;
-
-            string zoneHex = ctx.BoundaryHex?.Trim() ?? "";
-            bool scopeTags = !string.IsNullOrEmpty(zoneHex);
-
-            foreach (ObjectId id in ms)
-            {
-                if (id.IsErased) continue;
-                Polyline pl = null;
-                try { pl = tr.GetObject(id, OpenMode.ForRead, false) as Polyline; }
-                catch { continue; }
-                if (pl == null || pl.NumberOfVertices < 2) continue;
-                if (!IsBranchPipeLayerName(pl.Layer ?? "")) continue;
-                if (SprinklerXData.IsTaggedTrunk(pl)) continue;
-                if (scopeTags)
-                {
-                    if (!SprinklerXData.TryGetZoneBoundaryHandle(pl, out string entHex) ||
-                        string.IsNullOrWhiteSpace(entHex) ||
-                        !string.Equals(entHex.Trim(), zoneHex, StringComparison.OrdinalIgnoreCase))
-                        continue;
-                }
-
-                var verts = PolylineToPoint2dList(pl);
-                for (int i = 0; i + 1 < verts.Count; i++)
-                {
-                    Point2d a = verts[i];
-                    Point2d b = verts[i + 1];
-                    if (a.GetDistanceTo(b) < 1e-9)
-                        continue;
-                    segments.Add(new BranchSegmentRef { A = a, B = b });
-                }
-            }
-            return segments;
-        }
-
-        private static bool IsSprinklerServedByGeometry(
-            Point2d spr,
-            List<BranchSegmentRef> segments,
-            double snapTol)
-        {
-            if (segments == null || segments.Count == 0)
-                return false;
-            for (int i = 0; i < segments.Count; i++)
-            {
-                Point2d a = segments[i].A;
-                Point2d b = segments[i].B;
-                if (spr.GetDistanceTo(a) <= snapTol || spr.GetDistanceTo(b) <= snapTol)
-                    return true;
-                Point2d close = ClosestPointOnSegment(a, b, spr);
-                if (close.GetDistanceTo(spr) <= snapTol)
-                    return true;
-            }
-            return false;
-        }
-
-        private static List<int> BuildUnservedIndicesForSubBranch(
-            List<Point2d> sprinklers,
-            HashSet<int> served,
-            List<BranchSegmentRef> segments,
-            double snapTol)
-        {
-            var unserved = new List<int>();
-            for (int i = 0; i < sprinklers.Count; i++)
-            {
-                if (served.Contains(i))
-                    continue;
-                if (IsSprinklerServedByGeometry(sprinklers[i], segments, snapTol))
-                {
-                    served.Add(i);
-                    continue;
-                }
-                unserved.Add(i);
-            }
-            return unserved;
-        }
-
-        private static bool TryFindClosestPointOnBranchSegments(
-            Point2d spr,
-            List<BranchSegmentRef> segments,
-            double maxAttachDist,
-            out Point2d attachPoint,
-            out double distance)
-        {
-            attachPoint = default;
-            distance = double.MaxValue;
-            if (segments == null || segments.Count == 0)
-                return false;
-
-            for (int i = 0; i < segments.Count; i++)
-            {
-                Point2d close = ClosestPointOnSegment(segments[i].A, segments[i].B, spr);
-                double d = close.GetDistanceTo(spr);
-                if (d < distance)
-                {
-                    distance = d;
-                    attachPoint = close;
-                }
-            }
-
-            if (distance > maxAttachDist)
-                return false;
-            if (attachPoint.GetDistanceTo(spr) < BranchAxisSnapEps)
-                return false;
-            return true;
-        }
-
-        /// <summary>
-        /// Find an attach point on an existing orthogonal branch segment such that the connect segment is a single
-        /// straight perpendicular leg (no L-shapes). For vertical segments, attach at (segX, sprY) if sprY lies
-        /// within the segment Y-range; for horizontal segments, attach at (sprX, segY) if sprX lies within X-range.
-        /// </summary>
-        private static bool TryFindPerpendicularAttachPointOnBranchSegments(
-            Point2d spr,
-            List<BranchSegmentRef> segments,
-            double maxAttachDist,
-            out Point2d attachPoint,
-            out double distance)
-        {
-            attachPoint = default;
-            distance = double.MaxValue;
-            if (segments == null || segments.Count == 0)
-                return false;
-
-            bool enforceMax = !(double.IsNaN(maxAttachDist) || double.IsInfinity(maxAttachDist) || maxAttachDist <= 0);
-
-            for (int i = 0; i < segments.Count; i++)
-            {
-                Point2d a = segments[i].A;
-                Point2d b = segments[i].B;
-
-                // Vertical segment: perpendicular is horizontal at spr.Y.
-                if (Math.Abs(a.X - b.X) <= BranchAxisSnapEps)
-                {
-                    double minY = Math.Min(a.Y, b.Y) - BranchAxisSnapEps;
-                    double maxY = Math.Max(a.Y, b.Y) + BranchAxisSnapEps;
-                    if (spr.Y < minY || spr.Y > maxY)
-                        continue;
-
-                    Point2d cand = new Point2d(a.X, spr.Y);
-                    double d = Math.Abs(spr.X - a.X);
-                    if (cand.GetDistanceTo(spr) < BranchAxisSnapEps)
-                        continue;
-                    if (enforceMax && d > maxAttachDist)
-                        continue;
-                    if (d < distance)
-                    {
-                        distance = d;
-                        attachPoint = cand;
-                    }
-                    continue;
-                }
-
-                // Horizontal segment: perpendicular is vertical at spr.X.
-                if (Math.Abs(a.Y - b.Y) <= BranchAxisSnapEps)
-                {
-                    double minX = Math.Min(a.X, b.X) - BranchAxisSnapEps;
-                    double maxX = Math.Max(a.X, b.X) + BranchAxisSnapEps;
-                    if (spr.X < minX || spr.X > maxX)
-                        continue;
-
-                    Point2d cand = new Point2d(spr.X, a.Y);
-                    double d = Math.Abs(spr.Y - a.Y);
-                    if (cand.GetDistanceTo(spr) < BranchAxisSnapEps)
-                        continue;
-                    if (enforceMax && d > maxAttachDist)
-                        continue;
-                    if (d < distance)
-                    {
-                        distance = d;
-                        attachPoint = cand;
-                    }
-                    continue;
-                }
-            }
-
-            if (distance >= double.MaxValue)
-                return false;
-            return true;
-        }
-
-        private static List<List<int>> BuildIndexGroupsByCoord(
-            List<Point2d> sprinklers,
-            List<int> indices,
-            bool clusterByX,
-            double clusterTol)
-        {
-            var groups = new List<List<int>>();
-            if (sprinklers == null || indices == null || indices.Count == 0)
-                return groups;
-
-            var order = new List<int>(indices);
-            order.Sort((a, b) =>
-            {
-                double ka = clusterByX ? sprinklers[a].X : sprinklers[a].Y;
-                double kb = clusterByX ? sprinklers[b].X : sprinklers[b].Y;
-                return ka.CompareTo(kb);
-            });
-
-            List<int> cur = null;
-            double curCoord = double.MinValue;
-            for (int i = 0; i < order.Count; i++)
-            {
-                int idx = order[i];
-                double coord = clusterByX ? sprinklers[idx].X : sprinklers[idx].Y;
-                if (cur == null || coord - curCoord > clusterTol)
-                {
-                    cur = new List<int> { idx };
-                    groups.Add(cur);
-                    curCoord = coord;
-                }
-                else
-                    cur.Add(idx);
-            }
-
-            return groups;
-        }
-
-        private static bool TryPickBestPerpendicularAttachForGroup(
-            List<Point2d> sprinklers,
-            List<int> group,
-            List<BranchSegmentRef> segments,
-            double maxAttachDist,
-            out int bestIndex,
-            out Point2d bestAttach)
-        {
-            bestIndex = -1;
-            bestAttach = default;
-            if (sprinklers == null || group == null || group.Count == 0 || segments == null || segments.Count == 0)
-                return false;
-
-            double bestDist = double.MaxValue;
-            for (int i = 0; i < group.Count; i++)
-            {
-                int si = group[i];
-                if (TryFindPerpendicularAttachPointOnBranchSegments(sprinklers[si], segments, maxAttachDist, out Point2d a, out double d))
-                {
-                    if (d < bestDist)
-                    {
-                        bestDist = d;
-                        bestIndex = si;
-                        bestAttach = a;
-                    }
-                }
-            }
-
-            return bestIndex >= 0;
-        }
-
-        private static int TryRouteGroupAsSegmentChain(
-            Transaction tr,
-            BlockTableRecord ms,
-            BranchRouteContext ctx,
-            List<Point2d> sprinklers,
-            List<BranchSegmentRef> segments,
-            HashSet<int> served,
-            List<int> group,
-            ObjectId branchLayerId,
-            double branchW,
-            double elevation,
-            bool useVerticalBranches,
-            double maxAttachDist,
-            ref int drawnCount)
-        {
-            if (group == null || group.Count == 0 || sprinklers == null || segments == null || segments.Count == 0)
-                return 0;
-
-            var candidates = new List<int>(group.Count);
-            for (int i = 0; i < group.Count; i++)
-            {
-                int si = group[i];
-                if (served != null && served.Contains(si)) continue;
-                candidates.Add(si);
-            }
-            if (candidates.Count == 0)
-                return 0;
-
-            // Prevent "box" ladders: only chain within true rows/columns (same X for vertical runs, same Y for horizontal runs).
-            // Never pivot the chain "prev" to a sprinkler that was connected via an independent takeoff.
-            double lineTol = BranchAxisSnapEps * 5;
-
-            candidates.Sort((a, b) =>
-            {
-                double ka = useVerticalBranches ? sprinklers[a].X : sprinklers[a].Y;
-                double kb = useVerticalBranches ? sprinklers[b].X : sprinklers[b].Y;
-                return ka.CompareTo(kb);
-            });
-
-            var lineGroups = new List<List<int>>();
-            List<int> cur = null;
-            double curCoord = double.MinValue;
-            for (int i = 0; i < candidates.Count; i++)
-            {
-                int idx = candidates[i];
-                double coord = useVerticalBranches ? sprinklers[idx].X : sprinklers[idx].Y;
-                if (cur == null || Math.Abs(coord - curCoord) > lineTol)
-                {
-                    cur = new List<int> { idx };
-                    lineGroups.Add(cur);
-                    curCoord = coord;
-                }
-                else
-                    cur.Add(idx);
-            }
-
-            int routed = 0;
-
-            for (int lg = 0; lg < lineGroups.Count; lg++)
-            {
-                var line = lineGroups[lg];
-                if (line == null || line.Count == 0)
-                    continue;
-
-                // Choose the line sprinkler that has the shortest perpendicular takeoff to an existing branch segment.
-                if (!TryPickBestPerpendicularAttachForGroup(sprinklers, line, segments, maxAttachDist, out int startIndex, out Point2d attach))
-                    continue;
-
-                var order = new List<int>(line);
-                SortSprinklerIndicesAlongBranch(order, sprinklers, useVerticalBranches);
-                int startPos = order.IndexOf(startIndex);
-                if (startPos < 0) startPos = 0;
-
-                // First leg: branch segment → start sprinkler (single perpendicular segment only).
-                if ((served == null || !served.Contains(startIndex)) &&
-                    TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, attach, sprinklers[startIndex], ref drawnCount))
-                {
-                    served?.Add(startIndex);
-                    routed++;
-                }
-
-                // Chain down.
-                Point2d prev = sprinklers[startIndex];
-                for (int p = startPos - 1; p >= 0; p--)
-                {
-                    int si = order[p];
-                    if (served != null && served.Contains(si))
-                        continue;
-                    if (!TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, prev, sprinklers[si], ref drawnCount))
-                        break;
-                    served?.Add(si);
-                    routed++;
-                    prev = sprinklers[si];
-                }
-
-                // Chain up.
-                prev = sprinklers[startIndex];
-                for (int p = startPos + 1; p < order.Count; p++)
-                {
-                    int si = order[p];
-                    if (served != null && served.Contains(si))
-                        continue;
-                    if (!TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, prev, sprinklers[si], ref drawnCount))
-                        break;
-                    served?.Add(si);
-                    routed++;
-                    prev = sprinklers[si];
-                }
-                // STRICT NO-GRID RULE:
-                // Do NOT add additional independent takeoffs for leftovers on the same row/column.
-                // Multiple takeoffs + chaining creates rectangles/grids. If a head can't be reached by the chain,
-                // we intentionally leave it unserved for manual fix.
-            }
-
-            return routed;
-        }
-
-        private static bool TryBuildOrthogonalPathForRouting(
-            BranchRouteContext ctx,
-            Point2d from,
-            Point2d to,
-            bool verticalFirst,
-            out List<Point2d> path)
-        {
-            path = null;
-            if (from.GetDistanceTo(to) < 1e-7)
-            {
-                path = new List<Point2d> { from, to };
-                return BranchPathValidForRouting(ctx, path);
-            }
-
-            var c1 = verticalFirst ? new Point2d(from.X, to.Y) : new Point2d(to.X, from.Y);
-            if (BranchSegmentValidForRouting(ctx, from, c1) && BranchSegmentValidForRouting(ctx, c1, to))
-            {
-                path = CollapseCollinear(new List<Point2d> { from, c1, to });
-                return path != null && path.Count >= 2;
-            }
-
-            var c2 = verticalFirst ? new Point2d(to.X, from.Y) : new Point2d(from.X, to.Y);
-            if (BranchSegmentValidForRouting(ctx, from, c2) && BranchSegmentValidForRouting(ctx, c2, to))
-            {
-                path = CollapseCollinear(new List<Point2d> { from, c2, to });
-                return path != null && path.Count >= 2;
-            }
-
-            return false;
-        }
-
-        private static bool TryDrawOrthogonalSubBranchToHead(
-            Transaction tr,
-            BlockTableRecord ms,
-            BranchRouteContext ctx,
-            ObjectId branchLayerId,
-            double branchW,
-            double elevation,
-            Point2d attach,
-            Point2d spr,
-            bool verticalFirst,
-            ref int drawnCount)
-        {
-            if (TryBuildStraightBranchPath(attach, spr, out List<Point2d> straight) &&
-                BranchPathValidForRouting(ctx, straight))
-            {
-                return TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, attach, spr, ref drawnCount);
-            }
-
-            if (!TryBuildOrthogonalPathForRouting(ctx, attach, spr, verticalFirst, out List<Point2d> path) &&
-                !TryBuildOrthogonalPathForRouting(ctx, attach, spr, !verticalFirst, out path))
-                return false;
-
-            if (path == null || path.Count < 2)
-                return false;
-
-            if (path.Count == 2)
-                return TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, path[0], path[1], ref drawnCount);
-
-            for (int i = 0; i + 1 < path.Count - 1; i++)
-            {
-                Point2d legA = path[i];
-                Point2d legB = path[i + 1];
-                if (legA.GetDistanceTo(legB) < BranchAxisSnapEps)
-                    continue;
-                if (!TryBuildStraightBranchPath(legA, legB, out List<Point2d> feeder) ||
-                    !BranchPathValidForRouting(ctx, feeder))
-                    return false;
-                if (!TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, legA, legB, ref drawnCount))
-                    return false;
-            }
-
-            Point2d headLegStart = path[path.Count - 2];
-            Point2d head = path[path.Count - 1];
-            return TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, headLegStart, head, ref drawnCount);
-        }
-
-        /// <summary>
-        /// After main/aux routing: connect remaining heads via orthogonal sub-branches from nearest existing branch pipe only.
-        /// </summary>
-        private static int RouteSubBranchesFromNearestBranchPipe(
-            Transaction tr,
-            BlockTableRecord ms,
-            BranchRouteContext ctx,
-            List<Point2d> sprinklers,
-            HashSet<int> served,
-            ObjectId branchLayerId,
-            double branchW,
-            double elevation,
-            bool mainRunsAlongX,
-            double sprinklerSpacingM,
-            ref int drawnCount)
-        {
-            int subDrawn = 0;
-            if (sprinklers == null || sprinklers.Count == 0 || ctx == null)
-                return 0;
-
-            double snapTol = GetBranchSnapToleranceDu(ctx.Db);
-            double maxAttachDist = GetMaxSubBranchAttachDistanceDu(ctx.Db, sprinklerSpacingM);
-            bool clusterByX = mainRunsAlongX;
-            bool useVerticalBranches = mainRunsAlongX;
-            double clusterTol = ColumnClusterToleranceM(sprinklerSpacingM);
-
-            // STRICT NO-GRID RULE: single pass only. Multiple passes can create multiple takeoffs into the same
-            // row/column after geometry changes within the transaction, which can form rectangular grids.
-            for (int pass = 0; pass < 1; pass++)
-            {
-                var segments = CollectZoneBranchSegments(tr, ms, ctx);
-                if (segments.Count == 0)
-                    break;
-
-                var unserved = BuildUnservedIndicesForSubBranch(sprinklers, served, segments, snapTol);
-                if (unserved.Count == 0)
-                    break;
-
-                int servedThisPass = 0;
-                var groups = BuildIndexGroupsByCoord(sprinklers, unserved, clusterByX, clusterTol);
-                for (int g = 0; g < groups.Count; g++)
-                {
-                    int before = drawnCount;
-                    int routed = TryRouteGroupAsSegmentChain(
-                        tr, ms, ctx, sprinklers, segments, served, groups[g],
-                        branchLayerId, branchW, elevation,
-                        useVerticalBranches,
-                        maxAttachDist,
-                        ref drawnCount);
-                    if (routed > 0)
-                    {
-                        servedThisPass += routed;
-                        subDrawn += drawnCount - before;
-                    }
-                }
-
-                if (servedThisPass == 0)
-                    break;
-            }
-
-            return subDrawn;
-        }
-
-        /// <summary>Single straight segment (horizontal or vertical only) from tap on trunk to head — no L-shaped paths off the main.</summary>
-        private static bool TryBuildStraightBranchPath(Point2d tap, Point2d spr, out List<Point2d> path)
-        {
-            path = CollapseCollinear(new List<Point2d> { tap, spr });
-            if (path.Count < 2)
-                return false;
-            return Math.Abs(tap.X - spr.X) < BranchAxisSnapEps || Math.Abs(tap.Y - spr.Y) < BranchAxisSnapEps;
-        }
-
-        /// <summary>
-        /// Straight two-point branch segments chained along each row/column: main tap → first head → second head → …
-        /// </summary>
-        private static int DrawSimplePerpendicularBranchesFromMain(
-            Transaction tr,
-            BlockTableRecord ms,
-            BranchRouteContext ctx,
-            List<Point2d> mainPipePts,
-            List<Point2d> sprinklers,
-            ObjectId branchLayerId,
-            double branchW,
-            double elevation,
-            bool mainRunsAlongX,
-            double sprinklerSpacingM,
-            out int servedHeadCount,
-            out int subBranchDrawn)
-        {
-            int drawnCount = 0;
-            servedHeadCount = 0;
-            subBranchDrawn = 0;
-            bool useVerticalBranches = mainRunsAlongX;
-            var served = new HashSet<int>();
-            double clusterTol = ColumnClusterToleranceM(sprinklerSpacingM);
-            var columnGroups = BuildSprinklerColumnGroups(sprinklers, clusterByX: useVerticalBranches, clusterTol);
-            var headToGroup = new int[sprinklers.Count];
-            for (int g = 0; g < headToGroup.Length; g++)
-                headToGroup[g] = -1;
-            for (int g = 0; g < columnGroups.Count; g++)
-            {
-                for (int k = 0; k < columnGroups[g].Indices.Count; k++)
-                    headToGroup[columnGroups[g].Indices[k]] = g;
-            }
-
-            var columnAux = new int[columnGroups.Count];
-            var columnMainTap = new Point2d?[columnGroups.Count];
-            for (int g = 0; g < columnGroups.Count; g++)
-            {
-                columnAux[g] = ClassifyColumnAuxPile(mainPipePts, sprinklers, columnGroups[g], useVerticalBranches);
-                if (columnAux[g] == 0 || columnAux[g] == 1)
-                    continue;
-                double columnX = useVerticalBranches
-                    ? MedianCoordInBucket(sprinklers, columnGroups[g].Indices, useX: true)
-                    : MedianCoordInBucket(sprinklers, columnGroups[g].Indices, useX: false);
-                if (TryPickColumnTapOnMain(mainPipePts, columnX, useVerticalBranches, sprinklers, columnGroups[g].Indices, out Point2d tap))
-                    columnMainTap[g] = tap;
-            }
-
-            for (int g = 0; g < columnGroups.Count; g++)
-            {
-                if (columnAux[g] == 0 || columnAux[g] == 1)
-                    continue;
-
-                var groupIndices = new List<int>(columnGroups[g].Indices);
-                SortSprinklerIndicesAlongBranch(groupIndices, sprinklers, useVerticalBranches);
-
-                if (columnMainTap[g].HasValue)
-                {
-                    TryDrawChainedStraightBranchesFromFeed(
-                        tr, ms, ctx, branchLayerId, branchW, elevation,
-                        columnMainTap[g].Value, sprinklers, groupIndices, useVerticalBranches, served, ref drawnCount);
-                    continue;
-                }
-
-                var unserved = new List<int>();
-                for (int k = 0; k < groupIndices.Count; k++)
-                {
-                    if (!served.Contains(groupIndices[k]))
-                        unserved.Add(groupIndices[k]);
-                }
-                if (unserved.Count == 0)
-                    continue;
-
-                if (!TryPickPerpendicularTapOnMain(
-                        mainPipePts,
-                        sprinklers[unserved[0]],
-                        useVerticalBranches,
-                        out Point2d tapPerc))
-                    continue;
-
-                TryDrawChainedStraightBranchesFromFeed(
-                    tr, ms, ctx, branchLayerId, branchW, elevation,
-                    tapPerc, sprinklers, unserved, useVerticalBranches, served, ref drawnCount);
-            }
-
-            for (int i = 0; i < sprinklers.Count; i++)
-            {
-                if (served.Contains(i))
-                    continue;
-
-                int g = headToGroup[i];
-                if (g >= 0 && columnAux[g] != 0 && columnAux[g] != 1 && columnMainTap[g].HasValue)
-                {
-                    var unservedInColumn = new List<int>();
-                    for (int k = 0; k < columnGroups[g].Indices.Count; k++)
-                    {
-                        int si = columnGroups[g].Indices[k];
-                        if (!served.Contains(si))
-                            unservedInColumn.Add(si);
-                    }
-                    if (unservedInColumn.Count > 0)
-                    {
-                        SortSprinklerIndicesAlongBranch(unservedInColumn, sprinklers, useVerticalBranches);
-                        if (TryDrawChainedStraightBranchesFromFeed(
-                                tr, ms, ctx, branchLayerId, branchW, elevation,
-                                columnMainTap[g].Value, sprinklers, unservedInColumn, useVerticalBranches, served, ref drawnCount) > 0)
-                            continue;
-                    }
-                }
-
-                if (TryDrawStraightBranchFromMainForHead(
-                    tr, ms, ctx, mainPipePts, sprinklers[i], branchLayerId, branchW, elevation,
-                    useVerticalBranches, ref drawnCount))
-                    served.Add(i);
-            }
-
-            subBranchDrawn = RouteSubBranchesFromNearestBranchPipe(
-                tr, ms, ctx, sprinklers, served, branchLayerId, branchW, elevation, mainRunsAlongX, sprinklerSpacingM, ref drawnCount);
-
-            subBranchDrawn += RouteOrphanedSprinklers(
-                tr, ms, ctx, sprinklers, served, branchLayerId, branchW, elevation, mainRunsAlongX, sprinklerSpacingM, ref drawnCount);
-
-            servedHeadCount = served.Count;
-            return drawnCount;
-        }
-
-        /// <summary>
-        /// Final-pass orphan rescue: any sprinkler still unserved by branch geometry is connected to the
-        /// nearest existing branch segment (no distance limit). Sprinklers in the same row or column are
-        /// chained: nearest-branch → first sprinkler → second → … so label runs stay linear.
-        /// </summary>
-        private static int RouteOrphanedSprinklers(
-            Transaction tr,
-            BlockTableRecord ms,
-            BranchRouteContext ctx,
-            List<Point2d> sprinklers,
-            HashSet<int> served,
-            ObjectId branchLayerId,
-            double branchW,
-            double elevation,
-            bool mainRunsAlongX,
-            double sprinklerSpacingM,
-            ref int drawnCount)
-        {
-            if (sprinklers == null || sprinklers.Count == 0 || ctx == null)
-                return 0;
-
-            double snapTol = GetBranchSnapToleranceDu(ctx.Db);
-
-            // Re-collect segments so anything drawn in this transaction is included.
-            var segments = CollectZoneBranchSegments(tr, ms, ctx);
-            if (segments.Count == 0)
-                return 0;
-
-            // Mark geometrically-served sprinklers that the served set may not know about yet.
-            var orphanIndices = new List<int>();
-            for (int i = 0; i < sprinklers.Count; i++)
-            {
-                if (served.Contains(i))
-                    continue;
-                if (IsSprinklerServedByGeometry(sprinklers[i], segments, snapTol))
-                {
-                    served.Add(i);
-                    continue;
-                }
-                orphanIndices.Add(i);
-            }
-
-            if (orphanIndices.Count == 0)
-                return 0;
-
-            bool clusterByX = mainRunsAlongX;
-            bool useVerticalBranches = mainRunsAlongX;
-            double clusterTol = ColumnClusterToleranceM(sprinklerSpacingM);
-
-            int orphanRouted = 0;
-            var groups = BuildIndexGroupsByCoord(sprinklers, orphanIndices, clusterByX, clusterTol);
-            for (int g = 0; g < groups.Count; g++)
-            {
-                orphanRouted += TryRouteGroupAsSegmentChain(
-                    tr, ms, ctx, sprinklers, segments, served, groups[g],
-                    branchLayerId, branchW, elevation,
-                    useVerticalBranches,
-                    double.PositiveInfinity,
-                    ref drawnCount);
-            }
-
-            return orphanRouted;
-        }
-
-        private static bool TryCombRouteBranchesForZone(
-            Database db,
-            Polyline zone,
-            List<Point2d> zoneRing,
-            string zoneBoundaryHex,
-            ObjectId trunkId,
-            List<SprinklerHeadReader2d.FloorRoomOwnership> floorRoomOwnerships,
-            out string errorMessage)
+        private static bool TryCombRouteBranchesForZone(Database db, Polyline zone, List<Point2d> zoneRing, string zoneBoundaryHex, ObjectId trunkId, out string errorMessage)
         {
             errorMessage = null;
             var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.GetDocument(db);
@@ -2940,10 +1426,15 @@ namespace autocad_final.Commands
                     Polyline trunk = null;
                     try { trunk = tr.GetObject(trunkId, OpenMode.ForRead, false) as Polyline; }
                     catch { }
+
                     if (trunk == null)
                     {
-                        errorMessage = "Trunk polyline not found.";
-                        return false;
+                        trunk = FindMainPipeInZoneByLayer(tr, db, zoneRing);
+                        if (trunk == null)
+                        {
+                            errorMessage = "No main pipe found in zone.";
+                            return false;
+                        }
                     }
 
                     var mainPipePts = new List<Point2d>();
@@ -2982,209 +1473,830 @@ namespace autocad_final.Commands
                         return false;
                     }
 
-                    bool mainAlongX = MainRunsPrimarilyAlongX(mainPipePts);
-                    double spacingM = RuntimeSettings.Load().SprinklerSpacingM;
-                    var routeCtx = new BranchRouteContext
-                    {
-                        Db = db,
-                        ZoneRing = zoneRing,
-                        BoundaryHex = zoneBoundaryHex,
-                        FloorRooms = floorRoomOwnerships
-                    };
+                    bool trunkHorizontal = DetermineTrunkOrientation(mainPipePts);
 
                     ObjectId branchLayerId = SprinklerLayers.EnsureMcdBranchPipeLayer(tr, db);
                     double mainW = EstimatePipeWidth(db);
                     double branchW = Math.Max(mainW * 0.66, 1.0);
                     double elevation = zone.Elevation;
 
-                    int drawnCount = DrawSimplePerpendicularBranchesFromMain(
-                        tr, ms, routeCtx, mainPipePts, sprinklers, branchLayerId, branchW, elevation, mainAlongX, spacingM,
-                        out int servedHeads, out int subBranchDrawn);
+                    int drawnCount = RouteMinimalSpanningTree(tr, ms, mainPipePts, sprinklers, zoneRing, db, zoneBoundaryHex, zone, branchLayerId, branchW, elevation, trunkHorizontal);
 
                     tr.Commit();
-                    int total = sprinklers.Count;
-                    int unserved = total - servedHeads;
-                    string dropKind = mainAlongX ? "vertical drops" : "horizontal drops";
-                    errorMessage = servedHeads > 0
-                        ? $"Branches ({dropKind}): {servedHeads}/{total} heads served, {drawnCount} segment(s). Sub-branches: {subBranchDrawn}. Unserved: {unserved}."
-                        : "No perpendicular branch paths could be validated inside the zone.";
-                    return servedHeads > 0;
+                    errorMessage = $"Minimal spanning tree: {drawnCount} branch segments to serve {sprinklers.Count} sprinklers.";
+                    return drawnCount > 0;
                 }
                 catch (Exception ex)
                 {
-                    errorMessage = "Branch routing failed: " + ex.Message;
+                    errorMessage = "Optimized routing error: " + ex.Message;
                     return false;
                 }
             }
         }
 
-        private static Point2d ClosestPointOnPolylineWithArcFraction(List<Point2d> pts, Point2d p, out double arcFrac01)
+        private static RoutingPlan ComputeSingleTapPlan(List<Point2d> mainPipe, List<Point2d> sprinklers, List<Point2d> zoneRing, bool trunkHorizontal)
         {
-            arcFrac01 = 0;
-            if (pts == null || pts.Count == 0)
-                return p;
-            if (pts.Count == 1)
-            {
-                arcFrac01 = 0;
-                return pts[0];
-            }
+            if (sprinklers.Count == 0) return null;
 
+            double centroidX = 0, centroidY = 0;
+            foreach (var s in sprinklers)
+            {
+                centroidX += s.X;
+                centroidY += s.Y;
+            }
+            centroidX /= sprinklers.Count;
+            centroidY /= sprinklers.Count;
+            var centroid = new Point2d(centroidX, centroidY);
+
+            Point2d tapPt = ClosestPointOnPolyline(mainPipe, centroid);
             double totalLen = 0;
-            var segLens = new double[pts.Count - 1];
-            for (int i = 0; i + 1 < pts.Count; i++)
+
+            var group = new List<Point2d>();
+            foreach (var s in sprinklers)
             {
-                double len = pts[i].GetDistanceTo(pts[i + 1]);
-                segLens[i] = len;
-                totalLen += len;
+                group.Add(s);
+                totalLen += tapPt.GetDistanceTo(s) * 1.4;
             }
 
-            double minDist = double.MaxValue;
-            Point2d best = p;
-            double bestArcDist = 0;
-
-            double cum = 0;
-            for (int i = 0; i + 1 < pts.Count; i++)
+            var plan = new RoutingPlan
             {
-                Point2d a = pts[i];
-                Point2d b = pts[i + 1];
-                double segLen = segLens[i];
-                Point2d close = ClosestPointOnSegment(a, b, p);
-                double d = close.GetDistanceTo(p);
-                if (d < minDist)
+                Name = "SingleTap",
+                TapGroups = new List<(Point2d, List<Point2d>)> { (tapPt, group) },
+                TotalBranchLength = totalLen,
+                ComplexityScore = sprinklers.Count
+            };
+            return plan;
+        }
+
+        private static RoutingPlan ComputeTwoEndpointPlan(List<Point2d> mainPipe, List<Point2d> sprinklers, List<Point2d> zoneRing, bool trunkHorizontal)
+        {
+            if (sprinklers.Count == 0 || mainPipe.Count < 2) return null;
+
+            Point2d tapA = mainPipe[0];
+            Point2d tapB = mainPipe[mainPipe.Count - 1];
+
+            var groupA = new List<Point2d>();
+            var groupB = new List<Point2d>();
+            double totalLen = 0;
+
+            foreach (var s in sprinklers)
+            {
+                double dA = tapA.GetDistanceTo(s);
+                double dB = tapB.GetDistanceTo(s);
+                if (dA <= dB)
                 {
-                    minDist = d;
-                    best = close;
-                    double segLenSq = segLen * segLen;
-                    double tParam = segLenSq < 1e-24
-                        ? 0
-                        : ((close.X - a.X) * (b.X - a.X) + (close.Y - a.Y) * (b.Y - a.Y)) / segLenSq;
-                    tParam = Math.Max(0, Math.Min(1, tParam));
-                    bestArcDist = cum + tParam * segLen;
-                }
-                cum += segLen;
-            }
-
-            if (totalLen < MainLineIntersectEps)
-            {
-                arcFrac01 = 0;
-                return best;
-            }
-            arcFrac01 = Math.Max(0, Math.Min(1, bestArcDist / totalLen));
-            return best;
-        }
-
-        /// <returns>-1 = may use trunk; 0 = start auxiliary only; 1 = end auxiliary only.</returns>
-        private static int ClassifyAuxOnlyPile(List<Point2d> mainPipePts, Point2d spr, out double arcT01)
-        {
-            ClosestPointOnPolylineWithArcFraction(mainPipePts, spr, out arcT01);
-            double z = TrunkAuxEndZoneArcFrac;
-            if (z * 2 >= 1.0 - 1e-9)
-                return arcT01 <= 0.5 ? 0 : 1;
-
-            bool startBand = arcT01 <= z;
-            bool endBand = arcT01 >= 1.0 - z;
-            if (startBand && !endBand) return 0;
-            if (endBand && !startBand) return 1;
-            if (startBand && endBand) return arcT01 <= 0.5 ? 0 : 1;
-            return -1;
-        }
-
-        /// <summary>Candidate aux pile is kept only when the sprinkler lies outward from that trunk end (not in the inward transition strip).</summary>
-        private static int FilterAuxPileToOutwardSprinklerOnly(
-            List<Point2d> mainPipePts,
-            Point2d spr,
-            int candidatePile,
-            bool useVerticalBranches)
-        {
-            if (candidatePile != 0 && candidatePile != 1)
-                return -1;
-
-            Point2d endVertex = candidatePile == 0
-                ? mainPipePts[0]
-                : mainPipePts[mainPipePts.Count - 1];
-            double outwardSign = TrunkEndOutwardSign(mainPipePts, endVertex, useVerticalBranches);
-            double coord = useVerticalBranches ? spr.X : spr.Y;
-            double anchor = useVerticalBranches ? endVertex.X : endVertex.Y;
-            return IsOutwardAlongAxis(coord, anchor, outwardSign) ? candidatePile : -1;
-        }
-
-        /// <summary>
-        /// End-zone heads outward from a trunk end only; transition strip toward center uses the main (returns -1).
-        /// </summary>
-        private static int ClassifyAuxPile(
-            List<Point2d> mainPipePts,
-            Point2d spr,
-            bool useVerticalBranches,
-            out double arcT01)
-        {
-            int candidate = -1;
-
-            int arcPile = ClassifyAuxOnlyPile(mainPipePts, spr, out arcT01);
-            if (arcPile == 0 || arcPile == 1)
-                candidate = arcPile;
-
-            if (candidate < 0)
-            {
-                Point2d v0 = mainPipePts[0];
-                Point2d v1 = mainPipePts[mainPipePts.Count - 1];
-                double pad = Math.Max(AuxColumnGroupingEps, 0.02 * v0.GetDistanceTo(v1));
-
-                if (useVerticalBranches)
-                {
-                    double minX = Math.Min(v0.X, v1.X);
-                    double maxX = Math.Max(v0.X, v1.X);
-                    if (spr.X < minX - pad)
-                        candidate = 0;
-                    else if (spr.X > maxX + pad)
-                        candidate = 1;
+                    groupA.Add(s);
+                    totalLen += dA * 1.4;
                 }
                 else
                 {
-                    double minY = Math.Min(v0.Y, v1.Y);
-                    double maxY = Math.Max(v0.Y, v1.Y);
-                    if (spr.Y < minY - pad)
-                        candidate = 0;
-                    else if (spr.Y > maxY + pad)
-                        candidate = 1;
+                    groupB.Add(s);
+                    totalLen += dB * 1.4;
                 }
             }
 
-            if (candidate < 0 && TryPickPerpendicularTapOnMain(mainPipePts, spr, useVerticalBranches, out Point2d tapPerc))
-            {
-                ClosestPointOnPolylineWithArcFraction(mainPipePts, tapPerc, out double tapArc);
-                double z = TrunkAuxEndZoneArcFrac;
-                if (tapArc <= z)
-                    candidate = 0;
-                else if (tapArc >= 1.0 - z)
-                    candidate = 1;
-            }
+            var groups = new List<(Point2d, List<Point2d>)>();
+            if (groupA.Count > 0) groups.Add((tapA, groupA));
+            if (groupB.Count > 0) groups.Add((tapB, groupB));
 
-            return FilterAuxPileToOutwardSprinklerOnly(mainPipePts, spr, candidate, useVerticalBranches);
+            if (groups.Count == 0) return null;
+
+            var plan = new RoutingPlan
+            {
+                Name = "TwoEndpoint",
+                TapGroups = groups,
+                TotalBranchLength = totalLen,
+                ComplexityScore = sprinklers.Count
+            };
+            return plan;
         }
 
-        private static bool TryDrawStraightBranchFromMainForHead(
-            Transaction tr,
-            BlockTableRecord ms,
-            BranchRouteContext ctx,
-            List<Point2d> mainPipePts,
-            Point2d spr,
-            ObjectId branchLayerId,
-            double branchW,
-            double elevation,
-            bool useVerticalBranches,
-            ref int drawnCount)
+        private static RoutingPlan ComputeMultiTapPlan(List<Point2d> mainPipe, List<Point2d> sprinklers, List<Point2d> zoneRing, bool trunkHorizontal, int k)
         {
-            if (!TryPickPerpendicularTapOnMain(mainPipePts, spr, useVerticalBranches, out Point2d tapPerc))
+            if (sprinklers.Count == 0 || k < 1 || mainPipe.Count < 2) return null;
+
+            var sortKey = new List<(double key, int idx)>();
+            for (int i = 0; i < sprinklers.Count; i++)
+            {
+                var s = sprinklers[i];
+                sortKey.Add((trunkHorizontal ? s.X : s.Y, i));
+            }
+            sortKey.Sort((a, b) => a.key.CompareTo(b.key));
+
+            var clusters = new List<List<int>>();
+            if (k >= sprinklers.Count)
+            {
+                for (int i = 0; i < sprinklers.Count; i++)
+                    clusters.Add(new List<int> { sortKey[i].idx });
+            }
+            else
+            {
+                int clusterSize = sprinklers.Count / k;
+                int remainder = sprinklers.Count % k;
+                int idx = 0;
+                for (int c = 0; c < k; c++)
+                {
+                    var cluster = new List<int>();
+                    int sz = clusterSize + (c < remainder ? 1 : 0);
+                    for (int i = 0; i < sz && idx < sortKey.Count; i++, idx++)
+                        cluster.Add(sortKey[idx].idx);
+                    if (cluster.Count > 0)
+                        clusters.Add(cluster);
+                }
+            }
+
+            var tapGroups = new List<(Point2d, List<Point2d>)>();
+            double totalLen = 0;
+
+            foreach (var cluster in clusters)
+            {
+                if (cluster.Count == 0) continue;
+
+                var clusterPts = new List<Point2d>();
+                double centroidX = 0, centroidY = 0;
+                foreach (int i in cluster)
+                {
+                    clusterPts.Add(sprinklers[i]);
+                    centroidX += sprinklers[i].X;
+                    centroidY += sprinklers[i].Y;
+                }
+                centroidX /= cluster.Count;
+                centroidY /= cluster.Count;
+
+                var centroid = new Point2d(centroidX, centroidY);
+                Point2d tapPt = ClosestPointOnPolyline(mainPipe, centroid);
+
+                tapGroups.Add((tapPt, clusterPts));
+                foreach (var pt in clusterPts)
+                    totalLen += tapPt.GetDistanceTo(pt) * 1.4;
+            }
+
+            if (tapGroups.Count == 0) return null;
+
+            var plan = new RoutingPlan
+            {
+                Name = $"MultiTap:k={k}",
+                TapGroups = tapGroups,
+                TotalBranchLength = totalLen,
+                ComplexityScore = sprinklers.Count
+            };
+            return plan;
+        }
+
+        private static bool IsBoxGridPattern(RoutingPlan plan)
+        {
+            if (plan == null || plan.TapGroups == null)
                 return false;
-            return TryDrawPerHeadBranch(tr, ms, ctx, branchLayerId, branchW, elevation, tapPerc, spr, ref drawnCount);
+
+            int tapCount = plan.TapGroups.Count;
+            if (tapCount >= 3)
+                return true;
+
+            if (tapCount == 2)
+            {
+                var tap1 = plan.TapGroups[0];
+                var tap2 = plan.TapGroups[1];
+                if (tap1.sprinklersInGroup.Count >= 2 && tap2.sprinklersInGroup.Count >= 2)
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static bool IsGridPattern(List<Point2d> sprinklers, bool trunkHorizontal)
+        {
+            if (sprinklers.Count < 4) return false;
+
+            var sortKey = new List<(double key, Point2d pt)>();
+            for (int i = 0; i < sprinklers.Count; i++)
+                sortKey.Add((trunkHorizontal ? sprinklers[i].X : sprinklers[i].Y, sprinklers[i]));
+            sortKey.Sort((a, b) => a.key.CompareTo(b.key));
+
+            double avgSpacing = 0;
+            for (int i = 0; i + 1 < sortKey.Count; i++)
+                avgSpacing += Math.Abs(sortKey[i + 1].key - sortKey[i].key);
+            avgSpacing /= Math.Max(sortKey.Count - 1, 1);
+
+            double tolerance = Math.Max(avgSpacing * 0.45, 1.0);
+
+            int columnCount = 0;
+            double lastKey = double.MinValue;
+            for (int i = 0; i < sortKey.Count; i++)
+            {
+                if (Math.Abs(sortKey[i].key - lastKey) > tolerance)
+                {
+                    columnCount++;
+                    lastKey = sortKey[i].key;
+                }
+            }
+
+            return columnCount >= 2 && columnCount <= 4;
+        }
+
+        private static RoutingPlan ComputeGridPlan(List<Point2d> mainPipe, List<Point2d> sprinklers, List<Point2d> zoneRing, bool trunkHorizontal)
+        {
+            if (sprinklers.Count == 0) return null;
+
+            var sortKey = new List<(double key, Point2d pt)>();
+            for (int i = 0; i < sprinklers.Count; i++)
+                sortKey.Add((trunkHorizontal ? sprinklers[i].X : sprinklers[i].Y, sprinklers[i]));
+            sortKey.Sort((a, b) => a.key.CompareTo(b.key));
+
+            double avgSpacing = 0;
+            for (int i = 0; i + 1 < sortKey.Count; i++)
+                avgSpacing += Math.Abs(sortKey[i + 1].key - sortKey[i].key);
+            avgSpacing /= Math.Max(sortKey.Count - 1, 1);
+            double tolerance = Math.Max(avgSpacing * 0.45, 1.0);
+
+            var columns = new List<List<Point2d>>();
+            var currentCol = new List<Point2d> { sortKey[0].pt };
+            for (int i = 1; i < sortKey.Count; i++)
+            {
+                if (Math.Abs(sortKey[i].key - sortKey[i - 1].key) <= tolerance)
+                    currentCol.Add(sortKey[i].pt);
+                else
+                {
+                    columns.Add(currentCol);
+                    currentCol = new List<Point2d> { sortKey[i].pt };
+                }
+            }
+            if (currentCol.Count > 0)
+                columns.Add(currentCol);
+
+            var tapGroups = new List<(Point2d, List<Point2d>)>();
+            double totalLen = 0;
+
+            foreach (var col in columns)
+            {
+                if (col.Count == 0) continue;
+                var sortedCol = new List<Point2d>(col);
+                sortedCol.Sort((a, b) => DistanceToPolyline(mainPipe, a).CompareTo(DistanceToPolyline(mainPipe, b)));
+                Point2d tapPt = ClosestPointOnPolyline(mainPipe, sortedCol[0]);
+                tapGroups.Add((tapPt, sortedCol));
+                foreach (var s in sortedCol)
+                    totalLen += tapPt.GetDistanceTo(s) * 1.4;
+            }
+
+            if (tapGroups.Count == 0) return null;
+
+            var plan = new RoutingPlan
+            {
+                Name = $"Grid:cols={columns.Count}",
+                TapGroups = tapGroups,
+                TotalBranchLength = totalLen,
+                ComplexityScore = sprinklers.Count
+            };
+            return plan;
+        }
+
+        private static int ExecuteRoutingPlan(Transaction tr, BlockTableRecord ms, ObjectId branchLayerId, double branchW, double elevation, RoutingPlan plan, Database db, List<Point2d> zoneRing, string zoneBoundaryHex, List<Point2d> mainPipe)
+        {
+            int drawnCount = 0;
+            bool trunkHorizontal = DetermineTrunkOrientation(mainPipe);
+
+            foreach (var (tapPt, group) in plan.TapGroups)
+            {
+                if (group.Count == 0) continue;
+
+                var sortedGroup = new List<Point2d>(group);
+                sortedGroup.Sort((a, b) => DistanceToPolyline(mainPipe, a).CompareTo(DistanceToPolyline(mainPipe, b)));
+
+                if (sortedGroup.Count == 0) continue;
+
+                if (!BuildOrthogonalPath(tapPt, sortedGroup[0], zoneRing, !trunkHorizontal, out List<Point2d> path1))
+                    continue;
+
+                var branch = CreateBranchPolyline(db, path1, elevation, branchLayerId, branchW);
+                if (branch != null)
+                {
+                    SprinklerXData.ApplyZoneBoundaryTag(branch, zoneBoundaryHex?.Trim() ?? "");
+                    ms.AppendEntity(branch);
+                    tr.AddNewlyCreatedDBObject(branch, true);
+                    drawnCount++;
+                }
+
+                for (int i = 0; i + 1 < sortedGroup.Count; i++)
+                {
+                    if (!BuildOrthogonalPath(sortedGroup[i], sortedGroup[i + 1], zoneRing, !trunkHorizontal, out List<Point2d> pathN))
+                        continue;
+
+                    var brnch = CreateBranchPolyline(db, pathN, elevation, branchLayerId, branchW);
+                    if (brnch != null)
+                    {
+                        SprinklerXData.ApplyZoneBoundaryTag(brnch, zoneBoundaryHex?.Trim() ?? "");
+                        ms.AppendEntity(brnch);
+                        tr.AddNewlyCreatedDBObject(brnch, true);
+                        drawnCount++;
+                    }
+                }
+            }
+
+            return drawnCount;
+        }
+
+        private static int RouteMinimalSpanningTree(Transaction tr, BlockTableRecord ms, List<Point2d> mainPipePts, List<Point2d> sprinklers, List<Point2d> zoneRing, Database db, string zoneBoundaryHex, Polyline zone, ObjectId branchLayerId, double branchW, double elevation, bool trunkHorizontal)
+        {
+            if (sprinklers.Count == 0) return 0;
+
+            var groups = GroupColinearSprinklers(sprinklers, trunkHorizontal);
+            var served = new HashSet<int>();
+            var drawnCount = 0;
+
+            while (served.Count < sprinklers.Count)
+            {
+                double minDist = double.MaxValue;
+                int nextGroupIdx = -1;
+                int nextSprInGroup = -1;
+                Point2d attachPt = Point2d.Origin;
+                bool foundDirectPath = false;
+
+                for (int g = 0; g < groups.Count; g++)
+                {
+                    var group = groups[g];
+                    for (int i = 0; i < group.Count; i++)
+                    {
+                        int sprIdx = group[i];
+                        if (served.Contains(sprIdx)) continue;
+
+                        var spr = sprinklers[sprIdx];
+                        Point2d mainAttach = ClosestPointOnPolyline(mainPipePts, spr);
+
+                        if (BuildOrthogonalPath(mainAttach, spr, zoneRing, !trunkHorizontal, out List<Point2d> pathToMain))
+                        {
+                            double distToMain = DistanceToPolyline(mainPipePts, spr);
+                            if (distToMain < minDist || !foundDirectPath)
+                            {
+                                minDist = distToMain;
+                                nextGroupIdx = g;
+                                nextSprInGroup = i;
+                                attachPt = mainAttach;
+                                foundDirectPath = true;
+                            }
+                        }
+                    }
+                }
+
+                if (!foundDirectPath)
+                {
+                    minDist = double.MaxValue;
+                    for (int g = 0; g < groups.Count; g++)
+                    {
+                        var group = groups[g];
+                        for (int i = 0; i < group.Count; i++)
+                        {
+                            int sprIdx = group[i];
+                            if (served.Contains(sprIdx)) continue;
+
+                            var spr = sprinklers[sprIdx];
+                            Point2d mainAttach = ClosestPointOnPolyline(mainPipePts, spr);
+
+                            if (BuildOrthogonalPath(mainAttach, spr, zoneRing, !trunkHorizontal, out List<Point2d> relayPath))
+                            {
+                                double relayLen = DistanceToPolyline(mainPipePts, spr);
+                                if (relayLen < minDist)
+                                {
+                                    minDist = relayLen;
+                                    nextGroupIdx = g;
+                                    nextSprInGroup = i;
+                                    attachPt = mainAttach;
+                                    foundDirectPath = true;
+                                }
+                                break;
+                            }
+                        }
+                        if (foundDirectPath) break;
+                    }
+
+                    if (!foundDirectPath)
+                    {
+                        for (int i = 0; i < sprinklers.Count; i++)
+                        {
+                            if (served.Contains(i)) continue;
+
+                            var spr = sprinklers[i];
+                            for (int j = 0; j < sprinklers.Count; j++)
+                            {
+                                if (!served.Contains(j)) continue;
+                                var servedSpr = sprinklers[j];
+                                double distToServed = spr.GetDistanceTo(servedSpr);
+
+                                if (BuildOrthogonalPath(servedSpr, spr, zoneRing, !trunkHorizontal, out List<Point2d> pathToServed))
+                                {
+                                    if (distToServed < minDist)
+                                    {
+                                        minDist = distToServed;
+                                        nextGroupIdx = -1;
+                                        nextSprInGroup = i;
+                                        attachPt = servedSpr;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (nextGroupIdx < 0 && nextSprInGroup < 0) break;
+
+                if (nextGroupIdx >= 0)
+                {
+                    var group = groups[nextGroupIdx];
+                    drawnCount += RouteColinearGroup(tr, ms, group, sprinklers, mainPipePts, attachPt, zoneRing, db, zoneBoundaryHex, elevation, branchLayerId, branchW, !trunkHorizontal, served);
+                }
+                else if (nextSprInGroup >= 0)
+                {
+                    var nextSpr = sprinklers[nextSprInGroup];
+                    if (!BuildOrthogonalPath(attachPt, nextSpr, zoneRing, !trunkHorizontal, out List<Point2d> path))
+                    {
+                        Point2d relayPt = CreateRelayPoint(attachPt, nextSpr, zoneRing, !trunkHorizontal);
+                        if (BuildOrthogonalPath(attachPt, relayPt, zoneRing, !trunkHorizontal, out List<Point2d> relayPath))
+                        {
+                            var relayBranch = CreateBranchPolyline(db, relayPath, elevation, branchLayerId, branchW);
+                            if (relayBranch != null)
+                            {
+                                SprinklerXData.ApplyZoneBoundaryTag(relayBranch, zoneBoundaryHex?.Trim() ?? "");
+                                ms.AppendEntity(relayBranch);
+                                tr.AddNewlyCreatedDBObject(relayBranch, true);
+                                drawnCount++;
+                            }
+                        }
+
+                        if (BuildOrthogonalPath(relayPt, nextSpr, zoneRing, !trunkHorizontal, out List<Point2d> finalPath))
+                        {
+                            var finalBranch = CreateBranchPolyline(db, finalPath, elevation, branchLayerId, branchW);
+                            if (finalBranch != null)
+                            {
+                                SprinklerXData.ApplyZoneBoundaryTag(finalBranch, zoneBoundaryHex?.Trim() ?? "");
+                                ms.AppendEntity(finalBranch);
+                                tr.AddNewlyCreatedDBObject(finalBranch, true);
+                                drawnCount++;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        var branch = CreateBranchPolyline(db, path, elevation, branchLayerId, branchW);
+                        if (branch != null)
+                        {
+                            SprinklerXData.ApplyZoneBoundaryTag(branch, zoneBoundaryHex?.Trim() ?? "");
+                            ms.AppendEntity(branch);
+                            tr.AddNewlyCreatedDBObject(branch, true);
+                            drawnCount++;
+                        }
+                    }
+
+                    served.Add(nextSprInGroup);
+                }
+            }
+
+            return drawnCount;
+        }
+
+        private static List<List<int>> GroupColinearSprinklers(List<Point2d> sprinklers, bool trunkHorizontal)
+        {
+            var groups = new List<List<int>>();
+            if (sprinklers.Count == 0) return groups;
+
+            var sortKey = new List<(double key, int idx)>();
+            for (int i = 0; i < sprinklers.Count; i++)
+                sortKey.Add((trunkHorizontal ? sprinklers[i].Y : sprinklers[i].X, i));
+            sortKey.Sort((a, b) => a.key.CompareTo(b.key));
+
+            // Decide which sprinklers belong to the SAME branch line (a line running
+            // perpendicular to the main) versus separate lines, using the distribution of
+            // gaps between consecutive perpendicular coordinates:
+            //  - Sprinklers on one branch line share (nearly) the same coordinate -> tiny gaps.
+            //  - Distinct branch lines are separated by the much larger line spacing.
+            // We split those two populations at the largest multiplicative jump (a natural
+            // break). When the gaps are uniform there is NO such jump - the sprinklers are
+            // evenly stacked (e.g. lying along the main pipe's own axis) and must NOT be
+            // chained to each other; each is then treated as its own line so its branch taps
+            // the main directly and emerges to the side, rather than running sprinkler-to-
+            // sprinkler along the main.
+            //
+            // The old formula capped the tolerance at 0.5 drawing units, which split real
+            // perpendicular lines into singletons (each head tapping the main on its own).
+            var posGaps = new List<double>();
+            for (int i = 0; i + 1 < sortKey.Count; i++)
+            {
+                double g = Math.Abs(sortKey[i + 1].key - sortKey[i].key);
+                if (g > 1e-9) posGaps.Add(g);
+            }
+            posGaps.Sort();
+
+            double tolerance;
+            if (posGaps.Count == 0)
+            {
+                // All coincide on this axis -> a single branch line.
+                tolerance = 0.5;
+            }
+            else
+            {
+                double bestRatio = 1.0;
+                int splitIdx = -1;
+                for (int i = 1; i < posGaps.Count; i++)
+                {
+                    double r = posGaps[i] / Math.Max(posGaps[i - 1], 1e-9);
+                    if (r > bestRatio)
+                    {
+                        bestRatio = r;
+                        splitIdx = i;
+                    }
+                }
+
+                if (splitIdx >= 0 && bestRatio >= 2.0)
+                {
+                    // Clear two-tier structure: place the threshold between the largest
+                    // intra-line scatter gap and the smallest inter-line spacing gap.
+                    tolerance = 0.5 * (posGaps[splitIdx - 1] + posGaps[splitIdx]);
+                }
+                else
+                {
+                    // Uniform spacing: treat every sprinkler as its own line so nothing is
+                    // chained across these gaps (covers heads stacked along the main).
+                    tolerance = 0.4 * posGaps[0];
+                }
+            }
+
+            var currentGroup = new List<int> { sortKey[0].idx };
+            for (int i = 1; i < sortKey.Count; i++)
+            {
+                if (Math.Abs(sortKey[i].key - sortKey[i - 1].key) <= tolerance)
+                    currentGroup.Add(sortKey[i].idx);
+                else
+                {
+                    groups.Add(currentGroup);
+                    currentGroup = new List<int> { sortKey[i].idx };
+                }
+            }
+            if (currentGroup.Count > 0)
+                groups.Add(currentGroup);
+
+            return groups;
+        }
+
+        private static int RouteColinearGroup(Transaction tr, BlockTableRecord ms, List<int> group, List<Point2d> sprinklers, List<Point2d> mainPipePts, Point2d mainAttachPt, List<Point2d> zoneRing, Database db, string zoneBoundaryHex, double elevation, ObjectId branchLayerId, double branchW, bool verticalFirst, HashSet<int> served)
+        {
+            if (group.Count == 0) return 0;
+
+            var unserved = new List<int>();
+            foreach (int idx in group)
+                if (!served.Contains(idx))
+                    unserved.Add(idx);
+
+            if (unserved.Count == 0) return 0;
+
+            // A vertical branch (column) runs along Y and its heads share an X; a horizontal
+            // branch (row) runs along X and shares a Y. verticalFirst already encodes this.
+            bool branchAlongY = verticalFirst;
+            unserved.Sort((a, b) => (branchAlongY ? sprinklers[a].Y : sprinklers[a].X).CompareTo(branchAlongY ? sprinklers[b].Y : sprinklers[b].X));
+
+            // Locate where the main crosses this branch line. The incoming mainAttachPt is the
+            // perpendicular-closest point on the main, which on a slanted main is offset from
+            // the line and forces an L. Re-derive the crossing by intersecting the main with
+            // the branch line (same X for a column, same Y for a row) so the tap is straight.
+            int refLocal = 0;
+            double refBest = double.MaxValue;
+            for (int i = 0; i < unserved.Count; i++)
+            {
+                double d = sprinklers[unserved[i]].GetDistanceTo(mainAttachPt);
+                if (d < refBest) { refBest = d; refLocal = i; }
+            }
+            double fixedCoord = branchAlongY ? sprinklers[unserved[refLocal]].X : sprinklers[unserved[refLocal]].Y;
+
+            Point2d crossing = mainAttachPt;
+            if (TryMainPointAtCoord(mainPipePts, fixedCoord, branchAlongY, out var cross))
+                crossing = cross;
+
+            // Sprinklers can sit on BOTH sides of the crossing, so chain OUTWARD from the main
+            // on each side: main -> closest head in that direction -> next -> ... Each side
+            // taps the main at the crossing rather than running one long line through it.
+            double tapCoord = branchAlongY ? crossing.Y : crossing.X;
+
+            var lowSide = new List<int>();   // along-axis coord <= tapCoord
+            var highSide = new List<int>();  // along-axis coord >  tapCoord
+            foreach (int idx in unserved)
+            {
+                double a = branchAlongY ? sprinklers[idx].Y : sprinklers[idx].X;
+                if (a <= tapCoord) lowSide.Add(idx);
+                else highSide.Add(idx);
+            }
+            lowSide.Reverse(); // descending => sprinkler nearest the crossing first
+
+            int drawnCount = 0;
+            drawnCount += ChainSideFromMain(tr, ms, lowSide, sprinklers, mainPipePts, crossing, zoneRing, db, zoneBoundaryHex, elevation, branchLayerId, branchW, verticalFirst, served);
+            drawnCount += ChainSideFromMain(tr, ms, highSide, sprinklers, mainPipePts, crossing, zoneRing, db, zoneBoundaryHex, elevation, branchLayerId, branchW, verticalFirst, served);
+            return drawnCount;
+        }
+
+        /// <summary>
+        /// Returns the point on the (possibly slanted) main polyline whose X (matchX=true) or
+        /// Y (matchX=false) equals <paramref name="value"/>, by intersecting the appropriate
+        /// gridline with the main. Used to tap the main directly below/beside a branch line so
+        /// the first branch segment is a straight drop rather than an L.
+        /// </summary>
+        private static bool TryMainPointAtCoord(List<Point2d> pts, double value, bool matchX, out Point2d result)
+        {
+            result = default;
+            if (pts == null || pts.Count < 2) return false;
+
+            for (int i = 0; i + 1 < pts.Count; i++)
+            {
+                var a = pts[i];
+                var b = pts[i + 1];
+                double ca = matchX ? a.X : a.Y;
+                double cb = matchX ? b.X : b.Y;
+                double lo = Math.Min(ca, cb);
+                double hi = Math.Max(ca, cb);
+                if (value < lo - 1e-9 || value > hi + 1e-9) continue;
+
+                double denom = cb - ca;
+                double t = Math.Abs(denom) < 1e-12 ? 0.0 : (value - ca) / denom;
+                if (t < 0) t = 0; else if (t > 1) t = 1;
+                result = new Point2d(a.X + t * (b.X - a.X), a.Y + t * (b.Y - a.Y));
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Chains one side of a branch line outward from the main: the first sprinkler taps
+        /// the main (aligned to its own column/row for a straight drop, falling back to
+        /// <paramref name="crossing"/>) and each subsequent one connects to the previous, so a
+        /// single continuous run is produced and no head is tapped on its own.
+        /// </summary>
+        private static int ChainSideFromMain(Transaction tr, BlockTableRecord ms, List<int> orderedSide, List<Point2d> sprinklers, List<Point2d> mainPipePts, Point2d crossing, List<Point2d> zoneRing, Database db, string zoneBoundaryHex, double elevation, ObjectId branchLayerId, double branchW, bool verticalFirst, HashSet<int> served)
+        {
+            int drawnCount = 0;
+            bool matchX = verticalFirst; // vertical branch shares X with its main tap
+
+            for (int i = 0; i < orderedSide.Count; i++)
+            {
+                int sprIdx = orderedSide[i];
+                var spr = sprinklers[sprIdx];
+
+                Point2d connectFrom;
+                if (i == 0)
+                {
+                    // Tap the main aligned to THIS head's column/row so the first segment is a
+                    // straight drop. Fall back to the crossing if the head is past the main end.
+                    double coord = matchX ? spr.X : spr.Y;
+                    connectFrom = TryMainPointAtCoord(mainPipePts, coord, matchX, out var tap) ? tap : crossing;
+                }
+                else
+                {
+                    connectFrom = sprinklers[orderedSide[i - 1]];
+                }
+
+                if (!BuildOrthogonalPath(connectFrom, spr, zoneRing, verticalFirst, out List<Point2d> path))
+                {
+                    Point2d relayPt = CreateRelayPoint(connectFrom, spr, zoneRing, verticalFirst);
+                    if (BuildOrthogonalPath(connectFrom, relayPt, zoneRing, verticalFirst, out List<Point2d> relayPath))
+                    {
+                        var relayBranch = CreateBranchPolyline(db, relayPath, elevation, branchLayerId, branchW);
+                        if (relayBranch != null)
+                        {
+                            SprinklerXData.ApplyZoneBoundaryTag(relayBranch, zoneBoundaryHex?.Trim() ?? "");
+                            ms.AppendEntity(relayBranch);
+                            tr.AddNewlyCreatedDBObject(relayBranch, true);
+                            drawnCount++;
+                        }
+                    }
+
+                    if (BuildOrthogonalPath(relayPt, spr, zoneRing, verticalFirst, out List<Point2d> finalPath))
+                    {
+                        var finalBranch = CreateBranchPolyline(db, finalPath, elevation, branchLayerId, branchW);
+                        if (finalBranch != null)
+                        {
+                            SprinklerXData.ApplyZoneBoundaryTag(finalBranch, zoneBoundaryHex?.Trim() ?? "");
+                            ms.AppendEntity(finalBranch);
+                            tr.AddNewlyCreatedDBObject(finalBranch, true);
+                            drawnCount++;
+                        }
+                    }
+                }
+                else
+                {
+                    var branch = CreateBranchPolyline(db, path, elevation, branchLayerId, branchW);
+                    if (branch != null)
+                    {
+                        SprinklerXData.ApplyZoneBoundaryTag(branch, zoneBoundaryHex?.Trim() ?? "");
+                        ms.AppendEntity(branch);
+                        tr.AddNewlyCreatedDBObject(branch, true);
+                        drawnCount++;
+                    }
+                }
+
+                served.Add(sprIdx);
+            }
+
+            return drawnCount;
+        }
+
+        private static Point2d CreateRelayPoint(Point2d attachPt, Point2d targetSpr, List<Point2d> zoneRing, bool verticalFirst)
+        {
+            double step = 1.0;
+            Point2d relayPt = attachPt;
+
+            for (int iter = 0; iter < 50; iter++)
+            {
+                Point2d candidate = verticalFirst
+                    ? new Point2d(attachPt.X, attachPt.Y + step * (iter + 1))
+                    : new Point2d(attachPt.X + step * (iter + 1), attachPt.Y);
+
+                if (!PointInPolygon(zoneRing, candidate))
+                    break;
+
+                if (BuildOrthogonalPath(candidate, targetSpr, zoneRing, verticalFirst, out List<Point2d> testPath))
+                {
+                    relayPt = candidate;
+                    break;
+                }
+
+                relayPt = candidate;
+            }
+
+            return relayPt;
+        }
+
+        private static Polyline FindMainPipeInZoneByLayer(Transaction tr, Database db, List<Point2d> zoneRing)
+        {
+            if (zoneRing == null || zoneRing.Count < 3) return null;
+
+            var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+            var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+
+            foreach (ObjectId id in ms)
+            {
+                if (id.IsErased) continue;
+                Polyline pl = null;
+                try { pl = tr.GetObject(id, OpenMode.ForRead, false) as Polyline; }
+                catch { continue; }
+                if (pl == null) continue;
+
+                string layerName = pl.Layer.ToLower();
+                if (!layerName.Contains("main pipe") && !layerName.Contains("pipe main") && !layerName.Contains("mcd - main"))
+                    continue;
+
+                var pts = PolylineToPoint2dList(pl);
+                if (pts.Count < 2) continue;
+
+                int inside = 0;
+                foreach (var p in pts)
+                    if (PointInPolygon(zoneRing, p))
+                        inside++;
+
+                if (inside >= 1)
+                    return pl;
+            }
+
+            return null;
+        }
+
+        private static bool DetermineTrunkOrientation(List<Point2d> pts)
+        {
+            if (pts == null || pts.Count < 2) return true;
+            double minX = double.MaxValue, minY = double.MaxValue, maxX = double.MinValue, maxY = double.MinValue;
+            for (int i = 0; i < pts.Count; i++)
+            {
+                var p = pts[i];
+                if (p.X < minX) minX = p.X;
+                if (p.X > maxX) maxX = p.X;
+                if (p.Y < minY) minY = p.Y;
+                if (p.Y > maxY) maxY = p.Y;
+            }
+            return (maxY - minY) >= (maxX - minX);
         }
 
         private static Point2d ClosestPointOnPolyline(List<Point2d> pts, Point2d p)
         {
-            return ClosestPointOnPolylineWithArcFraction(pts, p, out _);
+            double minDist = double.MaxValue;
+            Point2d best = p;
+            for (int i = 0; i + 1 < pts.Count; i++)
+            {
+                var closest = ClosestPointOnSegment(pts[i], pts[i + 1], p);
+                double d = closest.GetDistanceTo(p);
+                if (d < minDist)
+                {
+                    minDist = d;
+                    best = closest;
+                }
+            }
+            return best;
         }
 
-
+        private static double DistanceToPolyline(List<Point2d> pts, Point2d p)
+        {
+            double minDist = double.MaxValue;
+            for (int i = 0; i + 1 < pts.Count; i++)
+            {
+                var closest = ClosestPointOnSegment(pts[i], pts[i + 1], p);
+                double d = closest.GetDistanceTo(p);
+                if (d < minDist)
+                    minDist = d;
+            }
+            return minDist;
+        }
 
         private static Point2d ClosestPointOnSegment(Point2d a, Point2d b, Point2d p)
         {
@@ -3219,8 +2331,8 @@ namespace autocad_final.Commands
                 return path.Count >= 2;
             }
 
-            path = null;
-            return false;
+            path = new List<Point2d> { from, to };
+            return true;
         }
 
         private static bool SegmentInsideRing(List<Point2d> ring, Point2d p0, Point2d p1)

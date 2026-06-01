@@ -925,3 +925,11 @@ SESSION START  2026-05-28 17:24:30.567  pid=13404
 [17:24:30.600] #0014 T001 [TryRoute] TryOrthogonalConnectInside done
 [17:24:30.601] #0015 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
 [17:24:30.624] #0016 T001 [TryRouteMainPipeForZone] entities committed, done
+
+══════════════════════════════════════════════════════
+SESSION START  2026-06-01 12:26:09.900  pid=8984
+══════════════════════════════════════════════════════
+[12:26:09.901] #0001 T001 [PlaceReducers] command start log=C:\Users\admin\source\repos\autocad-final\autocad-final\bin\Debug\AgentDebug.log
+[12:26:11.180] #0002 T001 [PlaceReducers] shaft selected id=(2608142291376)
+[12:26:11.186] #0003 T001 [PlaceReducers] zone handle=4EDC4 ringVerts=4
+[12:26:11.316] #0004 T001 [PlaceReducers] DONE: Reducers placed: 148.
