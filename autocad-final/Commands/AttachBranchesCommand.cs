@@ -3315,6 +3315,12 @@ namespace autocad_final.Commands
 
             SprinklerHeadReader2d.TryEnumerateSprinklerHeadEntitiesInZoneForRouting(
                 db, zoneRing, zoneBoundaryHandleHex, floorRoomOwnerships, out var allHeadEntities, out _);
+
+            // The room-parented read includes heads inside parented rooms that lie OUTSIDE the zone polygon
+            // (straddling rooms). Keep it for the room branch pass below; the strict in-zone set is for the main
+            // fallback passes only.
+            var roomParentedHeadEntities = allHeadEntities ?? new List<(Point2d pt, ObjectId id)>();
+
             // Fallback passes must use the same strict in-zone set as FIX 3, not room-parented floor reads.
             if (allHeadEntities != null && allHeadEntities.Count > 0)
             {
@@ -3345,6 +3351,9 @@ namespace autocad_final.Commands
             catch { /* ignore */ }
 
             List<ObjectId> skippedNoBranchIds = ComputeHeadsWithoutBranchConnectivity(allHeadEntities, laterals, clusterTol);
+            // The room branch pass must also see parented-room heads beyond the zone polygon (the strict set above
+            // drops them), otherwise the part of a straddling room outside this zone is never routed.
+            List<ObjectId> roomBranchHeadIds = ComputeHeadsWithoutBranchConnectivity(roomParentedHeadEntities, laterals, clusterTol);
 
             using (doc.LockDocument())
             using (var tr = db.TransactionManager.StartTransaction())
@@ -3661,7 +3670,7 @@ namespace autocad_final.Commands
                     ms,
                     zoneRing,
                     zoneBoundaryHandleHex,
-                    skippedNoBranchIds,
+                    roomBranchHeadIds,
                     headsRecoveredByRoomSubMain,
                     out int subMainRoomsOk,
                     out int subMainFeederVerts,
@@ -4315,11 +4324,12 @@ namespace autocad_final.Commands
             if (headIdsRecoveredFromSubMain == null) return;
             if (string.IsNullOrWhiteSpace(zoneBoundaryHandleHex)) return;
 
-            if (!TryFindMainPipePolylinesInZone(db, zoneRing, out List<ObjectId> trunkIdsSnapshot, out _) ||
-                trunkIdsSnapshot == null || trunkIdsSnapshot.Count == 0)
+            // Supply lines for the room: the zone's branch pipes (preferred) plus its mains (fallback).
+            RoomSubMainBranchRouting.CollectZoneSupply(
+                tr, ms, zoneRing, zoneBoundaryHandleHex,
+                out var branchSupply, out var mainSupply);
+            if (branchSupply.Count == 0 && mainSupply.Count == 0)
                 return;
-
-            var tapCandidates = new List<ObjectId>(trunkIdsSnapshot);
 
             var skippedPts = new List<(ObjectId id, Point2d pt)>();
             foreach (var oid in skippedNoBranchIds)
@@ -4359,8 +4369,9 @@ namespace autocad_final.Commands
                 List<Point2d> ring = PolylineClosedBoundaryRingSampler2d.ConvertPolylineToRingPoints(pl);
                 if (ring == null || ring.Count < 3) continue;
 
-                Point2d cen = RingCentroid2d(ring);
-                if (!FindShaftsInsideBoundary.IsPointInPolygonRing(zoneRing, cen))
+                // Only route a room during the pass for the zone holding the majority of the room's area, so the
+                // room is fed exclusively from its assigned zone's main (not whichever zone its centroid lands in).
+                if (!RoomMajorityZoneMatches(db, pl, zoneBoundaryHandleHex))
                     continue;
 
                 double a = double.PositiveInfinity;
@@ -4413,55 +4424,29 @@ namespace autocad_final.Commands
                 List<Point2d> roomRing = PolylineClosedBoundaryRingSampler2d.ConvertPolylineToRingPoints(roomPl);
                 if (roomRing == null || roomRing.Count < 3) continue;
 
-                Point2d anchor = RingCentroid2d(roomRing);
-                var anchor3 = new Point3d(anchor.X, anchor.Y, roomPl.Elevation);
-
-                Polyline bestMain = null;
-                double bestD2 = double.PositiveInfinity;
-                foreach (var mid in tapCandidates)
-                {
-                    if (mid.IsErased) continue;
-                    Polyline pl = null;
-                    try { pl = tr.GetObject(mid, OpenMode.ForRead, false) as Polyline; }
-                    catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
-                    if (!RoomSubMainBranchRouting.IsEligibleTapMain(pl)) continue;
-                    Point3d cp = pl.GetClosestPointTo(anchor3, false);
-                    double dx = cp.X - anchor.X;
-                    double dy = cp.Y - anchor.Y;
-                    double d2 = dx * dx + dy * dy;
-                    if (d2 < bestD2)
-                    {
-                        bestD2 = d2;
-                        bestMain = pl;
-                    }
-                }
-
-                if (bestMain == null) continue;
-
-                if (!RoomSubMainBranchRouting.TryRouteFeederAndBranches(
+                if (!RoomSubMainBranchRouting.TryRouteRoomBranches(
                         tr,
                         db,
                         ms,
-                        roomPl,
-                        bestMain,
+                        roomPl.Elevation,
                         roomRing,
                         zoneRing,
                         zoneBoundaryHandleHex,
+                        branchSupply,
+                        mainSupply,
                         kvp.Value,
-                        out int fv,
                         out int bc,
                         out List<ObjectId> recv,
                         out string err))
                 {
                     if (ed != null && !string.IsNullOrWhiteSpace(err))
-                        ed.WriteMessage("\nRoom sub-main (auto) skipped one room: " + err + "\n");
+                        ed.WriteMessage("\nRoom branches (auto) skipped one room: " + err + "\n");
                     continue;
                 }
 
                 if (bc <= 0) continue;
 
                 roomsRoutedOk++;
-                feederVertsSum += fv;
                 branchPolylinesSum += bc;
                 if (recv != null)
                 {
@@ -4471,18 +4456,19 @@ namespace autocad_final.Commands
             }
         }
 
-        private static Point2d RingCentroid2d(List<Point2d> ring)
+        /// <summary>
+        /// True when the zone holding the majority of <paramref name="roomOutline"/>'s area is the zone identified by
+        /// <paramref name="zoneBoundaryHandleHex"/>. Used so a straddling room is routed (and tapped) only during its
+        /// assigned zone's pass. Outer floor parcels resolve to no single majority room and are excluded upstream.
+        /// </summary>
+        private static bool RoomMajorityZoneMatches(Database db, Polyline roomOutline, string zoneBoundaryHandleHex)
         {
-            double sx = 0, sy = 0;
-            int n = ring?.Count ?? 0;
-            for (int i = 0; i < n; i++)
-            {
-                sx += ring[i].X;
-                sy += ring[i].Y;
-            }
-
-            double d = Math.Max(1, n);
-            return new Point2d(sx / d, sy / d);
+            if (db == null || roomOutline == null || string.IsNullOrWhiteSpace(zoneBoundaryHandleHex))
+                return false;
+            if (!RoomParentZoneResolver.TryGetMajorityParentZoneForRoomOutline(db, roomOutline, out _, out string majorityZoneHex, out _))
+                return false;
+            return !string.IsNullOrWhiteSpace(majorityZoneHex)
+                && string.Equals(majorityZoneHex.Trim(), zoneBoundaryHandleHex.Trim(), StringComparison.OrdinalIgnoreCase);
         }
 
         private enum BranchRole

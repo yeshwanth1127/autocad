@@ -6,6 +6,7 @@ using Autodesk.AutoCAD.Geometry;
 using autocad_final.Agent;
 using autocad_final.AreaWorkflow;
 using autocad_final.Blocks;
+using autocad_final.Geometry;
 using autocad_final.Validation;
 
 namespace autocad_final.Workflows.Placement
@@ -58,11 +59,16 @@ namespace autocad_final.Workflows.Placement
             double offsetDu = cfg.SprinklerToBoundaryDistanceM;
             double spacing = cfg.SprinklerSpacingM;
 
+            // Lay the room's grid in the room's own (possibly tilted) frame so heads align to the room edges.
+            var roomFrame = RoomLocalFrame.FromRing(
+                PolylineClosedBoundaryRingSampler2d.ConvertPolylineToRingPoints(roomOutline));
+
             if (!SprinklerGridInPolygonWorkflow.TryComputeInteriorGrid(
                     doc,
                     roomOutline,
                     offsetDu,
                     spacing,
+                    roomFrame,
                     out List<Point2d> offsetRing,
                     out List<Point2d> gridPts,
                     out string gridErr))

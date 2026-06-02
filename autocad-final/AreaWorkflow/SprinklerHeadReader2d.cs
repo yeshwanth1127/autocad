@@ -319,16 +319,14 @@ namespace autocad_final.AreaWorkflow
             if (zoneRing == null || zoneRing.Count < 3)
                 return false;
 
-            // Direct zone containment check (no entity tag needed for routing validation)
-            if (ZoneContainsPointTolerant(zoneRing, p, boundaryTolDu))
-                return true;
-
-            // Room ownership check if zone hex is provided
+            // A point inside a floor-room belongs ONLY to that room's majority parent zone (exclusive),
+            // decided before plain geometry — same rule as PointBelongsToZoneForRouting.
             if (!string.IsNullOrWhiteSpace(zoneHex) &&
                 TryFindContainingRoomOwner(floorRoomOwnerships, p, out string ownerHex))
-                return string.Equals(ownerHex, zoneHex.Trim(), StringComparison.OrdinalIgnoreCase);
+                return ZoneHexEquals(ownerHex, zoneHex);
 
-            return false;
+            // Outside every room: plain zone containment.
+            return ZoneContainsPointTolerant(zoneRing, p, boundaryTolDu);
         }
 
         private static double BoundaryProximityTolRouting(Database db)
@@ -364,21 +362,36 @@ namespace autocad_final.AreaWorkflow
             double boundaryTolDu,
             Entity ent)
         {
-            if (!string.IsNullOrWhiteSpace(zoneHex) && ent != null &&
-                SprinklerXData.TryGetZoneBoundaryHandle(ent, out string hx) &&
-                !string.IsNullOrWhiteSpace(hx) &&
-                string.Equals(hx.Trim(), zoneHex.Trim(), StringComparison.OrdinalIgnoreCase))
+            // 1. An explicit head zone tag wins outright.
+            if (HeadZoneTagEquals(ent, zoneHex))
                 return true;
 
-            // Zone polygon containment (interior, boundary strip, or slight numerical offset) qualifies first.
-            if (ZoneContainsPointTolerant(zoneRing, p, boundaryTolDu))
-                return true;
-
+            // 2. A head inside a floor-room belongs ONLY to that room's majority parent zone, regardless of which
+            //    zone polygon it geometrically sits in. This must be decided before plain geometry so a room that
+            //    straddles two zones is fed exclusively from its assigned zone's main.
             if (!string.IsNullOrWhiteSpace(zoneHex) &&
                 TryFindContainingRoomOwner(roomOwnerships, p, out string ownerHex))
-                return string.Equals(ownerHex, zoneHex.Trim(), StringComparison.OrdinalIgnoreCase);
+                return ZoneHexEquals(ownerHex, zoneHex);
 
-            return false;
+            // 3. Outside every room: plain zone-polygon containment (interior, boundary strip, or slight offset).
+            return ZoneContainsPointTolerant(zoneRing, p, boundaryTolDu);
+        }
+
+        /// <summary>True when the entity carries a zone-boundary tag equal to <paramref name="zoneHex"/>.</summary>
+        private static bool HeadZoneTagEquals(Entity ent, string zoneHex)
+        {
+            if (string.IsNullOrWhiteSpace(zoneHex) || ent == null)
+                return false;
+            return SprinklerXData.TryGetZoneBoundaryHandle(ent, out string hx)
+                && ZoneHexEquals(hx, zoneHex);
+        }
+
+        /// <summary>Case-insensitive, whitespace-trimmed comparison of two zone boundary handle strings.</summary>
+        private static bool ZoneHexEquals(string a, string b)
+        {
+            if (string.IsNullOrWhiteSpace(a) || string.IsNullOrWhiteSpace(b))
+                return false;
+            return string.Equals(a.Trim(), b.Trim(), StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool TryFindContainingRoomOwner(List<FloorRoomOwnership> rooms, Point2d p, out string ownerHex)

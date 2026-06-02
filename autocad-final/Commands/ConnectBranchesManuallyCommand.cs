@@ -1102,8 +1102,12 @@ namespace autocad_final.Commands
         }
 
         /// <summary>
-        /// Erases branch polylines that serve selected heads within the allowed zone scope only.
-        /// Records other heads on those polylines that share the same zone tag.
+        /// Connectivity-preserving cleanup of the branch pipes that touch the selected heads.
+        /// A candidate lateral is erased ONLY when doing so leaves every non-selected head still on it
+        /// adequately fed (it keeps &gt;= MinBranchSegmentsPerSprinkler incident segments through other pipes).
+        /// Otherwise the lateral is kept so neighbours (e.g. the heads either side of a pulled-out head)
+        /// are never orphaned. This intentionally leaves a selected head connected both to its old row and
+        /// to its new feed — removing existing connections only "where necessary" without breaking hydraulics.
         /// </summary>
         private static int EraseExistingBranchConnectionsToHeads(
             Transaction tr,
@@ -1134,28 +1138,24 @@ namespace autocad_final.Commands
             catch { }
             double connTol2 = connTol * connTol;
 
-            // Snapshot all sprinkler heads once so we can find which ones shared erased laterals.
+            // Snapshot all sprinkler heads once so we can tell which heads sit on a candidate lateral.
             var allHeadPts = new List<(ObjectId id, Point2d pt, double elevZ, string zoneHex)>();
-            if (orphanedHeadPtsOut != null)
+            foreach (ObjectId hid in ms)
             {
-                foreach (ObjectId hid in ms)
-                {
-                    if (hid.IsErased) continue;
-                    Entity hent = null;
-                    try { hent = tr.GetObject(hid, OpenMode.ForRead, false) as Entity; }
-                    catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
-                    if (hent == null || !SprinklerLayers.IsSprinklerHeadEntity(tr, hent))
-                        continue;
-                    if (!TryGetHeadPoint(hent, out Point3d hp3))
-                        continue;
-                    SprinklerXData.TryGetZoneBoundaryHandle(hent, out string zHex);
-                    allHeadPts.Add((hid, new Point2d(hp3.X, hp3.Y), hp3.Z, zHex ?? string.Empty));
-                }
+                if (hid.IsErased) continue;
+                Entity hent = null;
+                try { hent = tr.GetObject(hid, OpenMode.ForRead, false) as Entity; }
+                catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                if (hent == null || !SprinklerLayers.IsSprinklerHeadEntity(tr, hent))
+                    continue;
+                if (!TryGetHeadPoint(hent, out Point3d hp3))
+                    continue;
+                SprinklerXData.TryGetZoneBoundaryHandle(hent, out string zHex);
+                allHeadPts.Add((hid, new Point2d(hp3.X, hp3.Y), hp3.Z, zHex ?? string.Empty));
             }
 
-            var orphanIds = new HashSet<ObjectId>();
-
-            int erased = 0;
+            // Collect branch-pipe polylines that touch at least one selected head — erase candidates.
+            var candidateIds = new List<ObjectId>();
             foreach (ObjectId id in ms)
             {
                 if (id.IsErased) continue;
@@ -1177,74 +1177,129 @@ namespace autocad_final.Commands
                 {
                     Point3d v3;
                     try { v3 = pl.GetPoint3dAt(vi); } catch { continue; }
-                    var v2 = new Point2d(v3.X, v3.Y);
                     foreach (var hp in headPositions)
                     {
-                        double dx = v2.X - hp.X, dy = v2.Y - hp.Y;
+                        double dx = v3.X - hp.X, dy = v3.Y - hp.Y;
                         if (dx * dx + dy * dy <= connTol2) { touchesSelected = true; break; }
                     }
                 }
 
-                if (!touchesSelected) continue;
+                if (touchesSelected)
+                    candidateIds.Add(id);
+            }
 
-                // Before erasing, record any heads on this polyline that were NOT selected
-                // and belong to the same zone.
-                if (orphanedHeadPtsOut != null)
+            // Connectivity-preserving erase. A candidate lateral is removed only when every NON-selected
+            // head sitting on it would still keep >= MinBranchSegmentsPerSprinkler incident segments through
+            // OTHER pipes after the erase (i.e. removal provably orphans nobody). Otherwise it is kept so the
+            // heads either side of a pulled-out head stay fed. Decisions are applied live (we erase as we go)
+            // so each check sees the effect of earlier erases in this same pass.
+            int erased = 0;
+            foreach (ObjectId pid in candidateIds)
+            {
+                if (pid.IsErased) continue;
+                Polyline pl = null;
+                try { pl = tr.GetObject(pid, OpenMode.ForRead, false) as Polyline; }
+                catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                if (pl == null || pl.IsErased) continue;
+
+                bool safeToErase = true;
+                foreach (var h in allHeadPts)
                 {
-                    double elev = 0;
-                    try { elev = pl.Elevation; } catch { }
-                    foreach (var (hid, hpt, helev, hzoneHex) in allHeadPts)
+                    if (selectedHeadIds != null && selectedHeadIds.Contains(h.id))
+                        continue;
+                    if (!HeadLiesOnPolyline(pl, h.pt, connTol2))
+                        continue;
+                    // Connections this neighbour would retain if pl were erased (live count, excluding pl).
+                    if (CountIncidentBranchSegmentsAtHeadExcluding(tr, ms, h.pt, connTol, pid)
+                        < MinBranchSegmentsPerSprinkler)
                     {
-                        if (selectedHeadIds != null && selectedHeadIds.Contains(hid))
-                            continue;
-                        if (orphanIds.Contains(hid))
-                            continue;
-
-                        string orphanZoneEffective = hzoneHex ?? string.Empty;
-                        if (allowedZoneHexes != null && allowedZoneHexes.Count > 0)
-                        {
-                            if (string.IsNullOrEmpty(orphanZoneEffective) || !allowedZoneHexes.Contains(orphanZoneEffective))
-                            {
-                                if (!TryInferUniqueAllowedZoneAtPoint(hpt, allowedZoneHexes, zoneRingsByHex, out string inferredZh)
-                                    || string.IsNullOrEmpty(inferredZh))
-                                    continue;
-                                orphanZoneEffective = inferredZh;
-                            }
-                        }
-
-                        // Check if this head touches the polyline.
-                        bool onPoly = false;
-                        for (int vi = 0; vi < nv && !onPoly; vi++)
-                        {
-                            Point3d v3;
-                            try { v3 = pl.GetPoint3dAt(vi); } catch { continue; }
-                            double dx = v3.X - hpt.X, dy = v3.Y - hpt.Y;
-                            if (dx * dx + dy * dy <= connTol2) { onPoly = true; }
-                        }
-                        if (!onPoly)
-                        {
-                            try
-                            {
-                                var cp = pl.GetClosestPointTo(new Point3d(hpt.X, hpt.Y, elev), false);
-                                double dx = cp.X - hpt.X, dy = cp.Y - hpt.Y;
-                                if (dx * dx + dy * dy <= connTol2) onPoly = true;
-                            }
-                            catch { }
-                        }
-
-                        if (onPoly)
-                        {
-                            orphanIds.Add(hid);
-                            orphanedHeadPtsOut.Add((hpt, helev, orphanZoneEffective));
-                        }
+                        safeToErase = false;
+                        break;
                     }
                 }
 
-                ent.UpgradeOpen();
-                try { ent.Erase(); erased++; } catch { }
+                if (!safeToErase)
+                    continue;
+
+                pl.UpgradeOpen();
+                try { pl.Erase(); erased++; } catch { }
             }
 
             return erased;
+        }
+
+        /// <summary>True when a head position is essentially coincident with any vertex or segment of the polyline.</summary>
+        private static bool HeadLiesOnPolyline(Polyline pl, Point2d headPt, double tol2)
+        {
+            if (pl == null || pl.IsErased)
+                return false;
+            try
+            {
+                int nv = pl.NumberOfVertices;
+                if (nv < 1)
+                    return false;
+                if (nv == 1)
+                {
+                    var p = pl.GetPoint2dAt(0);
+                    double dx0 = p.X - headPt.X, dy0 = p.Y - headPt.Y;
+                    return dx0 * dx0 + dy0 * dy0 <= tol2;
+                }
+                for (int i = 0; i < nv - 1; i++)
+                {
+                    var a = pl.GetPoint2dAt(i);
+                    var b = pl.GetPoint2dAt(i + 1);
+                    if (HeadTouchesBranchSegment(headPt, a, b, tol2))
+                        return true;
+                }
+                return false;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Like <see cref="CountIncidentBranchSegmentsAtHead"/> but ignores one polyline (used to ask
+        /// "how many connections would this head keep if that lateral were erased?").
+        /// </summary>
+        private static int CountIncidentBranchSegmentsAtHeadExcluding(
+            Transaction tr,
+            BlockTableRecord ms,
+            Point2d headPt,
+            double tol,
+            ObjectId excludeId)
+        {
+            if (tr == null || ms == null)
+                return 0;
+
+            double tol2 = tol * tol;
+            int count = 0;
+
+            foreach (ObjectId id in ms)
+            {
+                if (id.IsErased || id == excludeId) continue;
+                Polyline pl = null;
+                try { pl = tr.GetObject(id, OpenMode.ForRead, false) as Polyline; }
+                catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                if (pl == null || pl.Closed || !IsBranchPipeLayerName(pl.Layer))
+                    continue;
+
+                try
+                {
+                    int nv = pl.NumberOfVertices;
+                    for (int i = 0; i < nv - 1; i++)
+                    {
+                        var a = pl.GetPoint2dAt(i);
+                        var b = pl.GetPoint2dAt(i + 1);
+                        if (HeadTouchesBranchSegment(headPt, a, b, tol2))
+                            count++;
+                    }
+                }
+                catch { /* ignore */ }
+            }
+
+            return count;
         }
 
         private static void MergeUniquePipeCandidates(List<PipeCandidate> into, List<PipeCandidate> add)

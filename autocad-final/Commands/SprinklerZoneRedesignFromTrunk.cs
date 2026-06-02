@@ -1452,6 +1452,11 @@ namespace autocad_final.Commands
                         for (int i = 0; i + 1 < mainPipePts.Count; i++)
                             mainSegments.Add((mainPipePts[i], mainPipePts[i + 1]));
 
+                    // Heads inside a room parented to this zone are routed separately with the room-local router
+                    // (handles tilted rooms and parts beyond the zone boundary); the world-axis planner serves
+                    // only the open / non-room heads.
+                    var floorRoomOwnerships = SprinklerHeadReader2d.BuildFloorRoomOwnerships(db);
+
                     var sprinklers = new List<Point2d>();
                     foreach (ObjectId id in ms)
                     {
@@ -1472,13 +1477,9 @@ namespace autocad_final.Commands
                             continue;
 
                         if (!PointInPolygon(zoneRing, p)) continue;
+                        if (SprinklerHeadReader2d.IsPointInsideFloorRoomParentedToZone(db, zoneRing, zoneBoundaryHex, p, floorRoomOwnerships))
+                            continue;
                         sprinklers.Add(p);
-                    }
-
-                    if (sprinklers.Count == 0)
-                    {
-                        errorMessage = "No sprinklers found in zone.";
-                        return false;
                     }
 
                     bool trunkHorizontal = DetermineTrunkOrientation(mainPipePts);
@@ -1488,11 +1489,24 @@ namespace autocad_final.Commands
                     double branchW = Math.Max(mainW * 0.66, 1.0);
                     double elevation = zone.Elevation;
 
-                    int drawnCount = RouteMinimalSpanningTree(tr, ms, mainSegments, sprinklers, zoneRing, db, zoneBoundaryHex, zone, branchLayerId, branchW, elevation, trunkHorizontal);
+                    int drawnCount = 0;
+                    if (sprinklers.Count > 0)
+                        drawnCount += RouteMinimalSpanningTree(tr, ms, mainSegments, sprinklers, zoneRing, db, zoneBoundaryHex, zone, branchLayerId, branchW, elevation, trunkHorizontal);
+
+                    // Route each room parented to this zone from the zone's branches (just drawn) + main, covering
+                    // the whole room including any part that straddles into a neighboring zone.
+                    int roomBranchCount = RouteParentedRooms(tr, db, ms, zoneRing, zoneBoundaryHex, elevation, floorRoomOwnerships);
+                    drawnCount += roomBranchCount;
+
+                    if (drawnCount == 0)
+                    {
+                        errorMessage = "No sprinklers found to route in this zone.";
+                        return false;
+                    }
 
                     tr.Commit();
-                    errorMessage = $"Minimal spanning tree: {drawnCount} branch segments to serve {sprinklers.Count} sprinklers.";
-                    return drawnCount > 0;
+                    errorMessage = $"Route branches: {drawnCount} segments ({sprinklers.Count} open heads + {roomBranchCount} room-branch segments).";
+                    return true;
                 }
                 catch (Exception ex)
                 {
@@ -1500,6 +1514,50 @@ namespace autocad_final.Commands
                     return false;
                 }
             }
+        }
+
+        /// <summary>
+        /// Routes every floor room whose majority parent zone is <paramref name="zoneBoundaryHex"/> using the
+        /// room-local branch router, tapping this zone's branch pipes (with the main as fallback). Returns the
+        /// number of room branch segments drawn. The outer floor parcel is already excluded from
+        /// <paramref name="ownerships"/>.
+        /// </summary>
+        private static int RouteParentedRooms(
+            Transaction tr,
+            Database db,
+            BlockTableRecord ms,
+            List<Point2d> zoneRing,
+            string zoneBoundaryHex,
+            double elevation,
+            List<SprinklerHeadReader2d.FloorRoomOwnership> ownerships)
+        {
+            if (ownerships == null || ownerships.Count == 0 || string.IsNullOrWhiteSpace(zoneBoundaryHex))
+                return 0;
+
+            RoomSubMainBranchRouting.CollectZoneSupply(
+                tr, ms, zoneRing, zoneBoundaryHex,
+                out var branchSupply, out var mainSupply);
+            if (branchSupply.Count == 0 && mainSupply.Count == 0)
+                return 0;
+
+            string zh = zoneBoundaryHex.Trim();
+            int total = 0;
+            foreach (var room in ownerships)
+            {
+                if (room?.Ring == null || room.Ring.Count < 3) continue;
+                if (string.IsNullOrWhiteSpace(room.ParentZoneHex)
+                    || !string.Equals(room.ParentZoneHex.Trim(), zh, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (RoomSubMainBranchRouting.TryRouteRoomBranches(
+                        tr, db, ms, elevation, room.Ring, zoneRing, zoneBoundaryHex,
+                        branchSupply, mainSupply, onlyTheseHeadIds: null,
+                        out int bc, out _, out _))
+                {
+                    total += bc;
+                }
+            }
+            return total;
         }
 
         private static RoutingPlan ComputeSingleTapPlan(List<Point2d> mainPipe, List<Point2d> sprinklers, List<Point2d> zoneRing, bool trunkHorizontal)

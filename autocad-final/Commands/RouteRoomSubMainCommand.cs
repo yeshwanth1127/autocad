@@ -13,8 +13,8 @@ using AcApp = Autodesk.AutoCAD.ApplicationServices.Application;
 namespace autocad_final.Commands
 {
     /// <summary>
-    /// Routes an orthogonal feeder from a picked zone main into a room (sub-main on main layer), then
-    /// orthogonal branches from that feeder to room heads tagged to the parent zone.
+    /// Picks a room outline, resolves its majority parent zone, and chains the room's heads along the room grid,
+    /// connecting each chain to the nearest branch pipe of that zone (main pipe as fallback).
     /// </summary>
     public class RouteRoomSubMainCommand
     {
@@ -29,8 +29,8 @@ namespace autocad_final.Commands
             var db = doc.Database;
 
             ed.WriteMessage(
-                "\nRoom sub-main: pick the room outline, then the zone main polyline to tap. " +
-                "Creates an L-shaped feeder on the main layer plus orthogonal branches to room heads.\n");
+                "\nRoom branches: pick the room outline. Heads are chained along the room grid and connected to the " +
+                "nearest branch pipe of the room's zone (main pipe as fallback).\n");
 
             if (!SelectPolygonBoundary.TrySelectOnNamedLayer(
                     ed,
@@ -39,17 +39,6 @@ namespace autocad_final.Commands
                     out var room,
                     out ObjectId roomId))
             {
-                ed.WriteMessage("\nCancelled.\n");
-                return;
-            }
-
-            var peoMain = new PromptEntityOptions("\nSelect MAIN pipe polyline to tap (zone main on main-pipe layer): ");
-            peoMain.SetRejectMessage("\nSelect a polyline on a main pipe layer.\n");
-            peoMain.AddAllowedClass(typeof(Polyline), exactMatch: true);
-            var perMain = ed.GetEntity(peoMain);
-            if (perMain.Status != PromptStatus.OK)
-            {
-                try { room.Dispose(); } catch { /* ignore */ }
                 ed.WriteMessage("\nCancelled.\n");
                 return;
             }
@@ -90,50 +79,44 @@ namespace autocad_final.Commands
                 using (doc.LockDocument())
                 using (var tr = db.TransactionManager.StartTransaction())
                 {
-                    var mainPl = tr.GetObject(perMain.ObjectId, OpenMode.ForRead, false) as Polyline;
-                    if (mainPl == null || mainPl.IsErased)
-                    {
-                        tr.Commit();
-                        PaletteCommandErrorUi.ShowDialogThenCommandLine(ed, "Main pipe selection is invalid.", MessageBoxIcon.Warning);
-                        return;
-                    }
-                    if (!RoomSubMainBranchRouting.IsEligibleTapMain(mainPl))
+                    var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                    var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+
+                    RoomSubMainBranchRouting.CollectZoneSupply(
+                        tr, ms, zoneRing, zoneHex,
+                        out var branchSupply, out var mainSupply);
+                    if (branchSupply.Count == 0 && mainSupply.Count == 0)
                     {
                         tr.Commit();
                         PaletteCommandErrorUi.ShowDialogThenCommandLine(
                             ed,
-                            "Selected polyline is not a valid main pipe (wrong layer, or is a trunk cap).",
+                            "No branch or main pipe found in the room's zone. Route the main pipe and branches first.",
                             MessageBoxIcon.Warning);
                         return;
                     }
 
-                    var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
-                    var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
-
-                    if (!RoomSubMainBranchRouting.TryRouteFeederAndBranches(
+                    if (!RoomSubMainBranchRouting.TryRouteRoomBranches(
                             tr,
                             db,
                             ms,
-                            room,
-                            mainPl,
+                            room.Elevation,
                             roomRing,
                             zoneRing,
                             zoneHex,
+                            branchSupply,
+                            mainSupply,
                             onlyTheseHeadIds: null,
-                            out int feederVerts,
                             out int branchPls,
                             out _,
                             out string routeErr))
                     {
                         tr.Abort();
-                        PaletteCommandErrorUi.ShowDialogThenCommandLine(ed, routeErr ?? "Room sub-main routing failed.", MessageBoxIcon.Warning);
+                        PaletteCommandErrorUi.ShowDialogThenCommandLine(ed, routeErr ?? "Room branch routing failed.", MessageBoxIcon.Warning);
                         return;
                     }
 
                     tr.Commit();
-                    ed.WriteMessage(
-                        "\nRoom sub-main complete. Feeder vertices=" + feederVerts.ToString() +
-                        ", branch polylines=" + branchPls.ToString() + ".\n");
+                    ed.WriteMessage("\nRoom branches complete. Branch polylines=" + branchPls.ToString() + ".\n");
                 }
 
                 try { ed.Regen(); } catch { /* ignore */ }

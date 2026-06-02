@@ -30,6 +30,22 @@ namespace autocad_final.Workflows.Placement
             out List<Point2d> offsetRing,
             out List<Point2d> gridPoints,
             out string errorMessage)
+            => TryComputeInteriorGrid(doc, sourceBoundary, offsetDu, spacing, frame: null, out offsetRing, out gridPoints, out errorMessage);
+
+        /// <param name="frame">
+        /// Optional room-local frame. When supplied, the interior lattice is generated in the room's own (rotated)
+        /// axes and the chosen points are returned in world coordinates, so a tilted room gets a grid aligned to its
+        /// edges. Null keeps the world-axis grid (floor placement).
+        /// </param>
+        public static bool TryComputeInteriorGrid(
+            Document doc,
+            Polyline sourceBoundary,
+            double offsetDu,
+            double spacing,
+            RoomLocalFrame frame,
+            out List<Point2d> offsetRing,
+            out List<Point2d> gridPoints,
+            out string errorMessage)
         {
             offsetRing = null;
             gridPoints = null;
@@ -86,7 +102,13 @@ namespace autocad_final.Workflows.Placement
                 return false;
             }
 
-            PolygonUtils.GetBoundingBox(offsetRing, out double minBoundaryX, out double minBoundaryY, out _, out _);
+            // For a tilted room, generate the lattice in the room's local (rotated) axes so heads align to the
+            // room edges; the world offsetRing is kept for the out param and head insertion. Identity frame =
+            // world grid (unchanged).
+            bool useFrame = frame != null && !frame.IsIdentity;
+            List<Point2d> ringForGrid = useFrame ? frame.ToLocal(offsetRing) : offsetRing;
+
+            PolygonUtils.GetBoundingBox(ringForGrid, out double minBoundaryX, out double minBoundaryY, out _, out _);
             double baseOriginX = minBoundaryX;
             double baseOriginY = minBoundaryY;
 
@@ -105,20 +127,20 @@ namespace autocad_final.Workflows.Placement
                     double gridOriginX = ox[xi];
                     double gridOriginY = oy[yi];
 
-                    var gridCandidates = GridPlacementService.GenerateInteriorLatticeCandidates(offsetRing, spacing, gridOriginX, gridOriginY);
+                    var gridCandidates = GridPlacementService.GenerateInteriorLatticeCandidates(ringForGrid, spacing, gridOriginX, gridOriginY);
                     if (gridCandidates.Count == 0)
                     {
                         latticeTooDense = true;
                         continue;
                     }
 
-                    var filteredGrid = PointFilter.FilterInsidePolygon(gridCandidates, offsetRing, spacing);
+                    var filteredGrid = PointFilter.FilterInsidePolygon(gridCandidates, ringForGrid, spacing);
                     if (filteredGrid.Count == 0)
                         continue;
 
                     var finalPoints = BoundaryCoverageService.EnsureBoundaryCoverage(
                         filteredGrid,
-                        offsetRing,
+                        ringForGrid,
                         filteredGrid,
                         spacing,
                         offsetDu,
@@ -126,9 +148,9 @@ namespace autocad_final.Workflows.Placement
                         gridOriginY);
 
                     finalPoints = SnapToGrid(finalPoints, gridOriginX, gridOriginY, spacing);
-                    finalPoints = PointFilter.FilterInsidePolygon(finalPoints, offsetRing, spacing);
+                    finalPoints = PointFilter.FilterInsidePolygon(finalPoints, ringForGrid, spacing);
 
-                    double worst = WorstEdgeDistance(offsetRing, finalPoints);
+                    double worst = WorstEdgeDistance(ringForGrid, finalPoints);
                     if (worst < bestWorstEdgeDist)
                     {
                         bestWorstEdgeDist = worst;
@@ -145,7 +167,8 @@ namespace autocad_final.Workflows.Placement
                 return false;
             }
 
-            gridPoints = bestFinal ?? new List<Point2d>();
+            var chosen = bestFinal ?? new List<Point2d>();
+            gridPoints = useFrame ? frame.ToWorld(chosen) : chosen;
             return true;
         }
 

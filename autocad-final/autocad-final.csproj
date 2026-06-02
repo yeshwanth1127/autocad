@@ -210,6 +210,7 @@
     <Compile Include="Geometry\PolygonVerticalHalfPlaneClip2d.cs" />
     <Compile Include="Geometry\PolygonHorizontalHalfPlaneClip2d.cs" />
     <Compile Include="Geometry\RegionBooleanIntersection2d.cs" />
+    <Compile Include="Geometry\RoomLocalFrame.cs" />
     <Compile Include="Geometry\PolylineClosedBoundaryRingSampler2d.cs" />
     <Compile Include="Geometry\DrawingUnitsHelper.cs" />
     <Compile Include="Geometry\DrawingMutationHelper.cs" />
