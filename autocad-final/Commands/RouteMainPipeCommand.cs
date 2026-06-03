@@ -372,6 +372,23 @@ namespace autocad_final.Commands
                 double w = NfpaBranchPipeSizing.GetMainTrunkPolylineDisplayWidthDu(db);
                 if (w <= 0) w = 1.0;
 
+                // Decide whether the shaft→trunk connector is a negligible stub. When the shaft sits
+                // almost on the trunk axis, the connector foot lands mid-trunk and produces a tiny
+                // perpendicular nub (the "T" stem). Below half a sprinkler spacing we omit that stub
+                // and instead snap the trunk so its axis passes through the shaft center — the main
+                // pipe then runs straight through the riser. Branches attach to the trunk (not the
+                // connector) so connectivity is unaffected. Shaft-outside risers cross the boundary
+                // and stay well above the threshold, so their connector is kept as-is.
+                double minConnectorDu = spacingDu * 0.5;
+                double connLenDu = PolylinePathLength(route.ConnectorPath);
+                bool omitConnector = route.ConnectorPath == null
+                    || route.ConnectorPath.Count < 2
+                    || connLenDu <= minConnectorDu;
+
+                var trunkPathToDraw = route.TrunkPath;
+                if (omitConnector)
+                    trunkPathToDraw = SnapTrunkPathToShaftAxis(trunkPathToDraw, route.TrunkIsHorizontal, shaft);
+
                 // Draw trunk (trim ends so it doesn't touch the zone boundary).
                 var trunk = new Polyline();
                 trunk.SetDatabaseDefaults(db);
@@ -380,7 +397,7 @@ namespace autocad_final.Commands
                 trunk.ConstantWidth = w;
                 trunk.Elevation = zone.Elevation;
                 trunk.Normal = zone.Normal;
-                var trimmedTrunkPath = TryTrimTrunkPathEnds(db, route.TrunkIsHorizontal, route.TrunkPath);
+                var trimmedTrunkPath = TryTrimTrunkPathEnds(db, route.TrunkIsHorizontal, trunkPathToDraw);
                 for (int i = 0; i < trimmedTrunkPath.Count; i++)
                     trunk.AddVertexAt(i, trimmedTrunkPath[i], 0, 0, 0);
                 trunk.Closed = false;
@@ -389,21 +406,30 @@ namespace autocad_final.Commands
                 ms.AppendEntity(trunk);
                 tr.AddNewlyCreatedDBObject(trunk, true);
 
-                // Draw connector.
-                var conn = new Polyline();
-                conn.SetDatabaseDefaults(db);
-                conn.LayerId = pipeLayerId;
-                conn.Color = Color.FromColorIndex(ColorMethod.ByLayer, 256);
-                conn.ConstantWidth = w;
-                conn.Elevation = zone.Elevation;
-                conn.Normal = zone.Normal;
-                for (int i = 0; i < route.ConnectorPath.Count; i++)
-                    conn.AddVertexAt(i, route.ConnectorPath[i], 0, 0, 0);
-                conn.Closed = false;
-                SprinklerXData.TagAsConnector(conn);
-                SprinklerXData.ApplyZoneBoundaryTag(conn, boundaryHandleHex);
-                ms.AppendEntity(conn);
-                tr.AddNewlyCreatedDBObject(conn, true);
+                // Draw connector only when it is a meaningful length.
+                if (!omitConnector)
+                {
+                    var conn = new Polyline();
+                    conn.SetDatabaseDefaults(db);
+                    conn.LayerId = pipeLayerId;
+                    conn.Color = Color.FromColorIndex(ColorMethod.ByLayer, 256);
+                    conn.ConstantWidth = w;
+                    conn.Elevation = zone.Elevation;
+                    conn.Normal = zone.Normal;
+                    for (int i = 0; i < route.ConnectorPath.Count; i++)
+                        conn.AddVertexAt(i, route.ConnectorPath[i], 0, 0, 0);
+                    conn.Closed = false;
+                    SprinklerXData.TagAsConnector(conn);
+                    SprinklerXData.ApplyZoneBoundaryTag(conn, boundaryHandleHex);
+                    ms.AppendEntity(conn);
+                    tr.AddNewlyCreatedDBObject(conn, true);
+                }
+                else
+                {
+                    AgentLog.Write("TryRouteMainPipeForZone",
+                        "Connector omitted (length " + connLenDu.ToString("F1") + "du <= " + minConnectorDu.ToString("F1")
+                        + "du); trunk snapped to shaft axis.");
+                }
 
                 tr.Commit();
             }
@@ -458,6 +484,39 @@ namespace autocad_final.Commands
                 }
             }
             return best;
+        }
+
+        /// <summary>
+        /// Snaps a straight axis-aligned trunk path onto the shaft center so the main pipe runs
+        /// through the riser. For a horizontal trunk every vertex takes the shaft's Y; for a vertical
+        /// trunk every vertex takes the shaft's X. The along-axis span (endpoints) is preserved.
+        /// Only used when the shaft-to-trunk connector stub was negligible, so the shift is small.
+        /// </summary>
+        private static List<Point2d> SnapTrunkPathToShaftAxis(List<Point2d> trunkPath, bool trunkHorizontal, Point3d shaft)
+        {
+            if (trunkPath == null || trunkPath.Count == 0)
+                return trunkPath;
+
+            var snapped = new List<Point2d>(trunkPath.Count);
+            for (int i = 0; i < trunkPath.Count; i++)
+            {
+                var p = trunkPath[i];
+                snapped.Add(trunkHorizontal
+                    ? new Point2d(p.X, shaft.Y)
+                    : new Point2d(shaft.X, p.Y));
+            }
+            return snapped;
+        }
+
+        /// <summary>Total length of a polyline path expressed as an ordered list of 2D points.</summary>
+        private static double PolylinePathLength(List<Point2d> path)
+        {
+            if (path == null || path.Count < 2)
+                return 0.0;
+            double len = 0.0;
+            for (int i = 1; i < path.Count; i++)
+                len += path[i - 1].GetDistanceTo(path[i]);
+            return len;
         }
 
         private static void EraseExistingMainPipeEntitiesForZone(Transaction tr, BlockTableRecord ms, string boundaryHandleHex)
