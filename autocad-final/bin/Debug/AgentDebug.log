@@ -2430,3 +2430,55 @@ SESSION START  2026-06-03 07:14:15.079  pid=26160
 [07:14:24.215] #0023 T001 [TryRoute] TryOrthogonalConnectInside done
 [07:14:24.215] #0024 T001 [TryRouteMainPipeForZone] TryRoute succeeded (center_l), drawing entities
 [07:14:24.226] #0025 T001 [TryRouteMainPipeForZone] entities committed, done
+
+══════════════════════════════════════════════════════
+SESSION START  2026-06-03 07:28:08.729  pid=26936
+══════════════════════════════════════════════════════
+[07:28:08.730] #0001 T001 [CBM] ConnectBranchesManually entered
+[07:28:14.462] #0002 T001 [CBM] selection OK count=4 — opening transaction
+[07:28:14.471] #0003 T001 [CBM] mains=1 branches=0 feeds=1
+[07:28:14.536] #0004 T001 [CBM] work resolved count=4 zones=1
+[07:28:14.537] #0005 T001 [CBM] EraseExistingBranchConnections start
+[07:28:14.573] #0006 T001 [CBM] EraseExistingBranchConnections done erased=2 orphaned=0
+[07:28:14.580] #0007 T001 [CBM] main draw loop start groups=2
+[07:28:14.581] #0008 T001 [CBM] bucket #1 size=2
+[07:28:14.582] #0009 T001 [CBM] bucket #1 multi-head path start
+[07:28:14.584] #0010 T001 [CBM] bucket #1 hop-routing start hopCount=2
+[07:28:14.585] #0011 T001 [CBM]   hop 1 TrySelectBestValidatedOrthogonalPath start
+[07:28:14.596] #0012 T001 [CBM]   hop 1 route OK verts=2
+[07:28:14.596] #0013 T001 [CBM]   hop 2 TrySelectBestValidatedOrthogonalPath start
+[07:28:14.597] #0014 T001 [CBM]   hop 2 route OK verts=2
+[07:28:14.597] #0015 T001 [CBM] bucket #1 hop-routing done failed=False legs=2
+[07:28:14.598] #0016 T001 [CBM] bucket #1 CollapseOrthogonalVertices
+[07:28:14.598] #0017 T001 [CBM] bucket #1 ExistingBranchPolylineMatchesResolvedRoute start
+[07:28:14.605] #0018 T001 [CBM] bucket #1 ExistingBranchPolylineMatchesResolvedRoute done isDup=False
+[07:28:14.605] #0019 T001 [CBM] bucket #1 TryAppendSegmentPairsAlongPath start legs=2
+[07:28:14.616] #0020 T001 [CBM] bucket #1 TryAppendSegmentPairsAlongPath done segs=2
+[07:28:14.617] #0021 T001 [CBM] bucket #1 complete created=2
+[07:28:14.617] #0022 T001 [CBM] bucket #2 size=2
+[07:28:14.618] #0023 T001 [CBM] bucket #2 multi-head path start
+[07:28:14.618] #0024 T001 [CBM] bucket #2 hop-routing start hopCount=2
+[07:28:14.618] #0025 T001 [CBM]   hop 1 TrySelectBestValidatedOrthogonalPath start
+[07:28:14.619] #0026 T001 [CBM]   hop 1 route OK verts=2
+[07:28:14.619] #0027 T001 [CBM]   hop 2 TrySelectBestValidatedOrthogonalPath start
+[07:28:14.620] #0028 T001 [CBM]   hop 2 route OK verts=2
+[07:28:14.620] #0029 T001 [CBM] bucket #2 hop-routing done failed=False legs=2
+[07:28:14.621] #0030 T001 [CBM] bucket #2 CollapseOrthogonalVertices
+[07:28:14.621] #0031 T001 [CBM] bucket #2 ExistingBranchPolylineMatchesResolvedRoute start
+[07:28:14.626] #0032 T001 [CBM] bucket #2 ExistingBranchPolylineMatchesResolvedRoute done isDup=False
+[07:28:14.626] #0033 T001 [CBM] bucket #2 TryAppendSegmentPairsAlongPath start legs=2
+[07:28:14.635] #0034 T001 [CBM] bucket #2 TryAppendSegmentPairsAlongPath done segs=2
+[07:28:14.636] #0035 T001 [CBM] bucket #2 complete created=4
+[07:28:14.636] #0036 T001 [CBM] main draw done created=4 — entering ReconnectOrphanAdjacentSegments
+[07:28:14.639] #0037 T001 [Reconnect] enter manualWork=4
+[07:28:14.642] #0038 T001 [Reconnect] processing zone=53295 chainAlongX=False bucket=2688261
+[07:28:14.653] #0039 T001 [Reconnect] CollectSprinklersOnManualLine start
+[07:28:14.659] #0040 T001 [CollectLine] total=2450 rejZoneRing=2189 rejBucket=243 rejZoneHex=0 accepted=18 lineBucket=2688261 bucket=0.3
+[07:28:14.662] #0041 T001 [Reconnect] CollectSprinklersOnManualLine done rowHeads=18
+[07:28:14.662] #0042 T001 [Reconnect] processing zone=53295 chainAlongX=False bucket=2688251
+[07:28:14.673] #0043 T001 [Reconnect] CollectSprinklersOnManualLine start
+[07:28:14.677] #0044 T001 [CollectLine] total=2450 rejZoneRing=2189 rejBucket=243 rejZoneHex=0 accepted=18 lineBucket=2688251 bucket=0.3
+[07:28:14.677] #0045 T001 [Reconnect] CollectSprinklersOnManualLine done rowHeads=18
+[07:28:14.679] #0046 T001 [Reconnect] return drawn=0
+[07:28:14.679] #0047 T001 [CBM] ReconnectOrphanAdjacentSegments done reconnected=0
+[07:28:14.681] #0048 T001 [CBM] transaction committed

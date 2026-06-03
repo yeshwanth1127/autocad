@@ -4436,7 +4436,9 @@ namespace autocad_final.Commands
             var seg = new Polyline();
             seg.SetDatabaseDefaults(db);
             seg.LayerId = branchLayerId;
-            seg.Color = Color.FromColorIndex(ColorMethod.ByLayer, 256);
+            // Branches drawn by manual connect are forced white (ACI 7) so user-made connections
+            // stand out from auto-routed branches that inherit their layer colour.
+            seg.Color = Color.FromColorIndex(ColorMethod.ByAci, 7);
             seg.ConstantWidth = branchWidth;
             seg.Elevation = elevationZ;
             seg.Closed = false;
