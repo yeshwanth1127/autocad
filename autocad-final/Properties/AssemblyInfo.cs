@@ -33,6 +33,8 @@ using autocad_final;
 [assembly: CommandClass(typeof(ZoneCreation1Command))]
 [assembly: CommandClass(typeof(ZoneCreation2Command))]
 [assembly: CommandClass(typeof(FixZonesCommand))]
+[assembly: CommandClass(typeof(CreateStandardLayersCommand))]
+[assembly: CommandClass(typeof(InsertStandardBlockCommand))]
 [assembly: ExtensionApplication(typeof(SprinklerPaletteExtensionApplication))]
 
 // General Information about an assembly is controlled through the following

@@ -106,6 +106,8 @@
     <Compile Include="UI\PlaceSprinklersPaletteAction.cs" />
     <Compile Include="UI\FixZonesPaletteAction.cs" />
     <Compile Include="UI\InitializeStandardsPaletteAction.cs" />
+    <Compile Include="UI\CreateStandardLayersPaletteAction.cs" />
+    <Compile Include="UI\InsertStandardBlockPaletteAction.cs" />
     <Compile Include="UI\ZoneCreation1PaletteAction.cs" />
     <Compile Include="UI\ZoneCreation2PaletteAction.cs" />
     <Compile Include="UI\SprinklerPaletteZoneResults.cs" />
@@ -137,6 +139,8 @@
     <Compile Include="Commands\SprinklerZoneRedesignFromTrunk.cs" />
     <Compile Include="Commands\SprinklerDesignCommand.cs" />
     <Compile Include="Commands\InitializeStandardsCommand.cs" />
+    <Compile Include="Commands\CreateStandardLayersCommand.cs" />
+    <Compile Include="Commands\InsertStandardBlockCommand.cs" />
     <Compile Include="Commands\SelectShaftPointCommand.cs" />
     <Compile Include="Commands\ZoneTestCommand.cs" />
     <Compile Include="Commands\FixZoneBoundaryCommand.cs" />
@@ -174,6 +178,7 @@
     <Compile Include="Blocks\SprinklerBlockService.cs" />
     <Compile Include="Blocks\StandardBlockDefinitions.cs" />
     <Compile Include="Blocks\WblockExportService.cs" />
+    <Compile Include="Blocks\WblockImporter.cs" />
     <Compile Include="AreaWorkflow\CheckSprinklersAndFixWorkflow.cs" />
     <Compile Include="AreaWorkflow\FixOnSlantWorkflow.cs" />
     <Compile Include="AreaWorkflow\FloorBoundaryAutoDiscovery.cs" />

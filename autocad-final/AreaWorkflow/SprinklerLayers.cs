@@ -471,6 +471,55 @@ namespace autocad_final.AreaWorkflow
             EnsureMcdRoomBoundaryLayer(tr, db);
         }
 
+        /// <summary>
+        /// Ensures every standard layer used by the plugin exists (creating any that are missing) with its
+        /// standard color. Existing layers keep their objects; only missing layers are added.
+        /// Returns the number of layers that were newly created.
+        /// </summary>
+        public static int EnsureAllStandardLayers(Transaction tr, Database db)
+        {
+            var lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
+
+            int createdBefore = 0;
+
+            // (layerName, aci) for every current standard layer.
+            var standards = new (string Name, short Aci)[]
+            {
+                // Input / boundary layers
+                (WorkLayer,                       WorkLayerAciBlue),
+                (McdFloorBoundaryLayer,           WorkLayerAciBlue),
+                (BoundaryLayer,                   WorkLayerAciBlue),
+                (McdRoomBoundaryLayer,            ZoneGlobalBoundaryAciCyan),
+
+                // Zone layers
+                (ZoneLayer,                       ZoneLayerAciGreen),
+                (ZoneLabelLayer,                  ZoneLabelAciWhite),
+                (ZoneGlobalBoundaryLayer,         ZoneGlobalBoundaryAciCyan),
+                (McdZoneBoundaryLayer,            ZoneLayerAciGreen),
+
+                // Heads / shafts
+                (McdSprinklersLayer,              SprinklerMarkerAboveAciCyan),
+                (McdShaftsLayer,                  McdShaftsAciMagenta),
+                (McdNoBranchPipeHighlightLayer,   NoBranchSprinklerHighlightAci),
+
+                // Pipe / routing layers
+                (McdMainPipeLayer,                MainPipeAciYellow),
+                (McdBranchPipeLayer,              BranchPipeAciYellow),
+                (McdConnectorBranchPipeLayer,     BranchLabelAciWhite),
+                (McdReducerLayer,                 BranchReducerAciOrange),
+                (McdLabelLayer,                   BranchLabelAciWhite),
+                (BranchLabelLayer,                BranchLabelAciWhite),
+            };
+
+            foreach (var (name, aci) in standards)
+            {
+                if (!lt.Has(name)) createdBefore++;
+                EnsureNamedAciLayer(tr, db, name, aci);
+            }
+
+            return createdBefore;
+        }
+
         public static double SprinklerMarkerRadius(Database db)
         {
             // Small visible marker. Tweak if needed.

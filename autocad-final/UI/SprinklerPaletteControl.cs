@@ -123,6 +123,8 @@ namespace autocad_final.UI
             var designDefs = new (string Text, Action Action)[]
             {
                 ("Initialize layers & blocks", InitializeStandardsPaletteAction.Run),
+                ("Create standard layers", CreateStandardLayersPaletteAction.Run),
+                ("Insert block", InsertStandardBlockPaletteAction.Run),
                 ("Define floor area by picking points", RunPointsArea),
                 ("Place sprinklers", PlaceSprinklersPaletteAction.Run),
                 ("Place sprinklers for rooms", RunPlaceRoomSprinklers),

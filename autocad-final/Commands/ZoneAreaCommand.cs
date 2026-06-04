@@ -260,11 +260,26 @@ namespace autocad_final.Commands
 
             if (mode == ZoningMode.EqualAreaStrips)
             {
+                // Snap interior zone dividers onto nearby floor/room walls so green boundaries land on
+                // the white architecture instead of cutting through open space.
+                var wallSnapRings = CollectWallSnapRingsInsideFloor(db, boundary);
+                double wallSnapRadiusDu = 0.0;
+                try
+                {
+                    if (DrawingUnitsHelper.TryMetersToDrawingLength(
+                            db.Insunits, ShaftMidlineStripZonesInPolygon2d.SnapSearchMeters, out double snapDu) && snapDu > 0)
+                        wallSnapRadiusDu = snapDu;
+                }
+                catch { /* leave snapping off if scale is unknown */ }
+
                 if (!EqualAreaAxisStripZonesInPolygon2d.TryBuildZoneRings(
                         boundary,
                         sites,
                         n,
                         tol,
+                        pairToShafts: true,
+                        wallSnapRings,
+                        wallSnapRadiusDu,
                         out var zoneRings,
                         out var ringShaftIdx,
                         out bool splitVertical,
@@ -275,6 +290,28 @@ namespace autocad_final.Commands
                 }
                 else if (zoneRings.Count > 0)
                 {
+                    // Pull every zone-outline vertex onto the nearest floor/room wall so the green outline
+                    // lies exactly on the white architecture (closes any small inset; no-op when already
+                    // coincident). Interior divider vertices, far from any wall, are left untouched.
+                    double zoneSnapTolDu = 0.0;
+                    try
+                    {
+                        if (DrawingUnitsHelper.TryMetersToDrawingLength(db.Insunits, ZoneOutlineWallSnapMeters, out double zsd) && zsd > 0)
+                            zoneSnapTolDu = zsd;
+                    }
+                    catch { /* leave vertex snapping off if scale is unknown */ }
+
+                    if (zoneSnapTolDu > 0)
+                    {
+                        var snapTargets = new List<IList<Point2d>>();
+                        var floorRingForSnap = PolylineClosedBoundaryRingSampler2d.ConvertPolylineToRingPoints(boundary);
+                        if (floorRingForSnap != null && floorRingForSnap.Count >= 3)
+                            snapTargets.Add(floorRingForSnap);
+                        if (wallSnapRings != null)
+                            snapTargets.AddRange(wallSnapRings);
+                        SnapZoneRingVerticesToWalls(zoneRings, snapTargets, zoneSnapTolDu);
+                    }
+
                     DrawingUnitsHelper.ComputeFormulaZoneTargets(
                         db,
                         rawArea,
@@ -801,6 +838,134 @@ namespace autocad_final.Commands
             AssignShaftToZoneCommand.ApplyDefaultShaftAssignmentsForCreatedZones(
                 db, outlineHandles, ownerIndexPerRing, shaftHandleHexPerDedupedSite, floorBoundary);
             AssignShaftToZoneCommand.MergeShaftAssignmentDisplayNamesIntoZoneTable(db, metrics);
+        }
+
+        /// <summary>Max distance a zone-outline vertex may be pulled to land exactly on a floor/room wall (meters).</summary>
+        private const double ZoneOutlineWallSnapMeters = 2.0;
+
+        /// <summary>
+        /// Pulls each zone-ring vertex onto the nearest point of any target wall ring (floor boundary + room outlines)
+        /// when within <paramref name="snapTolDu"/>. Outer zone edges and divider endpoints sit on walls and snap onto
+        /// them exactly; interior divider vertices are far from any wall and stay put. Topology is preserved (vertices
+        /// only move by &lt;= tolerance toward the wall they already track).
+        /// </summary>
+        private static void SnapZoneRingVerticesToWalls(
+            List<List<Point2d>> zoneRings,
+            IList<IList<Point2d>> targetRings,
+            double snapTolDu)
+        {
+            if (zoneRings == null || targetRings == null || targetRings.Count == 0 || snapTolDu <= 0)
+                return;
+
+            double tol2 = snapTolDu * snapTolDu;
+            foreach (var zr in zoneRings)
+            {
+                if (zr == null || zr.Count < 3)
+                    continue;
+
+                for (int i = 0; i < zr.Count; i++)
+                {
+                    Point2d v = zr[i];
+                    Point2d best = v;
+                    double bestD2 = tol2;
+
+                    foreach (var target in targetRings)
+                    {
+                        if (target == null || target.Count < 2)
+                            continue;
+                        int n = target.Count;
+                        for (int s = 0; s < n; s++)
+                        {
+                            Point2d a = target[s];
+                            Point2d b = target[(s + 1) % n];
+                            Point2d p = ClosestPointOnSegment2d(v, a, b);
+                            double dx = p.X - v.X, dy = p.Y - v.Y;
+                            double d2 = dx * dx + dy * dy;
+                            if (d2 < bestD2)
+                            {
+                                bestD2 = d2;
+                                best = p;
+                            }
+                        }
+                    }
+
+                    if (bestD2 < tol2)
+                        zr[i] = best;
+                }
+            }
+        }
+
+        private static Point2d ClosestPointOnSegment2d(Point2d p, Point2d a, Point2d b)
+        {
+            double abx = b.X - a.X, aby = b.Y - a.Y;
+            double len2 = abx * abx + aby * aby;
+            if (len2 <= 1e-18)
+                return a;
+            double t = ((p.X - a.X) * abx + (p.Y - a.Y) * aby) / len2;
+            if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
+            return new Point2d(a.X + t * abx, a.Y + t * aby);
+        }
+
+        /// <summary>
+        /// Collects closed room/floor outline rings (layers "MCD-room" and "MCD-floor boundary") whose centroid
+        /// lies inside the floor boundary. Their axis-aligned walls become snap targets for equal-area zone dividers.
+        /// The floor boundary's own ring is supplied separately by the strip engine, so it need not be included here.
+        /// </summary>
+        private static List<IList<Point2d>> CollectWallSnapRingsInsideFloor(Database db, Polyline floorBoundary)
+        {
+            var result = new List<IList<Point2d>>();
+            if (db == null || floorBoundary == null)
+                return result;
+
+            List<Point2d> floorRing = null;
+            try { floorRing = PolylineClosedBoundaryRingSampler2d.ConvertPolylineToRingPoints(floorBoundary); }
+            catch { floorRing = null; }
+            if (floorRing == null || floorRing.Count < 3)
+                return result;
+
+            try
+            {
+                using (var tr = db.TransactionManager.StartTransaction())
+                {
+                    var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                    var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+                    foreach (ObjectId id in ms)
+                    {
+                        if (id.IsErased) continue;
+                        Polyline pl = null;
+                        try { pl = tr.GetObject(id, OpenMode.ForRead, false) as Polyline; }
+                        catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == ErrorStatus.WasErased) { continue; }
+                        if (pl == null || !pl.Closed || pl.NumberOfVertices < 3)
+                            continue;
+
+                        string lay = (pl.Layer ?? string.Empty).Trim();
+                        bool isRoomLayer =
+                            string.Equals(lay, SprinklerLayers.McdRoomBoundaryLayer, StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(lay, SprinklerLayers.McdFloorBoundaryLayer, StringComparison.OrdinalIgnoreCase);
+                        if (!isRoomLayer)
+                            continue;
+
+                        List<Point2d> ring;
+                        try { ring = PolylineClosedBoundaryRingSampler2d.ConvertPolylineToRingPoints(pl); }
+                        catch { continue; }
+                        if (ring == null || ring.Count < 3)
+                            continue;
+
+                        // Only rooms/sub-areas inside the floor are relevant. Centroid-in-floor also excludes
+                        // the outer floor polyline itself (its centroid is inside, but its walls duplicate the
+                        // floor ring the engine already uses, which is harmless if it slips through).
+                        Point2d c = PolygonUtils.ApproxCentroidAreaWeighted(ring);
+                        if (!PolygonUtils.PointInPolygon(floorRing, c))
+                            continue;
+
+                        result.Add(ring);
+                    }
+                    tr.Commit();
+                }
+            }
+            catch { /* best-effort snap candidates */ }
+
+            return result;
         }
 
         private static List<FindShaftsInsideBoundary.ShaftBlockInfo> DedupeShaftBlocks(

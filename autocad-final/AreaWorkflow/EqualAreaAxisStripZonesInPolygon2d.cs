@@ -188,6 +188,29 @@ namespace autocad_final.AreaWorkflow
             out List<int> ringShaftIndex,
             out bool splitVertical,
             out string errorMessage)
+            => TryBuildZoneRings(
+                boundary, shaftSites, zoneCount, tol, pairToShafts,
+                wallSnapRings: null, wallSnapRadiusDu: 0.0,
+                out rings, out ringShaftIndex, out splitVertical, out errorMessage);
+
+        /// <summary>
+        /// Equal-area strips that additionally snap each interior cut to a nearby floor/room wall axis.
+        /// <paramref name="wallSnapRings"/> are extra closed rings (e.g. interior room outlines) whose
+        /// axis-aligned walls perpendicular to the cut direction become snap candidates; the floor ring's
+        /// own walls are always included. Pass <paramref name="wallSnapRadiusDu"/> &lt;= 0 to disable snapping.
+        /// </summary>
+        public static bool TryBuildZoneRings(
+            Polyline boundary,
+            IList<Point2d> shaftSites,
+            int zoneCount,
+            double tol,
+            bool pairToShafts,
+            IList<IList<Point2d>> wallSnapRings,
+            double wallSnapRadiusDu,
+            out List<List<Point2d>> rings,
+            out List<int> ringShaftIndex,
+            out bool splitVertical,
+            out string errorMessage)
         {
             rings = new List<List<Point2d>>();
             ringShaftIndex = new List<int>();
@@ -215,7 +238,7 @@ namespace autocad_final.AreaWorkflow
             }
 
             return TryBuildZoneRingsFromRing(
-                ring, zoneCount, tol, pairToShafts, shaftSites,
+                ring, zoneCount, tol, pairToShafts, shaftSites, wallSnapRings, wallSnapRadiusDu,
                 out rings, out ringShaftIndex, out splitVertical, out errorMessage);
         }
 
@@ -226,6 +249,27 @@ namespace autocad_final.AreaWorkflow
             double tol,
             bool pairToShafts,
             IList<Point2d> shaftSites,
+            out List<List<Point2d>> rings,
+            out List<int> ringShaftIndex,
+            out bool splitVertical,
+            out string errorMessage)
+            => TryBuildZoneRingsFromRing(
+                ring, zoneCount, tol, pairToShafts, shaftSites,
+                wallSnapRings: null, wallSnapRadiusDu: 0.0,
+                out rings, out ringShaftIndex, out splitVertical, out errorMessage);
+
+        /// <summary>
+        /// Equal-area strips on a pre-sampled floor ring, snapping each interior cut to a nearby wall axis.
+        /// See <see cref="TryBuildZoneRings(Polyline, IList{Point2d}, int, double, bool, IList{IList{Point2d}}, double, out List{List{Point2d}}, out List{int}, out bool, out string)"/>.
+        /// </summary>
+        public static bool TryBuildZoneRingsFromRing(
+            IList<Point2d> ring,
+            int zoneCount,
+            double tol,
+            bool pairToShafts,
+            IList<Point2d> shaftSites,
+            IList<IList<Point2d>> wallSnapRings,
+            double wallSnapRadiusDu,
             out List<List<Point2d>> rings,
             out List<int> ringShaftIndex,
             out bool splitVertical,
@@ -309,36 +353,61 @@ namespace autocad_final.AreaWorkflow
                 });
             }
 
+            double minAxis = useVertical ? minX : minY;
+            double maxAxis = useVertical ? maxX : maxY;
+
+            // Interior cut coordinates in sweep order; cut[k] divides band k from band k+1.
+            var cuts = new double[zoneCount - 1];
+            for (int k = 0; k < zoneCount - 1; k++)
+            {
+                double targetCum = marginLeftArea + (k + 1) * aTargetRing;
+                double c = useVertical
+                    ? FindXForCumulativeLeftArea(ring, minX, maxX, targetCum, eps)
+                    : FindYForCumulativeBelowArea(ring, minY, maxY, targetCum, eps);
+                if (double.IsNaN(c))
+                {
+                    errorMessage = useVertical
+                        ? "Could not compute vertical cut lines for this boundary."
+                        : "Could not compute horizontal cut lines for this boundary.";
+                    return false;
+                }
+                cuts[k] = c;
+            }
+
+            // Optional: nudge each interior cut onto a nearby floor/room wall so dividers fall on walls
+            // instead of cutting through open space. Outer band edges already follow the floor polygon.
+            if (wallSnapRadiusDu > 0)
+            {
+                var wallAxes = new List<double>();
+                AddPerpendicularWallAxes(ring, useVertical, eps, wallAxes);
+                if (wallSnapRings != null)
+                {
+                    foreach (var snapRing in wallSnapRings)
+                        AddPerpendicularWallAxes(snapRing, useVertical, eps, wallAxes);
+                }
+                if (wallAxes.Count > 0)
+                {
+                    wallAxes.Sort();
+                    SnapInteriorStripCutsToWallAxes(
+                        cuts, wallAxes, wallSnapRadiusDu, minAxis, maxAxis, eps,
+                        pairToShafts, shaftOrder, shaftSites, useVertical);
+                }
+            }
+
             for (int k = 0; k < zoneCount; k++)
             {
-                double cumLeft = marginLeftArea + k * aTargetRing;
-                double cumRight = marginLeftArea + (k + 1) * aTargetRing;
+                double lo = (k == 0) ? minAxis : cuts[k - 1];
+                double hi = (k == zoneCount - 1) ? maxAxis : cuts[k];
                 List<Point2d> band;
                 if (useVertical)
                 {
-                    double xLeft = FindXForCumulativeLeftArea(ring, minX, maxX, cumLeft, eps);
-                    double xRight = FindXForCumulativeLeftArea(ring, minX, maxX, cumRight, eps);
-                    if (double.IsNaN(xLeft) || double.IsNaN(xRight))
-                    {
-                        errorMessage = "Could not compute vertical cut lines for this boundary.";
-                        return false;
-                    }
-
-                    band = PolygonVerticalHalfPlaneClip2d.ClipKeepXGreaterOrEqual(ring, xLeft, eps);
-                    band = PolygonVerticalHalfPlaneClip2d.ClipKeepXLessOrEqual(band, xRight, eps);
+                    band = PolygonVerticalHalfPlaneClip2d.ClipKeepXGreaterOrEqual(ring, lo, eps);
+                    band = PolygonVerticalHalfPlaneClip2d.ClipKeepXLessOrEqual(band, hi, eps);
                 }
                 else
                 {
-                    double yBottom = FindYForCumulativeBelowArea(ring, minY, maxY, cumLeft, eps);
-                    double yTop = FindYForCumulativeBelowArea(ring, minY, maxY, cumRight, eps);
-                    if (double.IsNaN(yBottom) || double.IsNaN(yTop))
-                    {
-                        errorMessage = "Could not compute horizontal cut lines for this boundary.";
-                        return false;
-                    }
-
-                    band = PolygonHorizontalHalfPlaneClip2d.ClipKeepYGreaterOrEqual(ring, yBottom, eps);
-                    band = PolygonHorizontalHalfPlaneClip2d.ClipKeepYLessOrEqual(band, yTop, eps);
+                    band = PolygonHorizontalHalfPlaneClip2d.ClipKeepYGreaterOrEqual(ring, lo, eps);
+                    band = PolygonHorizontalHalfPlaneClip2d.ClipKeepYLessOrEqual(band, hi, eps);
                 }
 
                 if (band.Count < 3)
@@ -352,6 +421,93 @@ namespace autocad_final.AreaWorkflow
             }
 
             return true;
+        }
+
+        /// <summary>
+        /// Adds the constant coordinate of every axis-aligned wall edge that runs perpendicular to the strip
+        /// cut direction (vertical walls for vertical cuts, horizontal walls for horizontal cuts) as a snap candidate.
+        /// </summary>
+        private static void AddPerpendicularWallAxes(IList<Point2d> ring, bool splitVertical, double eps, List<double> axesOut)
+        {
+            if (ring == null || ring.Count < 2 || axesOut == null)
+                return;
+
+            int n = ring.Count;
+            for (int i = 0; i < n; i++)
+            {
+                var a = ring[i];
+                var b = ring[(i + 1) % n];
+                if (splitVertical)
+                {
+                    // Vertical wall (constant X) aligns with a vertical cut.
+                    if (Math.Abs(a.X - b.X) <= eps && Math.Abs(a.Y - b.Y) > eps)
+                        axesOut.Add(0.5 * (a.X + b.X));
+                }
+                else
+                {
+                    // Horizontal wall (constant Y) aligns with a horizontal cut.
+                    if (Math.Abs(a.Y - b.Y) <= eps && Math.Abs(a.X - b.X) > eps)
+                        axesOut.Add(0.5 * (a.Y + b.Y));
+                }
+            }
+        }
+
+        /// <summary>
+        /// Snaps each interior equal-area cut to the nearest wall axis within <paramref name="snapRadius"/>, keeping cuts
+        /// strictly increasing inside (minAxis, maxAxis) and — when paired to shafts — strictly between the two shafts the
+        /// cut separates, so shaft↔zone pairing is preserved. Cuts with no eligible wall stay at their equal-area position.
+        /// </summary>
+        private static void SnapInteriorStripCutsToWallAxes(
+            double[] cuts,
+            List<double> sortedWallAxes,
+            double snapRadius,
+            double minAxis,
+            double maxAxis,
+            double eps,
+            bool pairToShafts,
+            int[] shaftOrder,
+            IList<Point2d> shaftSites,
+            bool useVertical)
+        {
+            if (cuts == null || cuts.Length == 0 || sortedWallAxes == null || sortedWallAxes.Count == 0)
+                return;
+
+            for (int k = 0; k < cuts.Length; k++)
+            {
+                double ideal = cuts[k];
+                // Lower bound is the already-snapped previous cut; upper bound is the next (still-ideal) cut.
+                double lowerBound = (k == 0) ? minAxis : cuts[k - 1];
+                double upperBound = (k == cuts.Length - 1) ? maxAxis : cuts[k + 1];
+
+                // Keep the snapped cut between the two shafts it separates so pairing stays 1:1.
+                if (pairToShafts && shaftOrder != null && shaftSites != null)
+                {
+                    double sLo = useVertical ? shaftSites[shaftOrder[k]].X : shaftSites[shaftOrder[k]].Y;
+                    double sHi = useVertical ? shaftSites[shaftOrder[k + 1]].X : shaftSites[shaftOrder[k + 1]].Y;
+                    if (sLo > sHi) { double t = sLo; sLo = sHi; sHi = t; }
+                    lowerBound = Math.Max(lowerBound, sLo);
+                    upperBound = Math.Min(upperBound, sHi);
+                }
+
+                double best = double.NaN;
+                double bestDist = snapRadius + 1.0;
+                for (int wi = 0; wi < sortedWallAxes.Count; wi++)
+                {
+                    double cand = sortedWallAxes[wi];
+                    if (cand <= lowerBound + eps) continue;
+                    if (cand >= upperBound - eps) continue;
+                    double d = Math.Abs(cand - ideal);
+                    if (d > snapRadius) continue;
+                    if (d < bestDist)
+                    {
+                        bestDist = d;
+                        best = cand;
+                    }
+                }
+
+                if (!double.IsNaN(best))
+                    cuts[k] = best;
+            }
         }
 
         internal static double AreaLeftOfX(IList<Point2d> ring, double x, double eps)
