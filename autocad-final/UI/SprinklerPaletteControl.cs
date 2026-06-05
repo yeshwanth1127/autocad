@@ -131,7 +131,9 @@ namespace autocad_final.UI
                 ("Create zones",                   ZoneCreation2PaletteAction.Run),
                 ("Assign shaft to zone manually (optional)",       RunAssignShaftToZone),
                 ("Route main pipe",            RunRouteMainPipe),
+                ("Route main pipes (all zones on floor)", RunRouteMainPipeAll),
                 ("Route branches",             RunRedesignFromTrunk),
+                ("Route branches (all zones on floor)", RunRedesignFromTrunkAll),
                 ("Label branches",             RunLabelBranches),
                 ("Place reducers",             RunPlaceReducers),
                 ("Connect branches manually to a main pipe or a branch pipe",  RunConnectBranchesManually),
@@ -478,6 +480,26 @@ namespace autocad_final.UI
             }
         }
 
+        private void RunRouteMainPipeAll()
+        {
+            var doc = AcApp.DocumentManager.MdiActiveDocument;
+            if (doc == null)
+            {
+                MessageBox.Show("No active drawing. Open or create a drawing first.",
+                    "autocad-final", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            try
+            {
+                // Run directly so the command line does not echo the command name.
+                new RouteMainPipeCommand().RouteMainPipeAllForFloor();
+            }
+            catch (Exception ex)
+            {
+                PaletteCommandErrorUi.Show(ex, doc);
+            }
+        }
+
         private void RunSprinklerDesign()
         {
             var doc = AcApp.DocumentManager.MdiActiveDocument;
@@ -600,6 +622,25 @@ namespace autocad_final.UI
             try
             {
                 new RedesignFromTrunkCommand().RedesignFromTrunk();
+            }
+            catch (Exception ex)
+            {
+                PaletteCommandErrorUi.Show(ex, doc);
+            }
+        }
+
+        private void RunRedesignFromTrunkAll()
+        {
+            var doc = AcApp.DocumentManager.MdiActiveDocument;
+            if (doc == null)
+            {
+                MessageBox.Show("No active drawing. Open or create a drawing first.",
+                    "autocad-final", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            try
+            {
+                new RedesignFromTrunkCommand().RedesignFromTrunkAllForFloor();
             }
             catch (Exception ex)
             {

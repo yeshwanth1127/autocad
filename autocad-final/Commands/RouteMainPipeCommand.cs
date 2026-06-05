@@ -71,6 +71,172 @@ namespace autocad_final.Commands
             }
         }
 
+        [CommandMethod("SPRINKLERROUTEMAINPIPEALL", CommandFlags.Modal)]
+        public void RouteMainPipeAllForFloor()
+        {
+            var doc = AcApp.DocumentManager.MdiActiveDocument;
+            if (doc == null) return;
+
+            var ed = doc.Editor;
+            if (!TrialGuard.EnsureActive(ed)) return;
+            var db = doc.Database;
+
+            // Same floor-boundary picker as "Create zones" so the user selects the floor they zoned.
+            if (!SelectPolygonBoundary.TrySelectOnNamedLayer(
+                    ed,
+                    SprinklerLayers.McdFloorBoundaryLayer,
+                    SelectPolygonBoundary.FloorBoundaryPickPromptForLayer(SprinklerLayers.McdFloorBoundaryLayer),
+                    out var floorBoundary,
+                    out var floorBoundaryEntityId))
+                return;
+
+            try
+            {
+                string floorHandleHex;
+                using (var tr0 = db.TransactionManager.StartTransaction())
+                {
+                    SprinklerXData.EnsureRegApp(tr0, db);
+                    floorHandleHex = tr0.GetObject(floorBoundaryEntityId, OpenMode.ForRead).Handle.ToString();
+                    tr0.Commit();
+                }
+
+                var zones = CollectZoneOutlinesForFloor(db, floorBoundary, floorHandleHex);
+                if (zones.Count == 0)
+                {
+                    PaletteCommandErrorUi.ShowDialogThenCommandLine(ed,
+                        "No zones found for this floor boundary.\nRun \"Create zones\" first, then route main pipes.",
+                        MessageBoxIcon.Warning);
+                    return;
+                }
+
+                int routed = 0;
+                var failures = new List<string>();
+                try
+                {
+                    foreach (var z in zones)
+                    {
+                        try
+                        {
+                            if (TryRouteMainPipeForZone(doc, z.Zone, z.HandleHex, out string err, out _))
+                                routed++;
+                            else
+                                failures.Add("Zone [" + z.HandleHex + "]: " + (err ?? "routing failed."));
+                        }
+                        catch (System.Exception ex)
+                        {
+                            failures.Add("Zone [" + z.HandleHex + "]: " + ex.Message);
+                        }
+                    }
+                }
+                finally
+                {
+                    foreach (var z in zones)
+                        try { z.Zone?.Dispose(); } catch { /* ignore */ }
+                }
+
+                try { ed.Regen(); } catch { /* ignore */ }
+
+                string summary = "Routed main pipes for " + routed.ToString() + " of " +
+                                 zones.Count.ToString() + " zone(s) on this floor.";
+                if (failures.Count > 0)
+                    summary += "\nSkipped " + failures.Count.ToString() + ":\n - " +
+                               string.Join("\n - ", failures);
+
+                if (routed == 0)
+                    PaletteCommandErrorUi.ShowDialogThenCommandLine(ed, summary, MessageBoxIcon.Warning);
+                else
+                    ed.WriteMessage("\n" + summary + "\n");
+            }
+            finally
+            {
+                try { floorBoundary.Dispose(); } catch { /* ignore */ }
+            }
+        }
+
+        internal struct ZoneOutlineRef
+        {
+            public string HandleHex;
+            public Polyline Zone;
+        }
+
+        /// <summary>
+        /// Collects every zone-outline polyline that belongs to the given floor boundary: closed, self-tagged
+        /// zone outlines on the MCD/unified zone layers whose PARENT_FLOOR tag matches the floor handle, or —
+        /// as a fallback for legacy/untagged zones (e.g. ZoneCreation1 output) — whose centroid lies inside the
+        /// floor ring. Returns clones the caller is responsible for disposing.
+        /// </summary>
+        internal static List<ZoneOutlineRef> CollectZoneOutlinesForFloor(
+            Database db, Polyline floorBoundary, string floorHandleHex)
+        {
+            var result = new List<ZoneOutlineRef>();
+            if (db == null || floorBoundary == null)
+                return result;
+
+            var floorRing = PolylineClosedBoundaryRingSampler2d.ConvertPolylineToRingPoints(floorBoundary);
+            bool haveRing = floorRing != null && floorRing.Count >= 3;
+
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                SprinklerXData.EnsureRegApp(tr, db);
+                var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+
+                foreach (ObjectId id in ms)
+                {
+                    if (id.IsErased) continue;
+                    Polyline pl = null;
+                    try { pl = tr.GetObject(id, OpenMode.ForRead, false) as Polyline; }
+                    catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                    if (pl == null || pl.IsErased || !pl.Closed) continue;
+
+                    bool isMcdZone = SprinklerLayers.IsMcdZoneOutlineLayerName(pl.Layer);
+                    bool isUnifiedZone = SprinklerLayers.IsUnifiedZoneDesignLayerName(pl.Layer);
+                    if (!isMcdZone && !isUnifiedZone) continue;
+
+                    // Confirm it is a real zone outline (self-tagged with its own handle), not a floor outline
+                    // that happens to share the "sprinkler - zone" layer.
+                    if (!SprinklerXData.TryGetZoneBoundaryHandle(pl, out string zh) ||
+                        !string.Equals(zh, pl.Handle.ToString(), StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    bool belongs = false;
+                    if (SprinklerXData.TryGetParentFloorBoundaryHandle(pl, out string phex) &&
+                        !string.IsNullOrWhiteSpace(phex) &&
+                        string.Equals(phex.Trim(), floorHandleHex, StringComparison.OrdinalIgnoreCase))
+                    {
+                        belongs = true;
+                    }
+                    else if (haveRing)
+                    {
+                        Point2d c;
+                        try
+                        {
+                            var ext = pl.GeometricExtents;
+                            c = new Point2d(0.5 * (ext.MinPoint.X + ext.MaxPoint.X), 0.5 * (ext.MinPoint.Y + ext.MaxPoint.Y));
+                        }
+                        catch { continue; }
+                        belongs = PointInPolygon(floorRing, c);
+                    }
+
+                    if (!belongs) continue;
+
+                    try
+                    {
+                        result.Add(new ZoneOutlineRef
+                        {
+                            HandleHex = pl.Handle.ToString(),
+                            Zone = (Polyline)pl.Clone()
+                        });
+                    }
+                    catch { /* ignore unclonable */ }
+                }
+
+                tr.Commit();
+            }
+
+            return result;
+        }
+
         /// <summary>
         /// Detects shaft, computes route, and draws tagged trunk + connector + caps for the zone.
         /// </summary>
@@ -669,7 +835,7 @@ namespace autocad_final.Commands
             return false;
         }
 
-        private static bool TryFindZoneOutlineContainingPoint(
+        internal static bool TryFindZoneOutlineContainingPoint(
             Database db,
             Point2d point,
             out ObjectId zoneBoundaryEntityId,

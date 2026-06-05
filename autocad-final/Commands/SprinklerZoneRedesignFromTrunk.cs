@@ -732,9 +732,24 @@ namespace autocad_final.Commands
 
         private static int EraseSprinklerMarkersOutsideZone(Transaction tr, Database db, BlockTableRecord ms, List<Point2d> zoneRing, string boundaryHandleHex, List<SprinklerHeadReader2d.FloorRoomOwnership> floorRoomOwnerships)
         {
-            int erased = 0;
             if (tr == null || db == null || ms == null || zoneRing == null || zoneRing.Count < 3 || string.IsNullOrEmpty(boundaryHandleHex))
                 return 0;
+
+            // Keep heads that sit on / just outside the boundary (ring may have shifted slightly after edits).
+            double boundaryTolDu = 1e-6;
+            try
+            {
+                double t = BoundaryEntityToClosedLwPolyline.CoincidentTolerance(db);
+                boundaryTolDu = Math.Max(t * 50.0, 1e-5);
+            }
+            catch { /* ignore */ }
+
+            // First pass: classify this zone's tagged heads as inside vs. outside the ring. If the ring
+            // contains NONE of them, the resolved boundary almost certainly does not match these heads
+            // (wrong/shifted zone) — erasing here would wipe the whole zone's heads, so we abort the cleanup
+            // and leave routing to detect/heal them instead. (Fix D: non-destructive.)
+            var toErase = new List<ObjectId>();
+            int insideCount = 0;
 
             foreach (ObjectId id in ms)
             {
@@ -769,15 +784,39 @@ namespace autocad_final.Commands
                 else
                     continue;
 
-                if (PointInPolygon(zoneRing, p2))
-                    continue;
+                bool inside = PointInPolygon(zoneRing, p2);
+                if (!inside)
+                {
+                    // Treat heads within tolerance of the boundary as inside.
+                    double d = PolygonUtils.MinDistancePointToPolygonBoundary(zoneRing, p2);
+                    if (!double.IsPositiveInfinity(d) && d <= boundaryTolDu)
+                        inside = true;
+                }
 
-                // Match TryReadSprinklerHeadPointsForZoneRouting: keep heads in floor rooms parented to this zone
-                // even when outside the zone polygon (straddling rooms).
+                if (inside)
+                {
+                    insideCount++;
+                    continue;
+                }
+
+                // Keep heads in floor rooms parented to this zone even when outside the zone polygon (straddling rooms).
                 if (SprinklerHeadReader2d.IsPointInsideFloorRoomParentedToZone(db, zoneRing, boundaryHandleHex, p2, floorRoomOwnerships))
                     continue;
 
-                ent.UpgradeOpen();
+                toErase.Add(id);
+            }
+
+            // Wrong-ring guard: never erase every tagged head for the zone.
+            if (insideCount == 0 || toErase.Count == 0)
+                return 0;
+
+            int erased = 0;
+            foreach (ObjectId id in toErase)
+            {
+                Entity ent = null;
+                try { ent = tr.GetObject(id, OpenMode.ForWrite, false) as Entity; }
+                catch { continue; }
+                if (ent == null || ent.IsErased) continue;
                 try { ent.Erase(); erased++; } catch { /* ignore */ }
             }
 
@@ -1476,7 +1515,14 @@ namespace autocad_final.Commands
                         else
                             continue;
 
-                        if (!PointInPolygon(zoneRing, p)) continue;
+                        // Use the same tolerant, tag-aware inclusion test as "Route main pipe"
+                        // (PointBelongsToZoneForRouting): a head counts if it is XData-tagged to this zone,
+                        // owned by a room parented to this zone, or inside the zone polygon within boundary
+                        // tolerance. A raw strict PointInPolygon here dropped every head when the head grid
+                        // sat on / just outside a slanted or edited zone boundary, even though Route main pipe
+                        // had happily found them — producing a false "no sprinklers found to route in this zone".
+                        if (!SprinklerHeadReader2d.IsPointOwnedByZoneForRouting(db, zoneRing, zoneBoundaryHex, p, ent, floorRoomOwnerships))
+                            continue;
                         if (SprinklerHeadReader2d.IsPointInsideFloorRoomParentedToZone(db, zoneRing, zoneBoundaryHex, p, floorRoomOwnerships))
                             continue;
                         sprinklers.Add(p);
@@ -1498,6 +1544,66 @@ namespace autocad_final.Commands
                     int roomBranchCount = RouteParentedRooms(tr, db, ms, zoneRing, zoneBoundaryHex, elevation, floorRoomOwnerships);
                     drawnCount += roomBranchCount;
 
+                    int healedTags = 0;
+                    int fallbackHeads = 0;
+                    if (drawnCount == 0)
+                    {
+                        // Robust fallback (Fix A): the strict tag / room-ownership filter found nothing, yet
+                        // heads may physically sit inside this zone — e.g. zones re-created so head zone tags
+                        // drifted, or a floor-room claimed them for another zone. Re-collect by pure tolerant
+                        // geometry (zoneHex=null path) and route them, re-stamping each head's zone tag so future
+                        // operations stay consistent (Fix C).
+                        var geomHeads = new List<Point2d>();
+                        var headsToRetag = new List<ObjectId>();
+                        foreach (ObjectId id in ms)
+                        {
+                            if (id.IsErased) continue;
+                            Entity ent = null;
+                            try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; }
+                            catch { continue; }
+                            if (ent == null) continue;
+                            if (!SprinklerLayers.IsSprinklerHeadEntity(tr, ent)) continue;
+
+                            Point2d p;
+                            if (ent is Circle cc)
+                                p = new Point2d(cc.Center.X, cc.Center.Y);
+                            else if (ent is BlockReference bbr)
+                                p = new Point2d(bbr.Position.X, bbr.Position.Y);
+                            else
+                                continue;
+
+                            if (!SprinklerHeadReader2d.IsPointOwnedByZoneForRouting(db, zoneRing, null, p))
+                                continue;
+
+                            geomHeads.Add(p);
+                            if (!SprinklerXData.TryGetZoneBoundaryHandle(ent, out string hx) ||
+                                !string.Equals(hx?.Trim(), zoneBoundaryHex?.Trim(), StringComparison.OrdinalIgnoreCase))
+                                headsToRetag.Add(id);
+                        }
+
+                        if (geomHeads.Count > 0)
+                        {
+                            foreach (var hid in headsToRetag)
+                            {
+                                try
+                                {
+                                    var he = tr.GetObject(hid, OpenMode.ForWrite, false) as Entity;
+                                    if (he != null && !he.IsErased)
+                                    {
+                                        SprinklerXData.ApplyZoneBoundaryTag(he, zoneBoundaryHex);
+                                        healedTags++;
+                                    }
+                                }
+                                catch { /* ignore */ }
+                            }
+
+                            fallbackHeads = geomHeads.Count;
+                            drawnCount += RouteMinimalSpanningTree(
+                                tr, ms, mainSegments, geomHeads, zoneRing, db, zoneBoundaryHex, zone,
+                                branchLayerId, branchW, elevation, trunkHorizontal);
+                        }
+                    }
+
                     if (drawnCount == 0)
                     {
                         errorMessage = "No sprinklers found to route in this zone.";
@@ -1505,7 +1611,9 @@ namespace autocad_final.Commands
                     }
 
                     tr.Commit();
-                    errorMessage = $"Route branches: {drawnCount} segments ({sprinklers.Count} open heads + {roomBranchCount} room-branch segments).";
+                    errorMessage = fallbackHeads > 0
+                        ? $"Route branches: {drawnCount} segments (geometric fallback routed {fallbackHeads} heads, re-tagged {healedTags} to this zone)."
+                        : $"Route branches: {drawnCount} segments ({sprinklers.Count} open heads + {roomBranchCount} room-branch segments).";
                     return true;
                 }
                 catch (Exception ex)
