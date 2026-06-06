@@ -1491,12 +1491,13 @@ namespace autocad_final.Commands
                         for (int i = 0; i + 1 < mainPipePts.Count; i++)
                             mainSegments.Add((mainPipePts[i], mainPipePts[i + 1]));
 
-                    // Heads inside a room parented to this zone are routed separately with the room-local router
-                    // (handles tilted rooms and parts beyond the zone boundary); the world-axis planner serves
-                    // only the open / non-room heads.
+                    // The branch pass must always honor what is visible in the selected zone:
+                    // every sprinkler physically inside the zone is routed here. Room ownership is
+                    // only used later for straddling-room heads outside the zone polygon.
                     var floorRoomOwnerships = SprinklerHeadReader2d.BuildFloorRoomOwnerships(db);
 
                     var sprinklers = new List<Point2d>();
+                    var headsToRetag = new List<ObjectId>();
                     foreach (ObjectId id in ms)
                     {
                         if (id.IsErased) continue;
@@ -1515,17 +1516,12 @@ namespace autocad_final.Commands
                         else
                             continue;
 
-                        // Use the same tolerant, tag-aware inclusion test as "Route main pipe"
-                        // (PointBelongsToZoneForRouting): a head counts if it is XData-tagged to this zone,
-                        // owned by a room parented to this zone, or inside the zone polygon within boundary
-                        // tolerance. A raw strict PointInPolygon here dropped every head when the head grid
-                        // sat on / just outside a slanted or edited zone boundary, even though Route main pipe
-                        // had happily found them — producing a false "no sprinklers found to route in this zone".
-                        if (!SprinklerHeadReader2d.IsPointOwnedByZoneForRouting(db, zoneRing, zoneBoundaryHex, p, ent, floorRoomOwnerships))
-                            continue;
-                        if (SprinklerHeadReader2d.IsPointInsideFloorRoomParentedToZone(db, zoneRing, zoneBoundaryHex, p, floorRoomOwnerships))
+                        if (!SprinklerHeadReader2d.IsPointOwnedByZoneForRouting(db, zoneRing, null, p))
                             continue;
                         sprinklers.Add(p);
+                        if (!SprinklerXData.TryGetZoneBoundaryHandle(ent, out string hx) ||
+                            !string.Equals(hx?.Trim(), zoneBoundaryHex?.Trim(), StringComparison.OrdinalIgnoreCase))
+                            headsToRetag.Add(id);
                     }
 
                     bool trunkHorizontal = DetermineTrunkOrientation(mainPipePts);
@@ -1535,18 +1531,32 @@ namespace autocad_final.Commands
                     double branchW = Math.Max(mainW * 0.66, 1.0);
                     double elevation = zone.Elevation;
 
-                    int drawnCount = 0;
+                    int openBranchCount = 0;
                     if (sprinklers.Count > 0)
-                        drawnCount += RouteMinimalSpanningTree(tr, ms, mainSegments, sprinklers, zoneRing, db, zoneBoundaryHex, zone, branchLayerId, branchW, elevation, trunkHorizontal);
+                        openBranchCount += RouteMinimalSpanningTree(tr, ms, mainSegments, sprinklers, zoneRing, db, zoneBoundaryHex, zone, branchLayerId, branchW, elevation, trunkHorizontal);
 
                     // Route each room parented to this zone from the zone's branches (just drawn) + main, covering
                     // the whole room including any part that straddles into a neighboring zone.
                     int roomBranchCount = RouteParentedRooms(tr, db, ms, zoneRing, zoneBoundaryHex, elevation, floorRoomOwnerships);
-                    drawnCount += roomBranchCount;
+                    int drawnCount = openBranchCount + roomBranchCount;
 
                     int healedTags = 0;
+                    foreach (var hid in headsToRetag)
+                    {
+                        try
+                        {
+                            var he = tr.GetObject(hid, OpenMode.ForWrite, false) as Entity;
+                            if (he != null && !he.IsErased)
+                            {
+                                SprinklerXData.ApplyZoneBoundaryTag(he, zoneBoundaryHex);
+                                healedTags++;
+                            }
+                        }
+                        catch { /* ignore */ }
+                    }
+
                     int fallbackHeads = 0;
-                    if (drawnCount == 0)
+                    if (openBranchCount == 0)
                     {
                         // Robust fallback (Fix A): the strict tag / room-ownership filter found nothing, yet
                         // heads may physically sit inside this zone — e.g. zones re-created so head zone tags
@@ -1554,7 +1564,7 @@ namespace autocad_final.Commands
                         // geometry (zoneHex=null path) and route them, re-stamping each head's zone tag so future
                         // operations stay consistent (Fix C).
                         var geomHeads = new List<Point2d>();
-                        var headsToRetag = new List<ObjectId>();
+                        var fallbackHeadsToRetag = new List<ObjectId>();
                         foreach (ObjectId id in ms)
                         {
                             if (id.IsErased) continue;
@@ -1578,12 +1588,12 @@ namespace autocad_final.Commands
                             geomHeads.Add(p);
                             if (!SprinklerXData.TryGetZoneBoundaryHandle(ent, out string hx) ||
                                 !string.Equals(hx?.Trim(), zoneBoundaryHex?.Trim(), StringComparison.OrdinalIgnoreCase))
-                                headsToRetag.Add(id);
+                                fallbackHeadsToRetag.Add(id);
                         }
 
                         if (geomHeads.Count > 0)
                         {
-                            foreach (var hid in headsToRetag)
+                            foreach (var hid in fallbackHeadsToRetag)
                             {
                                 try
                                 {
@@ -1598,9 +1608,10 @@ namespace autocad_final.Commands
                             }
 
                             fallbackHeads = geomHeads.Count;
-                            drawnCount += RouteMinimalSpanningTree(
+                            openBranchCount += RouteMinimalSpanningTree(
                                 tr, ms, mainSegments, geomHeads, zoneRing, db, zoneBoundaryHex, zone,
                                 branchLayerId, branchW, elevation, trunkHorizontal);
+                            drawnCount = openBranchCount + roomBranchCount;
                         }
                     }
 

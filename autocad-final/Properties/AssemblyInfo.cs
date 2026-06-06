@@ -19,6 +19,7 @@ using autocad_final;
 [assembly: CommandClass(typeof(FixOnSlantCommand))]
 [assembly: CommandClass(typeof(AttachBranchesCommand))]
 [assembly: CommandClass(typeof(LabelBranchesCommand))]
+[assembly: CommandClass(typeof(LabelMainPipeCommand))]
 [assembly: CommandClass(typeof(PlaceReducersCommand))]
 [assembly: CommandClass(typeof(RoutingRegressionCommand))]
 [assembly: CommandClass(typeof(ConnectBranchesManuallyCommand))]

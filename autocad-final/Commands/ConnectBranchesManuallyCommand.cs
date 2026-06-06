@@ -78,8 +78,8 @@ namespace autocad_final.Commands
                 {
                     bool firstPass = pickedMainIds.Count == 0;
                     peoMain.Message = firstPass
-                        ? "\nSelect main or branch pipe polyline (or press Enter to use nearest among all mains and branches): "
-                        : "\nSelect another main or branch pipe polyline (or press Enter when done): ";
+                        ? "\nSelect main or branch pipe  (or press Enter to use nearest among all mains and branches): "
+                        : "\nSelect another main or branch pipe  (or press Enter when done): ";
 
                     var perMain = ed.GetEntity(peoMain);
                     if (perMain.Status == PromptStatus.Cancel)
@@ -4436,9 +4436,7 @@ namespace autocad_final.Commands
             var seg = new Polyline();
             seg.SetDatabaseDefaults(db);
             seg.LayerId = branchLayerId;
-            // Branches drawn by manual connect are forced white (ACI 7) so user-made connections
-            // stand out from auto-routed branches that inherit their layer colour.
-            seg.Color = Color.FromColorIndex(ColorMethod.ByAci, 7);
+            seg.Color = Color.FromColorIndex(ColorMethod.ByLayer, 256);
             seg.ConstantWidth = branchWidth;
             seg.Elevation = elevationZ;
             seg.Closed = false;

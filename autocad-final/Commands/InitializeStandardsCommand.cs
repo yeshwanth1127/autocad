@@ -34,6 +34,10 @@ namespace autocad_final.Commands
 
             try
             {
+                ObjectId shaftDefId;
+                ObjectId sprinklerDefId;
+                ObjectId reducerDefId;
+
                 using (doc.LockDocument())
                 using (var tr = db.TransactionManager.StartTransaction())
                 {
@@ -50,11 +54,11 @@ namespace autocad_final.Commands
                     // Block definitions — load from central BlocksLibrary.dwg when present,
                     // otherwise fall back to in-code geometry so the plugin still initializes.
                     var libraryPath = autocad_final.Blocks.BlockLibrary.ResolveLibraryPath();
-                    var shaftDefId = LoadOrFallback(db, tr, ed, SprinklerLayers.GetConfiguredShaftBlockName(),
+                    shaftDefId = LoadOrFallback(db, tr, ed, SprinklerLayers.GetConfiguredShaftBlockName(),
                         () => StandardBlockDefinitions.EnsureShaft(db, tr));
-                    var sprinklerDefId = LoadOrFallback(db, tr, ed, SprinklerLayers.GetConfiguredSprinklerBlockName(),
+                    sprinklerDefId = LoadOrFallback(db, tr, ed, SprinklerLayers.GetConfiguredSprinklerBlockName(),
                         () => StandardBlockDefinitions.EnsurePendentSprinkler(db, tr));
-                    var reducerDefId = LoadOrFallback(db, tr, ed, SprinklerLayers.GetConfiguredReducerBlockName(),
+                    reducerDefId = LoadOrFallback(db, tr, ed, SprinklerLayers.GetConfiguredReducerBlockName(),
                         () => StandardBlockDefinitions.EnsureReducer(db, tr));
 
                     // Optional library blocks (tee, elbow, valve, annotation, shaft marker).
@@ -77,22 +81,22 @@ namespace autocad_final.Commands
                     NormalizeInstancesThenScaleDefinition(tr, db, reducerDefId, BlockScaleUpFactor);
 
                     tr.Commit();
+                }
 
-                    // Export WBLOCKs after commit (definitions guaranteed present)
-                    Export(ed, db, shaftDefId, wblockFolder);
-                    Export(ed, db, sprinklerDefId, wblockFolder);
-                    Export(ed, db, reducerDefId, wblockFolder);
+                // Export WBLOCKs after commit (definitions guaranteed present)
+                Export(ed, db, shaftDefId, wblockFolder);
+                Export(ed, db, sprinklerDefId, wblockFolder);
+                Export(ed, db, reducerDefId, wblockFolder);
 
-                    var choice = PromptStarterBlockChoice(ed);
-                    if (choice.HasValue)
-                    {
-                        InsertSelectedStarterBlock(
-                            doc,
-                            choice.Value,
-                            shaftDefId,
-                            reducerDefId,
-                            sprinklerDefId);
-                    }
+                var choice = PromptStarterBlockChoice(ed);
+                if (choice.HasValue)
+                {
+                    InsertSelectedStarterBlock(
+                        doc,
+                        choice.Value,
+                        shaftDefId,
+                        reducerDefId,
+                        sprinklerDefId);
                 }
 
                 ed.WriteMessage($"\n[autocad-final] Layers/blocks initialized. WBLOCKs saved to: {wblockFolder}\n");
@@ -284,14 +288,17 @@ namespace autocad_final.Commands
         {
             if (ed == null) return null;
 
-            var options = new PromptKeywordOptions(
-                "\nWhich block to insert [S/R/SP] <SP>: ",
-                "S R SP");
+            var options = new PromptKeywordOptions("\nWhich block to insert [S/R/SP] <SP>: ");
+            options.Keywords.Add("S");
+            options.Keywords.Add("R");
+            options.Keywords.Add("SP");
             options.AllowNone = true;
             options.Keywords.Default = "SP";
 
             var result = ed.GetKeywords(options);
             if (result.Status == PromptStatus.Cancel)
+                return null;
+            if (result.Status != PromptStatus.OK && result.Status != PromptStatus.None)
                 return null;
 
             var keyword = string.IsNullOrWhiteSpace(result.StringResult)
@@ -305,6 +312,7 @@ namespace autocad_final.Commands
                 case "R":
                     return StarterBlockChoice.Reducer;
                 case "SP":
+                    return StarterBlockChoice.Sprinkler;
                 default:
                     return StarterBlockChoice.Sprinkler;
             }
@@ -346,8 +354,12 @@ namespace autocad_final.Commands
                     EnsureLayerThenInsertIfMissing(doc, reducerDefId, SprinklerLayers.McdReducerLayer, SprinklerLayers.EnsureMcdReducerLayer);
                     break;
                 case StarterBlockChoice.Sprinkler:
-                default:
-                    EnsureLayerThenInsertIfMissing(doc, sprinklerDefId, SprinklerLayers.McdSprinklersLayer, SprinklerLayers.EnsureMcdSprinklersLayer);
+                    PlaceBlockAtPickedPoints(
+                        doc,
+                        sprinklerDefId,
+                        SprinklerLayers.McdSprinklersLayer,
+                        SprinklerLayers.EnsureMcdSprinklersLayer,
+                        SprinklerLayers.GetConfiguredSprinklerBlockName());
                     break;
             }
         }
@@ -457,6 +469,61 @@ namespace autocad_final.Commands
             }
 
             InsertIfMissing(doc, blockDefId, layerName, new Point3d(0, 0, 0));
+        }
+
+        private static void PlaceBlockAtPickedPoints(
+            Document doc,
+            ObjectId blockDefId,
+            string layerName,
+            Func<Transaction, Database, ObjectId> ensureLayer,
+            string blockLabel)
+        {
+            if (doc == null || blockDefId.IsNull || string.IsNullOrWhiteSpace(layerName) || ensureLayer == null)
+                return;
+
+            var ed = doc.Editor;
+            var db = doc.Database;
+            int placed = 0;
+
+            while (true)
+            {
+                var ppo = new PromptPointOptions(
+                    placed == 0
+                        ? $"\nPick insertion point for {blockLabel} (Enter to finish): "
+                        : "\nPick next sprinkler insertion point (Enter to finish): ");
+                ppo.AllowNone = true;
+                var pr = ed.GetPoint(ppo);
+                if (pr.Status != PromptStatus.OK)
+                    break;
+
+                using (doc.LockDocument())
+                using (var tr = db.TransactionManager.StartTransaction())
+                {
+                    ensureLayer(tr, db);
+                    InsertBlockReference(tr, db, blockDefId, layerName, pr.Value);
+                    tr.Commit();
+                    placed++;
+                }
+            }
+
+            if (placed > 0)
+                ed.WriteMessage($"\n[autocad-final] Inserted {placed} {blockLabel} block(s).\n");
+        }
+
+        private static void InsertBlockReference(
+            Transaction tr,
+            Database db,
+            ObjectId blockDefId,
+            string layerName,
+            Point3d insertPoint)
+        {
+            var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+            var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+            var brNew = new BlockReference(insertPoint, blockDefId);
+            brNew.SetDatabaseDefaults(db);
+            try { brNew.Layer = layerName; } catch { /* ignore */ }
+            ms.AppendEntity(brNew);
+            tr.AddNewlyCreatedDBObject(brNew, true);
         }
     }
 }

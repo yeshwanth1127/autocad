@@ -497,7 +497,7 @@ namespace autocad_final.AreaWorkflow
                 }
             }
 
-            return RemoveOuterFloorParcelFromRoomOwnerships(result);
+            return RemoveOuterFloorParcelFromRoomOwnerships(db, result);
         }
 
         /// <summary>
@@ -506,12 +506,17 @@ namespace autocad_final.AreaWorkflow
         /// would otherwise all inherit one majority zone for the whole footprint, and attach-branches / redesign
         /// would route branches for heads across the entire floor when working on that zone.
         /// </summary>
-        private static List<FloorRoomOwnership> RemoveOuterFloorParcelFromRoomOwnerships(List<FloorRoomOwnership> rooms)
+        private static List<FloorRoomOwnership> RemoveOuterFloorParcelFromRoomOwnerships(Database db, List<FloorRoomOwnership> rooms)
         {
             if (rooms == null || rooms.Count == 0)
                 return new List<FloorRoomOwnership>();
             if (rooms.Count == 1)
+            {
+                var only = rooms[0];
+                if (IsLikelyOuterFloorParcel(db, only?.Ring))
+                    return new List<FloorRoomOwnership>();
                 return rooms;
+            }
 
             int outerIdx = -1;
             double bestArea = -1;
@@ -561,6 +566,61 @@ namespace autocad_final.AreaWorkflow
             }
 
             return filtered;
+        }
+
+        private static bool IsLikelyOuterFloorParcel(Database db, List<Point2d> candidateRing)
+        {
+            if (db == null || candidateRing == null || candidateRing.Count < 3)
+                return false;
+
+            int zoneCount = 0;
+            int containedZoneCenters = 0;
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+
+                foreach (ObjectId id in ms)
+                {
+                    if (id.IsErased) continue;
+                    Polyline zone = null;
+                    try { zone = tr.GetObject(id, OpenMode.ForRead, false) as Polyline; }
+                    catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.WasErased) { continue; }
+                    if (zone == null || !zone.Closed || zone.NumberOfVertices < 3)
+                        continue;
+
+                    string layer = zone.Layer ?? string.Empty;
+                    if (!SprinklerLayers.IsMcdZoneOutlineLayerName(layer) && !SprinklerLayers.IsUnifiedZoneDesignLayerName(layer))
+                        continue;
+
+                    var zoneRing = PolylineClosedBoundaryRingSampler2d.ConvertPolylineToRingPoints(zone);
+                    if (zoneRing == null || zoneRing.Count < 3)
+                        continue;
+
+                    zoneCount++;
+                    var center = AverageRingPoint(zoneRing);
+                    if (FindShaftsInsideBoundary.IsPointInPolygonRing(candidateRing, center))
+                        containedZoneCenters++;
+                }
+
+                tr.Commit();
+            }
+
+            return zoneCount > 1 && containedZoneCenters == zoneCount;
+        }
+
+        private static Point2d AverageRingPoint(List<Point2d> ring)
+        {
+            double sx = 0, sy = 0;
+            int n = ring?.Count ?? 0;
+            for (int i = 0; i < n; i++)
+            {
+                sx += ring[i].X;
+                sy += ring[i].Y;
+            }
+
+            double d = Math.Max(1, n);
+            return new Point2d(sx / d, sy / d);
         }
 
         private static void AddDedupe(List<Point2d> pts, Point2d p, double tol)

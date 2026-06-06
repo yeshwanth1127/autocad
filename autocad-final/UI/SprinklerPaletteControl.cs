@@ -122,7 +122,6 @@ namespace autocad_final.UI
 
             var designDefs = new (string Text, Action Action)[]
             {
-                ("Initialize layers & blocks", InitializeStandardsPaletteAction.Run),
                 ("Create standard layers", CreateStandardLayersPaletteAction.Run),
                 ("Insert block", InsertStandardBlockPaletteAction.Run),
                 ("Define floor area by picking points", RunPointsArea),
@@ -135,8 +134,9 @@ namespace autocad_final.UI
                 ("Route branches",             RunRedesignFromTrunk),
                 ("Route branches (all zones on floor)", RunRedesignFromTrunkAll),
                 ("Label branches",             RunLabelBranches),
+                ("Label main pipe",            RunLabelMainPipe),
                 ("Place reducers",             RunPlaceReducers),
-                ("Connect branches manually to a main pipe or a branch pipe",  RunConnectBranchesManually),
+                ("Connect sprinklers manually to a main pipe or a branch pipe",  RunConnectBranchesManually),
                 ("Fix orphans",                RunFixOrphans),
                 ("Delete all on layer",        RunDeleteAllOnLayer),
             };
@@ -863,7 +863,7 @@ namespace autocad_final.UI
             }
             try
             {
-                new AttachBranchesCommand().LabelMainPipe();
+                new LabelMainPipeCommand().Execute();
             }
             catch (Exception ex)
             {

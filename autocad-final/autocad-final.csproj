@@ -146,6 +146,7 @@
     <Compile Include="Commands\FixZoneBoundaryCommand.cs" />
     <Compile Include="Commands\RouteBranchesFinalCommand.cs" />
     <Compile Include="Commands\LabelBranchesCommand.cs" />
+    <Compile Include="Commands\LabelMainPipeCommand.cs" />
     <Compile Include="Commands\PlaceReducersCommand.cs" />
     <Compile Include="AreaWorkflow\SelectPolygonBoundary.cs" />
     <Compile Include="AreaWorkflow\SprinklerZoneAutomationCleanup.cs" />
@@ -155,6 +156,7 @@
     <Compile Include="AreaWorkflow\SprinklerLayers.cs" />
     <Compile Include="AreaWorkflow\SprinklerHeadReader2d.cs" />
     <Compile Include="AreaWorkflow\NfpaBranchPipeSizing.cs" />
+    <Compile Include="AreaWorkflow\BranchArmClassifier2d.cs" />
     <Compile Include="AreaWorkflow\SprinklerTrunkLocator.cs" />
     <Compile Include="AreaWorkflow\PendentSprinklerBlockInsert.cs" />
     <Compile Include="AreaWorkflow\ReducerBlockInsert.cs" />

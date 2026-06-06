@@ -97,23 +97,27 @@ namespace autocad_final.Commands
 
         private static BlockKind? PromptBlockKind(Editor ed)
         {
-            var pko = new PromptKeywordOptions("\nWhich block to insert [Shaft/Sprinkler/Reducer] <Sprinkler>: ");
-            pko.Keywords.Add("Shaft");
-            pko.Keywords.Add("Sprinkler");
-            pko.Keywords.Add("Reducer");
-            pko.Keywords.Default = "Sprinkler";
+            var pko = new PromptKeywordOptions("\nWhich block to insert [S/R/SP] <SP>: ");
+            pko.Keywords.Add("S");
+            pko.Keywords.Add("R");
+            pko.Keywords.Add("SP");
+            pko.Keywords.Default = "SP";
             pko.AllowNone = true;
 
             var res = ed.GetKeywords(pko);
             if (res.Status != PromptStatus.OK && res.Status != PromptStatus.None)
                 return null;
 
-            switch (res.StringResult)
+            var keyword = string.IsNullOrWhiteSpace(res.StringResult)
+                ? pko.Keywords.Default
+                : res.StringResult;
+
+            switch (keyword?.ToUpperInvariant())
             {
-                case "Shaft":    return BlockKind.Shaft;
-                case "Reducer":  return BlockKind.Reducer;
-                case "Sprinkler":
-                default:         return BlockKind.Sprinkler;
+                case "S":   return BlockKind.Shaft;
+                case "R":   return BlockKind.Reducer;
+                case "SP":  return BlockKind.Sprinkler;
+                default:    return BlockKind.Sprinkler;
             }
         }
 

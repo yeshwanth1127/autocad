@@ -68,49 +68,42 @@ namespace autocad_final.Commands
 
                 if (zoneRing == null) { ed.WriteMessage("\nShaft is not inside any zone."); tr.Commit(); return; }
 
-                // Collect main pipe points
-                List<Point2d> mainPipePts = null;
+                var spinePolys = new List<List<Point2d>>();
+                var branchPolys = new List<List<Point2d>>();
+
                 foreach (ObjectId id in ms)
                 {
                     if (id.IsErased) continue;
-                    Polyline pl = null;
-                    try { pl = tr.GetObject(id, OpenMode.ForRead, false) as Polyline; } catch { continue; }
-                    if (pl == null) continue;
-                    string ln = (pl.Layer ?? "").ToLower();
-                    if (!ln.Contains("main pipe") && !ln.Contains("pipe main") && !ln.Contains("mcd - main")) continue;
-                    if (SprinklerXData.IsTaggedTrunkCap(pl)) continue;
-                    var pts = PolylineToRing(pl);
-                    if (pts.Count < 2) continue;
+                    Entity ent = null;
+                    try { ent = tr.GetObject(id, OpenMode.ForRead, false) as Entity; } catch { continue; }
+                    if (ent == null) continue;
+
+                    var pts = GetEntityPoints(ent);
+                    if (pts == null || pts.Count < 2) continue;
                     bool hasInside = false;
                     foreach (var p in pts) if (PointInPolygon(zoneRing, p)) { hasInside = true; break; }
                     if (!hasInside) continue;
-                    mainPipePts = pts;
-                    break;
-                }
 
-                if (mainPipePts == null) { ed.WriteMessage("\nNo main pipe found in zone."); tr.Commit(); return; }
+                    string ln = ent.Layer ?? "";
+                    string lnLower = ln.ToLower();
 
-                // Collect branch polylines in zone
-                var branches = new List<(ObjectId id, Polyline pl, List<Point2d> pts)>();
-                foreach (ObjectId id in ms)
-                {
-                    if (id.IsErased) continue;
-                    Polyline pl = null;
-                    try { pl = tr.GetObject(id, OpenMode.ForRead, false) as Polyline; } catch { continue; }
-                    if (pl == null) continue;
-                    string ln = pl.Layer ?? "";
+                    bool isMain = (lnLower.Contains("main pipe") || lnLower.Contains("pipe main") || lnLower.Contains("mcd - main")
+                                   || SprinklerXData.IsTaggedTrunk(ent))
+                                  && !SprinklerXData.IsTaggedTrunkCap(ent);
+                    if (isMain)
+                    {
+                        spinePolys.Add(pts);
+                        continue;
+                    }
+
                     bool isBranch = string.Equals(ln, SprinklerLayers.BranchPipeLayer, StringComparison.OrdinalIgnoreCase) ||
                                     string.Equals(ln, SprinklerLayers.McdBranchPipeLayer, StringComparison.OrdinalIgnoreCase);
-                    if (!isBranch) continue;
-                    var pts = PolylineToRing(pl);
-                    if (pts.Count < 2) continue;
-                    bool hasInside = false;
-                    foreach (var p in pts) if (PointInPolygon(zoneRing, p)) { hasInside = true; break; }
-                    if (!hasInside) continue;
-                    branches.Add((id, pl, pts));
+                    if (isBranch)
+                        branchPolys.Add(pts);
                 }
 
-                if (branches.Count == 0) { ed.WriteMessage("\nNo branch pipes found in zone."); tr.Commit(); return; }
+                if (spinePolys.Count == 0) { ed.WriteMessage("\nNo main pipe found in zone."); tr.Commit(); return; }
+                if (branchPolys.Count == 0) { ed.WriteMessage("\nNo branch pipes found in zone."); tr.Commit(); return; }
 
                 // Collect sprinklers in zone
                 var sprinklers = new List<Point2d>();
@@ -140,8 +133,12 @@ namespace autocad_final.Commands
                 }
                 catch { }
 
-                bool mainRunsAlongX = MainRunsPrimarilyAlongX(mainPipePts);
-                bool verticalBranches = mainRunsAlongX;
+                // End-arm sub-mains (distribution runs off main terminals) are labelled by Label main pipe.
+                BranchArmClassifier2d.Classify(
+                    spinePolys, branchPolys, snapTol,
+                    out var armPolys, out var columnPolys, out bool verticalBranches);
+
+                if (columnPolys.Count == 0) { ed.WriteMessage("\nNo branch columns found in zone."); tr.Commit(); return; }
 
                 // Erase existing branch labels tagged to this zone
                 ObjectId labelLayerId = SprinklerLayers.EnsureBranchLabelLayer(tr, db);
@@ -178,10 +175,8 @@ namespace autocad_final.Commands
                 bool tagZone = !string.IsNullOrEmpty(zoneBoundaryHex);
                 int labelCount = 0;
 
-                for (int i = 0; i < branches.Count; i++)
+                foreach (var pts in columnPolys)
                 {
-                    var pts = branches[i].pts;
-
                     for (int si = 0; si + 1 < pts.Count; si++)
                     {
                         var segA = pts[si];
@@ -191,7 +186,7 @@ namespace autocad_final.Commands
                         double len = Math.Sqrt(dx * dx + dy * dy);
                         if (len < 1e-6) continue;
 
-                        Point2d mainTap = ClosestOnPolyline(mainPipePts, segA);
+                        Point2d mainTap = BranchArmClassifier2d.ClosestOnMainNetwork(spinePolys, armPolys, segA);
                         int count = CountSprinklersServedOnSegmentFromFarEnd(
                             segA, segB, mainTap, verticalBranches, sprinklers, snapTol);
                         if (count <= 0) count = 1;
@@ -230,7 +225,8 @@ namespace autocad_final.Commands
                 }
 
                 tr.Commit();
-                ed.WriteMessage($"\nLabelled {labelCount} branch segment(s).");
+                ed.WriteMessage($"\nLabelled {labelCount} branch segment(s)" +
+                                (armPolys.Count > 0 ? $" ({armPolys.Count} end-arm run(s) skipped — use Label main pipe)." : "."));
             }
         }
 
@@ -319,35 +315,19 @@ namespace autocad_final.Commands
             return bestRank;
         }
 
-        private static bool MainRunsPrimarilyAlongX(List<Point2d> mainPts)
+        private static List<Point2d> GetEntityPoints(Entity ent)
         {
-            if (mainPts == null || mainPts.Count < 2)
-                return true;
-            double dx = mainPts[mainPts.Count - 1].X - mainPts[0].X;
-            double dy = mainPts[mainPts.Count - 1].Y - mainPts[0].Y;
-            return Math.Abs(dx) >= Math.Abs(dy);
-        }
-
-        private static Point2d ClosestOnPolyline(List<Point2d> pts, Point2d p)
-        {
-            double minD = double.MaxValue;
-            Point2d best = p;
-            for (int i = 0; i + 1 < pts.Count; i++)
+            if (ent is Polyline pl)
+                return PolylineToRing(pl);
+            if (ent is Line ln)
             {
-                var cp = ClosestOnSegment(pts[i], pts[i + 1], p);
-                double d = cp.GetDistanceTo(p);
-                if (d < minD) { minD = d; best = cp; }
+                return new List<Point2d>
+                {
+                    new Point2d(ln.StartPoint.X, ln.StartPoint.Y),
+                    new Point2d(ln.EndPoint.X, ln.EndPoint.Y),
+                };
             }
-            return best;
-        }
-
-        private static Point2d ClosestOnSegment(Point2d a, Point2d b, Point2d p)
-        {
-            double dx = b.X - a.X, dy = b.Y - a.Y;
-            double lenSq = dx * dx + dy * dy;
-            if (lenSq < 1e-12) return a;
-            double t = Math.Max(0, Math.Min(1, ((p.X - a.X) * dx + (p.Y - a.Y) * dy) / lenSq));
-            return new Point2d(a.X + t * dx, a.Y + t * dy);
+            return null;
         }
 
         private static List<Point2d> PolylineToRing(Polyline pl)
